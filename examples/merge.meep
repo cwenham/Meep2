@@ -1,0 +1,4 @@
+// Two timers feed one WriteLine. The + lines feed the next unmarked line at the same indentation.
++ Interval 300ms count=4 payload="fast"
++ Interval 700ms count=2 payload="slow"
+WriteLine "{msg.Payload} tick {msg.Count}"

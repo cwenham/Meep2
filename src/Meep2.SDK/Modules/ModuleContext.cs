@@ -15,6 +15,13 @@ public abstract class ModuleContext
     public abstract ModuleInfo Module { get; }
 
     /// <summary>
+    /// Cancelled when the pipeline is asked to stop. Messages already in the pipeline still get time to finish, so
+    /// most modules can ignore this. A module that waits a long time, such as one running another pipeline, can use
+    /// it to wind down.
+    /// </summary>
+    public abstract CancellationToken Stopping { get; }
+
+    /// <summary>
     /// Sends a message to every module downstream. A module that handles messages can only emit while it's
     /// handling one; a new message becomes a child of the message being handled.
     /// </summary>
@@ -30,4 +37,11 @@ public abstract class ModuleContext
     /// it would be waiting for itself.
     /// </remarks>
     public abstract Task<MessageOutcome> EmitTracked(Message message);
+
+    /// <summary>
+    /// Emits an error in place of the message being handled. Modules use this for failures they expect, such as a
+    /// server that doesn't answer, so the runtime doesn't have to replace them.
+    /// </summary>
+    public void EmitError(string error, Exception? exception = null) =>
+        Emit(new ErrorMessage { Error = error, Exception = exception });
 }

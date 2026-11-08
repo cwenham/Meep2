@@ -115,6 +115,12 @@ public abstract record Message
         return new Guid(bytes, bigEndian: true);
     }
 
+    /// <summary>
+    /// How the message reads as text, as in a Meeplang template's <c>{msg}</c>: its text content if it has some
+    /// (<see cref="IHasText"/>), otherwise its description.
+    /// </summary>
+    public virtual string ToText() => this is IHasText content ? content.Text : ToString();
+
     /// <summary>True only when <paramref name="other"/> is the same message.</summary>
     public virtual bool Equals(Message? other) =>
         ReferenceEquals(this, other)

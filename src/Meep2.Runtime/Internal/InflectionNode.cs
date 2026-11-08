@@ -12,6 +12,7 @@ internal sealed class InflectionNode : Node
 {
     private readonly Channel<Message> _buffer;
     private readonly InflectionContext _context;
+    private readonly TypeCheck? _handlesType;
     private volatile AInflection? _module;
     private bool _broken;
 
@@ -30,6 +31,8 @@ internal sealed class InflectionNode : Node
             },
             OnDropped);
         _context = new InflectionContext(this);
+        if (spec.Options.HandlesType is { } handlesType)
+            _handlesType = new TypeCheck(handlesType);
     }
 
     /// <summary>Whether messages pass straight on downstream while the module handles them separately.</summary>
@@ -37,6 +40,12 @@ internal sealed class InflectionNode : Node
 
     /// <summary>Whether the module can handle this message's type.</summary>
     public bool Accepts(Message message) => _module!.Accepts(message);
+
+    /// <summary>
+    /// Whether the pipeline wants this module to receive messages of this type (<see cref="NodeOptions.HandlesType"/>).
+    /// If not, they skip it.
+    /// </summary>
+    public bool Handles(Message message) => _handlesType is null || _handlesType.Check(message.GetType());
 
     public override void CreateModule()
     {

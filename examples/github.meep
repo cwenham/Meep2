@@ -1,0 +1,12 @@
+// Asks GitHub how many stars a repository has. Needs a network connection.
+const Repo = "dotnet/runtime"
+
+Interval 1s count=1
+    Fetch "https://api.github.com/repos/{Repo}" as GitHub
+        timeout = 10s
+        Extract "$.stargazers_count"
+            WriteLine "{Repo} has {msg} stars"
+
+// Errors from the fetch, such as a timeout or a refused request, come here instead.
+Tap GitHub @errors
+    WriteLine "Couldn't ask GitHub: {msg.Error}"

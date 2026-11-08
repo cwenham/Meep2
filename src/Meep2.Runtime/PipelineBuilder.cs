@@ -37,7 +37,7 @@ public sealed class PipelineBuilder
         where TSource : ASource
     {
         ArgumentNullException.ThrowIfNull(create);
-        return AddSpec(typeof(TSource), () => create(), name, NodeOptions.Default, isSource: true);
+        return AddSpec(VerbOf(typeof(TSource)), () => create(), name, NodeOptions.Default, isSource: true);
     }
 
     /// <summary>Adds a module that handles messages.</summary>
@@ -48,7 +48,23 @@ public sealed class PipelineBuilder
         where TModule : AInflection
     {
         ArgumentNullException.ThrowIfNull(create);
-        return AddSpec(typeof(TModule), () => create(), name, options ?? NodeOptions.Default, isSource: false);
+        return AddSpec(VerbOf(typeof(TModule)), () => create(), name, options ?? NodeOptions.Default, isSource: false);
+    }
+
+    /// <summary>Adds a source under a given verb name, as the Meeplang loader does.</summary>
+    public ModuleInfo AddSource(string verb, Func<ASource> create, string? name = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(verb);
+        ArgumentNullException.ThrowIfNull(create);
+        return AddSpec(verb, create, name, NodeOptions.Default, isSource: true);
+    }
+
+    /// <summary>Adds a module that handles messages under a given verb name, as the Meeplang loader does.</summary>
+    public ModuleInfo Add(string verb, Func<AInflection> create, string? name = null, NodeOptions? options = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(verb);
+        ArgumentNullException.ThrowIfNull(create);
+        return AddSpec(verb, create, name, options ?? NodeOptions.Default, isSource: false);
     }
 
     /// <summary>Sends everything <paramref name="from"/> emits to <paramref name="to"/>.</summary>
@@ -76,7 +92,7 @@ public sealed class PipelineBuilder
     /// <summary>Makes a pipeline that's ready to run. The builder can be used again afterwards.</summary>
     public Pipeline Build() => new(Name, Options, [.. _specs], [.. _connections]);
 
-    private ModuleInfo AddSpec(Type type, Func<AModule> create, string? name, NodeOptions options, bool isSource)
+    private ModuleInfo AddSpec(string verb, Func<AModule> create, string? name, NodeOptions options, bool isSource)
     {
         if (name is not null)
         {
@@ -85,7 +101,7 @@ public sealed class PipelineBuilder
                 throw new ArgumentException($"This pipeline already has a module called {name}.", nameof(name));
         }
 
-        var info = new ModuleInfo(_specs.Count + 1, VerbOf(type), name);
+        var info = new ModuleInfo(_specs.Count + 1, verb, name);
         _specs.Add(new NodeSpec(info, create, options, isSource));
         return info;
     }

@@ -1,0 +1,215 @@
+using Meep2.Meeplang.Parsing;
+using Meep2.Meeplang.Syntax;
+using Meep2.Tests.Support;
+
+namespace Meep2.Tests.Meeplang;
+
+public class ParserTests
+{
+    [Test]
+    public async Task Indentation_puts_downstream_modules_under_their_upstream()
+    {
+        var syntax = Script.Parse("""
+            Interval 1m
+                Fetch "https://example.com" as Schedule
+                    timeout = 5s
+                    Extract "$.departures[*]"
+                        Where msg.minutesAway < 30
+                    Save "~/bus.jsonl"
+
+            Tap Schedule @errors
+                WriteLine "failed: {msg.Error}"
+            """);
+
+        await Assert.That(Script.Diagnostics(syntax)).IsEqualTo("");
+        await Assert.That(syntax.Modules.Count).IsEqualTo(2);
+        var fetch = syntax.Modules[0].Children.Single();
+        await Assert.That(fetch.Verb).IsEqualTo("Fetch");
+        await Assert.That(fetch.Name).IsEqualTo("Schedule");
+        await Assert.That(fetch.Arguments.Single().Name).IsEqualTo("timeout");
+        await Assert.That(fetch.Arguments.Single().Value).IsEqualTo(new LiteralSyntax(TimeSpan.FromSeconds(5), fetch.Arguments.Single().Value.Span));
+        await Assert.That(string.Join(",", fetch.Children.Select(c => c.Verb))).IsEqualTo("Extract,Save");
+        await Assert.That(fetch.Children[0].Children.Single().Verb).IsEqualTo("Where");
+        var tap = syntax.Modules[1];
+        await Assert.That(tap.Modifiers.Single().Name).IsEqualTo("errors");
+        await Assert.That(tap.Children.Single().Verb).IsEqualTo("WriteLine");
+    }
+
+    [Test]
+    public async Task A_module_line_holds_a_value_named_parameters_a_name_and_modifiers()
+    {
+        var module = Script.Parse("""
+            Interval 500ms count=3 payload="x" as Clock @buffer=10 @no-errors
+            """).Modules.Single();
+
+        await Assert.That(module.Positional).IsTypeOf<LiteralSyntax>();
+        await Assert.That(((LiteralSyntax)module.Positional!).Value).IsEqualTo(TimeSpan.FromMilliseconds(500));
+        await Assert.That(string.Join(",", module.Arguments.Select(a => a.Name))).IsEqualTo("count,payload");
+        await Assert.That(module.Name).IsEqualTo("Clock");
+        await Assert.That(string.Join(",", module.Modifiers.Select(m => m.Name))).IsEqualTo("buffer,no-errors");
+        await Assert.That(((LiteralSyntax)module.Modifiers[0].Value!).Value).IsEqualTo(10m);
+    }
+
+    [Test]
+    public async Task Kebab_case_names_are_read_where_a_name_is_expected()
+    {
+        var module = Script.Parse("""
+            Fetch "x" max-size=10
+                on-error = 3
+            """).Modules.Single();
+
+        await Assert.That(string.Join(",", module.Arguments.Select(a => a.Name))).IsEqualTo("max-size,on-error");
+    }
+
+    [Test]
+    public async Task Plus_lines_are_marked_as_feeders()
+    {
+        var syntax = Script.Parse("""
+            + Interval 1s
+            + Interval 2s
+            WriteLine
+            """);
+
+        await Assert.That(Script.Diagnostics(syntax)).IsEqualTo("");
+        await Assert.That(string.Join(",", syntax.Modules.Select(m => m.IsFeeder))).IsEqualTo("True,True,False");
+    }
+
+    [Test]
+    public async Task A_plus_line_with_nothing_after_it_is_an_error()
+    {
+        var syntax = Script.Parse("""
+            Interval 1s
+            + Interval 2s
+            """);
+
+        await Assert.That(Script.Diagnostics(syntax)).Contains("test.meep(2,3): error: Nothing follows this + line");
+    }
+
+    [Test]
+    public async Task Comments_are_ignored_but_slashes_inside_strings_are_kept()
+    {
+        var syntax = Script.Parse("""
+            // A whole-line comment
+            Fetch "https://example.com" // a trailing comment
+            """);
+
+        await Assert.That(Script.Diagnostics(syntax)).IsEqualTo("");
+        await Assert.That(((LiteralSyntax)syntax.Modules.Single().Positional!).Value).IsEqualTo("https://example.com");
+    }
+
+    [Test]
+    public async Task Indentation_that_lines_up_with_nothing_is_an_error()
+    {
+        var syntax = Script.Parse("""
+            Interval 1s
+                    Fetch "x"
+                WriteLine
+            """);
+
+        await Assert.That(Script.Diagnostics(syntax)).Contains("(3,5): error: This line's indentation doesn't line up");
+    }
+
+    [Test]
+    public async Task Constants_and_defaults_come_before_modules()
+    {
+        var syntax = Script.Parse("""
+            defaults
+                buffer = 500
+            const Api = "https://example.com"
+            Interval 1s
+            const Late = 1
+            """);
+
+        await Assert.That(syntax.Defaults.Single().Name).IsEqualTo("buffer");
+        await Assert.That(syntax.Constants.Single().Name).IsEqualTo("Api");
+        await Assert.That(Script.Diagnostics(syntax)).Contains("(5,1): error: Constants go before the pipeline's modules.");
+    }
+
+    [Test]
+    public async Task Features_that_arrive_later_are_reported_as_not_supported_yet()
+    {
+        var syntax = Script.Parse("""
+            #include "shared.meep"
+            pipeline NextBus
+            """);
+
+        await Assert.That(Script.Diagnostics(syntax)).Contains("#include isn't supported yet");
+        await Assert.That(Script.Diagnostics(syntax)).Contains("'pipeline' blocks aren't supported yet");
+    }
+
+    [Test]
+    [Arguments("5s", 5_000)]
+    [Arguments("250ms", 250)]
+    [Arguments("1.5m", 90_000)]
+    [Arguments("1h30m", 5_400_000)]
+    [Arguments("2d", 172_800_000)]
+    [Arguments("00:00:05", 5_000)]
+    [Arguments("1.00:00:00", 86_400_000)]
+    public async Task Durations_can_be_written_with_units_or_as_TimeSpan(string text, long milliseconds)
+    {
+        var expression = MeeplangParser.ParseExpression(text, out var diagnostics);
+
+        await Assert.That(diagnostics.Count).IsEqualTo(0);
+        await Assert.That(((LiteralSyntax)expression!).Value).IsEqualTo(TimeSpan.FromMilliseconds(milliseconds));
+    }
+
+    [Test]
+    public async Task An_unknown_duration_unit_is_an_error()
+    {
+        MeeplangParser.ParseExpression("5min", out var diagnostics);
+
+        await Assert.That(diagnostics.Single().Message).Contains("'min' isn't a unit");
+    }
+
+    [Test]
+    public async Task Templates_split_into_text_and_holes_with_formats()
+    {
+        var expression = (TemplateSyntax)MeeplangParser.ParseExpression("\"{{x}} {msg.Created:yyyy-MM-dd} at \\\"{Api}\\\"\"", out _)!;
+
+        await Assert.That(expression.Parts.Count).IsEqualTo(5);
+        await Assert.That(((TextPart)expression.Parts[0]).Text).IsEqualTo("{x} ");
+        var hole = (HolePart)expression.Parts[1];
+        await Assert.That(hole.Format).IsEqualTo("yyyy-MM-dd");
+        await Assert.That(((MemberSyntax)hole.Expression).Member).IsEqualTo("Created");
+        await Assert.That(((TextPart)expression.Parts[2]).Text).IsEqualTo(" at \"");
+        await Assert.That(((NameSyntax)((HolePart)expression.Parts[3]).Expression).Name).IsEqualTo("Api");
+    }
+
+    [Test]
+    public async Task Single_quoted_strings_have_no_holes_or_escapes()
+    {
+        var expression = MeeplangParser.ParseExpression(@"'C:\data\{file}.txt'", out _);
+
+        await Assert.That(((LiteralSyntax)expression!).Value).IsEqualTo(@"C:\data\{file}.txt");
+    }
+
+    [Test]
+    public async Task Operators_follow_precedence()
+    {
+        var expression = MeeplangParser.ParseExpression("a or b and not c == -d * 2 + 1", out _)!;
+
+        // a or (b and (not ((c) == (((-d) * 2) + 1))))
+        var or = (BinarySyntax)expression;
+        await Assert.That(or.Operator).IsEqualTo("or");
+        var and = (BinarySyntax)or.Right;
+        await Assert.That(and.Operator).IsEqualTo("and");
+        var not = (UnarySyntax)and.Right;
+        var equals = (BinarySyntax)not.Operand;
+        await Assert.That(equals.Operator).IsEqualTo("==");
+        var plus = (BinarySyntax)equals.Right;
+        await Assert.That(plus.Operator).IsEqualTo("+");
+        await Assert.That(((BinarySyntax)plus.Left).Operator).IsEqualTo("*");
+    }
+
+    [Test]
+    public async Task Members_calls_indexes_and_type_tests_parse()
+    {
+        var call = (CallSyntax)MeeplangParser.ParseExpression("msg.items[0].name.Contains(\"x\")", out _)!;
+        var test = (IsSyntax)MeeplangParser.ParseExpression("msg is not ErrorMessage", out _)!;
+
+        await Assert.That(((MemberSyntax)call.Callee).Member).IsEqualTo("Contains");
+        await Assert.That(((MemberSyntax)((MemberSyntax)call.Callee).Target).Target).IsTypeOf<IndexSyntax>();
+        await Assert.That(test.Negated).IsTrue();
+        await Assert.That(test.TypeName).IsEqualTo("ErrorMessage");
+    }
+}

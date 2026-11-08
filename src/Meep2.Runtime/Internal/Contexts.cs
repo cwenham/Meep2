@@ -14,6 +14,8 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
 
     public override ModuleInfo Module => node.Info;
 
+    public override CancellationToken Stopping => node.Pipeline.StoppingToken;
+
     /// <summary>Whether the module emitted the message it was given, passing it on unchanged.</summary>
     public bool PassedOn => _passedOn;
 
@@ -64,6 +66,8 @@ internal sealed class SourceContext(SourceNode node) : ModuleContext
     private volatile bool _closed;
 
     public override ModuleInfo Module => node.Info;
+
+    public override CancellationToken Stopping => node.Pipeline.StoppingToken;
 
     /// <summary>Called when the source finishes. Emitting after that is a mistake.</summary>
     public void Close() => _closed = true;

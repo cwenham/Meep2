@@ -1,0 +1,3 @@
+// Prints a line every half second, three times, then stops.
+Interval 500ms count=3
+    WriteLine "Tick {msg.Count} at {msg.Created.ToLocalTime():HH:mm:ss.fff}"

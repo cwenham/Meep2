@@ -1,0 +1,6 @@
+// Numbers are decimals, so 3 / 4 is 0.75 and 0.1 + 0.2 is exactly 0.3.
+// A number too big for a decimal carries on as a big number: Huge * 2 is past decimal's range.
+const Huge = 79228162514264337593543950335
+
+Interval 100ms count=3
+    WriteLine "{msg.Count} / 4 = {msg.Count / 4}, 0.1 + 0.2 = {0.1 + 0.2}, Huge * {msg.Count} = {Huge * msg.Count:N0}"

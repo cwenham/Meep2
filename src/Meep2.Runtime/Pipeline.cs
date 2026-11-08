@@ -45,6 +45,7 @@ public sealed class Pipeline : IAsyncDisposable
         Name = name;
         Options = options;
         AbortToken = _abort.Token;
+        StoppingToken = _stopSources.Token;
 
         _nodesByModule = new Dictionary<ModuleInfo, Node>(specs.Length);
         var nodes = new Node[specs.Length];
@@ -81,6 +82,9 @@ public sealed class Pipeline : IAsyncDisposable
 
     /// <summary>Cancelled when the pipeline gives up waiting for messages to finish. Modules receive it.</summary>
     internal CancellationToken AbortToken { get; }
+
+    /// <summary>Cancelled when the pipeline is asked to stop.</summary>
+    internal CancellationToken StoppingToken { get; }
 
     internal bool IsAborting => _aborting;
 
@@ -263,9 +267,17 @@ public sealed class Pipeline : IAsyncDisposable
 
         if (wanted && target.Accepts(message))
         {
-            target.Enqueue(message);
-            if (target.IsPassthrough)
+            if (target.Handles(message))
+            {
+                target.Enqueue(message);
+                if (target.IsPassthrough)
+                    Forward(target, message, depth);
+            }
+            else
+            {
+                // The module could take it, but the pipeline says its expressions don't fit this type: skip it.
                 Forward(target, message, depth);
+            }
         }
         else if (isError || target.Options.Bypass)
         {

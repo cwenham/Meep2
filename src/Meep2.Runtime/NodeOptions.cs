@@ -20,4 +20,11 @@ public sealed record NodeOptions
 
     /// <summary>Whether the module receives error messages.</summary>
     public ErrorDelivery Errors { get; init; } = ErrorDelivery.Include;
+
+    /// <summary>
+    /// Narrows which message types the module receives. Messages of a type this returns false for skip the module
+    /// and carry on downstream, as with <see cref="Bypass"/>. Meeplang uses it so that a module only receives
+    /// messages its expressions can be worked out for. The answer for each type is remembered.
+    /// </summary>
+    public Func<Type, bool>? HandlesType { get; init; }
 }
