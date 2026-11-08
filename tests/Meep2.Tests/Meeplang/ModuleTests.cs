@@ -91,15 +91,29 @@ public class ModuleTests
     }
 
     [Test]
-    public async Task Fetch_reports_an_address_it_cannot_use()
+    public async Task Fetch_refuses_an_address_none_of_its_inflections_can_use_when_the_pipeline_loads()
     {
         var run = await TestRun.Start("""
             Interval 10ms count=1
                 Fetch "ftp://example.com/file"
                     Sink
+            """, run: false);
+
+        await Assert.That(run.Diagnostics).Contains(
+            "(2,11): error: None of Fetch's inflections can do this: HTTP needs an http or https address, not ftp://example.com/file; File needs a file path or a file:// address, not ftp://example.com/file.");
+    }
+
+    [Test]
+    public async Task Fetch_refuses_an_address_worked_out_for_a_message_with_an_error()
+    {
+        var run = await TestRun.Start("""
+            Interval 10ms count=1 payload="ftp://example.com/file"
+                Fetch "{msg.Payload}"
+                    Sink
             """);
 
-        await Assert.That(((ErrorMessage)run.At("Sink").Single()).Error).IsEqualTo("Fetch needs an http or https address, not ftp://example.com/file");
+        await Assert.That(((ErrorMessage)run.At("Sink").Single()).Error).IsEqualTo(
+            "None of Fetch #2's inflections can take this message: HTTP needs an http or https address, not ftp://example.com/file; File needs a file path or a file:// address, not ftp://example.com/file.");
     }
 
     [Test]

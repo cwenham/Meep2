@@ -27,4 +27,21 @@ public sealed record NodeOptions
     /// messages its expressions can be worked out for. The answer for each type is remembered.
     /// </summary>
     public Func<Type, bool>? HandlesType { get; init; }
+
+    /// <summary>
+    /// Sets the expiry of the messages this module makes: they expire this long after they're made, instead of
+    /// inheriting their parents' expiry. <see cref="Timeout.InfiniteTimeSpan"/> clears it, so they never expire.
+    /// Null leaves expiry as inherited. Meeplang's <c>@expires=5s</c> and <c>@expires=none</c>.
+    /// </summary>
+    /// <remarks>A message the module passes on unchanged keeps its expiry.</remarks>
+    public TimeSpan? Expires { get; init; }
+
+    /// <summary>
+    /// Lets expired messages reach the module, for cleaning up or looking into faults. The module's cancellation token
+    /// then doesn't fire when a message expires. Meeplang's <c>@accept-expired</c>.
+    /// </summary>
+    public bool AcceptExpired { get; init; }
+
+    /// <summary>The error policy for this module and the branch below it. Null uses the pipeline's. Meeplang's <c>@on-error</c>.</summary>
+    public ErrorPolicy? ErrorPolicy { get; init; }
 }

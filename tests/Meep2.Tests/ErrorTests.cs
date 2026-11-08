@@ -16,10 +16,14 @@ public class ErrorTests
         context.Emit(n);
     });
 
-    private static (PipelineBuilder Builder, ConcurrentQueue<ErrorMessage> Unhandled) NewBuilder()
+    // A module that only takes errors, so the numbers it isn't for are filtered rather than refused (Q54).
+    private static readonly NodeOptions ErrorsOnly = new() { Errors = ErrorDelivery.Only };
+
+    private static (PipelineBuilder Builder, ConcurrentQueue<ErrorMessage> Unhandled) NewBuilder(ErrorPolicy? policy = null)
     {
         var unhandled = new ConcurrentQueue<ErrorMessage>();
-        return (new PipelineBuilder(options: new PipelineOptions { UnhandledError = unhandled.Enqueue }), unhandled);
+        var options = new PipelineOptions { UnhandledError = unhandled.Enqueue, ErrorPolicy = policy ?? ErrorPolicy.Default };
+        return (new PipelineBuilder(options: options), unhandled);
     }
 
     [Test]
@@ -93,7 +97,10 @@ public class ErrorTests
     {
         var (builder, unhandled) = NewBuilder();
         var errors = new Collect<ErrorMessage>();
-        builder.Chain(builder.AddSource(() => new Numbers(1, 2)), builder.Add(() => ThrowsOn(2)), builder.Add(() => errors));
+        builder.Chain(
+            builder.AddSource(() => new Numbers(1, 2)),
+            builder.Add(() => ThrowsOn(2)),
+            builder.Add(() => errors, options: ErrorsOnly));
 
         await using var pipeline = builder.Build();
         await Wait.For(pipeline.RunAsync());
@@ -139,7 +146,7 @@ public class ErrorTests
     {
         var (builder, unhandled) = NewBuilder();
         var words = new Collect<Word>();
-        var describe = builder.Add(() => new Map<ErrorMessage>((e, context) => context.Emit(new Word($"failed: {e.Error}"))));
+        var describe = builder.Add(() => new Map<ErrorMessage>((e, context) => context.Emit(new Word($"failed: {e.Error}"))), options: ErrorsOnly);
         builder.Chain(builder.AddSource(() => new Numbers(1, 2)), builder.Add(() => ThrowsOn(2)), describe, builder.Add(() => words));
 
         await using var pipeline = builder.Build();
@@ -160,7 +167,7 @@ public class ErrorTests
             builder.AddSource(() => new Numbers(1, 2, 3)),
             builder.Add(() => ThrowsOn(2)),
             numbersOnly,
-            builder.Add(() => errors));
+            builder.Add(() => errors, options: ErrorsOnly));
 
         await using var pipeline = builder.Build();
         await Wait.For(pipeline.RunAsync());
@@ -257,9 +264,9 @@ public class ErrorTests
     }
 
     [Test]
-    public async Task A_source_that_throws_reports_the_error_and_finishes()
+    public async Task A_source_that_throws_with_restarts_off_reports_the_error_and_finishes()
     {
-        var (builder, unhandled) = NewBuilder();
+        var (builder, unhandled) = NewBuilder(ErrorPolicy.Default with { RestartSources = null });
         builder.Connect(builder.AddSource(() => new FailingSource()), builder.Add(() => new Collect<Number>()));
 
         await using var pipeline = builder.Build();

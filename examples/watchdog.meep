@@ -1,0 +1,15 @@
+// Checks a website every 30 seconds and says whether it's up.
+// Fetch's failures go to the Tap below, so they count as handled, and the
+// pipeline never stops itself however long the site is down.
+defaults
+    on-error = log, stop-pipeline never
+
+const Site = "https://example.com"
+
+Interval 30s
+    Fetch Site as Check
+        timeout = 10s
+        WriteLine "{msg.Created.ToLocalTime():HH:mm:ss} {Site} is up ({msg.StatusCode})"
+
+Tap Check @errors
+    WriteLine "{msg.Created.ToLocalTime():HH:mm:ss} {Site} is down: {msg.Error}"

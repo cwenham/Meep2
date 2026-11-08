@@ -68,13 +68,29 @@ internal sealed class LineParser(SourceFile source)
     private void ParseLine(string text, int lineNumber)
     {
         var (indent, contentStart) = MeasureIndent(text);
-        var tokens = Lexer.Lex(text[contentStart..], lineNumber, contentStart + 1, _diagnostics);
+
+        // on-error's value has a grammar of its own (log, stop-branch after 5 in 1s, …), so under defaults it's
+        // kept as written. Problems lexing it as Meeplang only count if the line turns out to be something else.
+        var setting = RawSetting(text, contentStart, lineNumber);
+        var lexing = setting is null ? _diagnostics : new Diagnostics(source.Path);
+        var tokens = Lexer.Lex(text[contentStart..], lineNumber, contentStart + 1, lexing);
         if (tokens[0].Kind == TokenKind.End)
             return; // a blank line or a comment
 
         var owner = FindOwner(indent, tokens[0]);
         if (owner is NotPlaced)
             return;
+        if (setting is not null && owner is List<ArgumentSyntax> defaults)
+        {
+            _lastOpener = null;
+            defaults.Add(new ArgumentSyntax("on-error", setting, tokens[0].Span));
+            return;
+        }
+        if (!ReferenceEquals(lexing, _diagnostics))
+        {
+            foreach (var diagnostic in lexing.Items)
+                _diagnostics.Add(diagnostic);
+        }
 
         var first = tokens[0];
         if (first.Is("#"))
@@ -110,6 +126,31 @@ internal sealed class LineParser(SourceFile source)
             return;
         }
         ParseModuleLine(tokens, owner);
+    }
+
+    // The value of an on-error line, as written: everything after the = up to any comment. Null for other lines,
+    // and when the value is in quotes, which parses as an ordinary string.
+    private static LiteralSyntax? RawSetting(string text, int contentStart, int lineNumber)
+    {
+        const string Name = "on-error";
+        var content = text.AsSpan(contentStart);
+        if (!content.StartsWith(Name, StringComparison.Ordinal))
+            return null;
+        var afterName = content[Name.Length..];
+        var equals = afterName.Length - afterName.TrimStart(' ').Length;
+        if (equals >= afterName.Length || afterName[equals] != '=' || (equals + 1 < afterName.Length && afterName[equals + 1] == '='))
+            return null;
+
+        var valueStart = contentStart + Name.Length + equals + 1;
+        var value = text[valueStart..];
+        var comment = value.IndexOf("//", StringComparison.Ordinal);
+        if (comment >= 0)
+            value = value[..comment];
+        var lead = value.Length - value.TrimStart().Length;
+        value = value.Trim();
+        if (value.Length == 0 || value[0] is '"' or '\'')
+            return null;
+        return new LiteralSyntax(value, new SourceSpan(lineNumber, valueStart + lead + 1, value.Length));
     }
 
     private static (int Indent, int ContentStart) MeasureIndent(string text)

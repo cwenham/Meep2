@@ -1,17 +1,26 @@
 namespace Meep2.SDK.Modules;
 
 /// <summary>
-/// Names the Meeplang verb a module class provides, such as <c>Fetch</c>.
+/// Names the Meeplang verb a module class is an inflection of, such as <c>Fetch</c>.
 /// </summary>
 /// <remarks>
-/// The module class needs a public constructor that takes its parameters record, or none if it has no parameters.
-/// Until verbs can have several inflections, each verb has one class.
+/// <para>The module class needs a public constructor that takes its parameters record, or none if it has no parameters.</para>
+/// <para>
+/// A verb can have several inflections, each a class of its own: <c>Fetch</c> has <c>HTTP</c> and <c>File</c>.
+/// The runtime gives each message to the inflection with the most specific input type, and parameters can choose
+/// between inflections too (see <see cref="IChosenByParameters{TParameters}"/>). In Meeplang, <c>Fetch.HTTP</c>
+/// names one, as does the inflection's name alone when no other verb has an inflection of that name.
+/// </para>
+/// <para>A verb's inflections must agree on whether they're sources, and on whether they're passthrough modules.</para>
 /// </remarks>
 [AttributeUsage(AttributeTargets.Class, Inherited = false)]
 public sealed class VerbAttribute(string name) : Attribute
 {
     /// <summary>The verb's name in Meeplang.</summary>
     public string Name { get; } = name;
+
+    /// <summary>The inflection's name, such as <c>HTTP</c>. Defaults to the class name.</summary>
+    public string? Inflection { get; init; }
 }
 
 /// <summary>

@@ -163,7 +163,7 @@ public class LoaderTests
     [Arguments("Interval 1s count=2.5", "(1,19): error: Expected a whole number, but this is the number 2.5.")]
     [Arguments("Interval 1s count=10000000000000000000", "(1,19): error: Expected a whole number from -9,223,372,036,854,775,808 to 9,223,372,036,854,775,807, but this is the number 10000000000000000000.")]
     [Arguments("Interval 1s @bypass", "(1,13): error: Interval is a source, so @bypass doesn't apply to it.")]
-    [Arguments("Interval 1s\n    Where msg.Count > 1 @expires=5s", "(2,25): error: @expires arrives with expiry and the error policy, in step 4.")]
+    [Arguments("Interval 1s\n    Where msg.Count > 1 @expires=0s", "(2,34): error: Expiry needs a duration longer than zero, as in @expires=5s, or none.")]
     [Arguments("Where msg.Count > 1", "(1,1): error: Nothing feeds Where. Indent it under a source, or feed it with + lines above it.")]
     [Arguments("+ Where msg.Count > 1\nSink", "(1,3): error: A + line starts a chain of its own, so it needs a source or a Tap, not Where.")]
     [Arguments("Interval 1s\n    Interval 2s", "(2,5): error: Interval is a source, so it can't go under another module.")]
@@ -176,7 +176,18 @@ public class LoaderTests
     [Arguments("const Bad = msg.Count\nInterval 1s", "(1,13): error: msg is only there when a message arrives, so it can't be used here.")]
     [Arguments("Interval 1s\n    Extract \"x.y\"", "(2,13): error: A JSONPath query starts with $ in the JSONPath query x.y (at character 1).")]
     [Arguments("const Key = secret(\"api-key\")\nInterval 1s", "(1,13): error: secret() isn't supported yet. It arrives with the secret store.")]
-    [Arguments("Interval 1s\n    Fetch.HTTPGet \"https://example.com\"", "(2,5): error: Choosing an inflection with Fetch.HTTPGet arrives with verbs, in step 4.")]
+    [Arguments("Interval 1s\n    Fetch.HTTPGet \"https://example.com\"", "(2,5): error: Fetch has no inflection called HTTPGet.")]
+    [Arguments("Interval 1s\n    Fetch.Fiel \"~/x.json\"", "(2,5): error: Fetch has no inflection called Fiel. Did you mean 'File'?")]
+    [Arguments("Interval 1s\n    Fetch.HTTP '~/x.json'", "(2,16): error: None of Fetch's inflections can do this: HTTP needs an http or https address, not ~/x.json.")]
+    [Arguments("+ Read 'x.json'\n+ Interval 1s\nExtract \"$.x\"", "(3,1): error: Tick can reach Extract, but Extract doesn't take it. Add @bypass to let it go past, or filter it out before Extract.")]
+    [Arguments("Interval 1s\n    Echo", "(2,5): error: Echo can't choose between Loud and Quiet for Tick. Name one, as in Echo.Loud.")]
+    [Arguments("Interval 1s @accept-expired", "(1,13): error: Interval is a source, so @accept-expired doesn't apply to it.")]
+    [Arguments("defaults\n    expires = 0s\nInterval 1s", "(2,15): error: Expiry needs a duration longer than zero, as in expires = 5s, or none.")]
+    [Arguments("defaults\n    on-error = log, stop-branch after five in 1s\nInterval 1s", "(2,21): error: stop-branch needs a number of failures and a time, as in stop-branch after 5 in 1s, or never.")]
+    [Arguments("defaults\n    on-error = restart soon\nInterval 1s", "(2,16): error: restart needs a delay and a number of failures in a row, as in restart after 100ms up to 3 times, or never.")]
+    [Arguments("defaults\n    on-error = log, log\nInterval 1s", "(2,21): error: This error policy sets log or ignore twice.")]
+    [Arguments("defaults\n    on-error = loud\nInterval 1s", "(2,16): error: 'loud' isn't part of an error policy.")]
+    [Arguments("Interval 1s\n    Where msg.Count > 1 @on-error=\"stop-pipeline at 5%\"", "(2,36): error: stop-pipeline is for the whole pipeline, so it goes in the defaults block's on-error, not on a module.")]
     public async Task Mistakes_are_reported_with_their_position(string text, string expected)
     {
         var run = await TestRun.Start(text, run: false);

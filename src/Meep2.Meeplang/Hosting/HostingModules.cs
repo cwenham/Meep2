@@ -29,6 +29,13 @@ public sealed record MeeplangErrorMessage : ErrorMessage
     };
 }
 
+/// <summary>A pipeline that its error policy stopped, as <see cref="Host"/> reports it.</summary>
+public sealed record PipelineStoppedMessage : ErrorMessage
+{
+    /// <summary>Why the error policy stopped it.</summary>
+    public required string Reason { get; init; }
+}
+
 /// <summary>
 /// Parses Meeplang text into a <see cref="ParsedPipeline"/>: the lexer and parser, as a module (goal 8).
 /// Text with errors becomes a <see cref="MeeplangErrorMessage"/>.
@@ -66,7 +73,8 @@ public sealed class Build(ModuleRegistry registry, PipelineOptions? options = nu
 
 /// <summary>
 /// Runs each <see cref="BuiltPipeline"/> it receives until that pipeline halts, or stops it when this module's own
-/// pipeline is asked to stop: the host, as a module.
+/// pipeline is asked to stop: the host, as a module. A pipeline its error policy stopped becomes a
+/// <see cref="PipelineStoppedMessage"/>.
 /// </summary>
 /// <param name="diagnostics">Where to write warnings, if anywhere.</param>
 public sealed class Host(TextWriter? diagnostics = null) : AInflection<BuiltPipeline>
@@ -81,5 +89,7 @@ public sealed class Host(TextWriter? diagnostics = null) : AInflection<BuiltPipe
         }
         await using var pipeline = message.Pipeline;
         await pipeline.RunAsync(context.Stopping).ConfigureAwait(false);
+        if (pipeline.StoppedBecause is { } reason)
+            context.Emit(new PipelineStoppedMessage { Error = $"{pipeline.Name} was stopped, because {reason}.", Reason = reason });
     }
 }

@@ -21,8 +21,24 @@ public sealed record PipelineOptions
     public TimeSpan DrainTimeout { get; init; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
-    /// Called with each error that leaves the pipeline unhandled. By default they're written to standard error.
-    /// The error policy (log, stop a branch, stop the pipeline) will build on this.
+    /// Called with each error that nothing handled, when the error policy says to log it. By default they're written
+    /// to standard error.
     /// </summary>
     public Action<ErrorMessage>? UnhandledError { get; init; }
+
+    /// <summary>
+    /// Called with notices about the pipeline itself, such as a branch the error policy stopped or a source it gave
+    /// up on. By default they're written to standard error.
+    /// </summary>
+    public Action<string>? Notice { get; init; }
+
+    /// <summary>What happens when things go wrong. Meeplang's <c>on-error</c> default.</summary>
+    public ErrorPolicy ErrorPolicy { get; init; } = ErrorPolicy.Default;
+
+    /// <summary>
+    /// How long messages from sources last before they expire, unless the source sets their expiry itself or has
+    /// <see cref="NodeOptions.Expires"/>. Messages made from them inherit it. Null means they don't expire.
+    /// Meeplang's <c>expires</c> default.
+    /// </summary>
+    public TimeSpan? Expires { get; init; }
 }

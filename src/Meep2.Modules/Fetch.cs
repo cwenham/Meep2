@@ -7,17 +7,25 @@ using Meep2.SDK.Modules;
 namespace Meep2.Modules;
 
 /// <summary>
-/// Fetches a web address for each message it receives, and emits the response as <see cref="HttpResponse"/>.
-/// In Meeplang: <c>Fetch "https://api.example.com/stops/{msg.StopId}"</c>.
+/// Fetch's HTTP inflection: fetches a web address for each message it receives, and emits the response as
+/// <see cref="HttpResponse"/>. In Meeplang: <c>Fetch "https://api.example.com/stops/{msg.StopId}"</c>.
 /// </summary>
 /// <remarks>
 /// A status that isn't a success becomes an <see cref="HttpErrorMessage"/>. A network failure, a timeout, or a body
 /// over the size limit becomes an <see cref="ErrorMessage"/>. The body is read into memory.
 /// </remarks>
-[Verb("Fetch")]
+[Verb("Fetch", Inflection = "HTTP")]
 [Emits(typeof(HttpResponse))]
-public sealed class Fetch(FetchParameters parameters) : AInflection<Message>
+public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>, IChosenByParameters<FetchParameters>
 {
+    /// <summary>Takes http and https addresses.</summary>
+    public static string? WhyNot(FetchParameters parameters, Message message)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        var url = parameters.Url.Evaluate(message);
+        return Addresses.IsWeb(url, out _) ? null : $"needs an http or https address, not {url}";
+    }
+
     // One client for every Fetch, so connections are shared and pooled. Each request sets its own timeout.
     private static readonly HttpClient s_client = CreateClient();
 
@@ -35,9 +43,9 @@ public sealed class Fetch(FetchParameters parameters) : AInflection<Message>
             return;
         }
 
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        if (!Addresses.IsWeb(url, out var uri))
         {
-            context.EmitError($"Fetch needs an http or https address, not {url}");
+            context.EmitError($"Fetch.HTTP needs an http or https address, not {url}");
             return;
         }
 
@@ -150,7 +158,84 @@ public sealed class Fetch(FetchParameters parameters) : AInflection<Message>
     private sealed class TooLargeException(string message) : Exception(message);
 }
 
-/// <summary>Parameters for <see cref="Fetch"/>.</summary>
+/// <summary>
+/// Fetch's File inflection: reads a file for each message it receives, and emits it as <see cref="FileText"/>.
+/// In Meeplang: <c>Fetch "~/config/stops.json"</c> or <c>Fetch "file:///var/data/stops.json"</c>.
+/// </summary>
+/// <remarks>
+/// A path without a scheme is read as a file: <c>~</c> is the home folder, and other relative paths start from the
+/// current folder. A file that's missing, unreadable or over the size limit becomes an <see cref="ErrorMessage"/>.
+/// </remarks>
+[Verb("Fetch", Inflection = "File")]
+[Emits(typeof(FileText))]
+public sealed class FileFetch(FetchParameters parameters) : AInflection<Message>, IChosenByParameters<FetchParameters>
+{
+    /// <summary>Takes file paths and file:// addresses.</summary>
+    public static string? WhyNot(FetchParameters parameters, Message message)
+    {
+        ArgumentNullException.ThrowIfNull(parameters);
+        var address = parameters.Url.Evaluate(message);
+        return Addresses.FilePath(address) is null ? $"needs a file path or a file:// address, not {address}" : null;
+    }
+
+    /// <inheritdoc/>
+    protected override async ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
+    {
+        string address;
+        try
+        {
+            address = parameters.Url.Evaluate(message);
+        }
+        catch (EvaluationException exception)
+        {
+            context.EmitError(exception.Message, exception);
+            return;
+        }
+        if (Addresses.FilePath(address) is not { } file)
+        {
+            context.EmitError($"Fetch.File needs a file path or a file:// address, not {address}");
+            return;
+        }
+
+        var path = Paths.Expand(file);
+        try
+        {
+            var info = new FileInfo(path);
+            if (info.Exists && info.Length > parameters.MaxSize)
+            {
+                context.EmitError($"{path} is {info.Length} bytes, over the limit of {parameters.MaxSize}");
+                return;
+            }
+            var text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+            context.Emit(new FileText(path, text));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            context.EmitError($"Couldn't read {path}: {exception.Message}", exception);
+        }
+    }
+}
+
+/// <summary>Tells web addresses and file paths apart, for Fetch's inflections.</summary>
+internal static class Addresses
+{
+    /// <summary>Whether an address is an http or https address.</summary>
+    public static bool IsWeb(string address, out Uri? uri) =>
+        Uri.TryCreate(address, UriKind.Absolute, out uri) && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps);
+
+    /// <summary>
+    /// The file path an address names: a file:// address, or a path such as <c>~/data.json</c>, <c>/var/data.json</c>
+    /// or <c>data.json</c>. Null for an address with another scheme, such as https.
+    /// </summary>
+    public static string? FilePath(string address)
+    {
+        if (Uri.TryCreate(address, UriKind.Absolute, out var uri))
+            return uri.IsFile ? uri.LocalPath : null;
+        return address.Length > 0 ? address : null;
+    }
+}
+
+/// <summary>Parameters for Fetch's inflections, <see cref="HttpFetch"/> and <see cref="FileFetch"/>.</summary>
 public sealed record FetchParameters
 {
     /// <summary>The address to fetch, worked out for each message.</summary>

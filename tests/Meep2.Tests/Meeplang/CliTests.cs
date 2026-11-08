@@ -72,7 +72,7 @@ public class CliTests
     {
         var path = await TempFile("""
             Interval 10ms count=2
-                Fetch "ftp://example.com/x"
+                Fetch "/no/such/file.json"
                     Extract "$.x"
             """);
         try
@@ -81,8 +81,31 @@ public class CliTests
 
             // Q84: only a file that doesn't load fails the run.
             await Assert.That(code).IsEqualTo(0);
-            var logged = error.Split('\n').Count(line => line.Contains("error from Fetch #2: Fetch needs an http or https address, not ftp://example.com/x", StringComparison.Ordinal));
+            var logged = error.Split('\n').Count(line => line.Contains("error from Fetch #2: Couldn't read /no/such/file.json", StringComparison.Ordinal));
             await Assert.That(logged).IsEqualTo(2);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Test]
+    public async Task Run_exits_with_3_when_the_error_policy_stops_the_pipeline()
+    {
+        var path = await TempFile("""
+            defaults
+                on-error = stop-pipeline at 50%
+            Interval 1ms
+                Fetch '/no/such/file.json'
+            """);
+        try
+        {
+            var (code, _, error) = await Meep("run", path);
+
+            await Assert.That(code).IsEqualTo(3);
+            await Assert.That(error).Contains("Stopping the pipeline, because ");
+            await Assert.That(error).Contains(" messages from its sources ended in errors nothing handled, which reaches its limit of 50%.");
         }
         finally
         {

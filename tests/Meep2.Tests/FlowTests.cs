@@ -74,9 +74,9 @@ public class FlowTests
     }
 
     [Test]
-    public async Task A_module_only_receives_types_it_handles_and_others_go_no_further()
+    public async Task A_module_only_receives_types_it_handles_and_others_become_errors()
     {
-        var builder = new PipelineBuilder();
+        var builder = new PipelineBuilder(options: new PipelineOptions { UnhandledError = _ => { } });
         var after = new Collect<Message>();
         var source = builder.AddSource(() => new Messages(new Number(1), new Word("a"), new Number(2), new Word("b")));
         var words = builder.Add(() => new Map<Word>((w, context) => context.Emit(w)));
@@ -85,8 +85,14 @@ public class FlowTests
         await using var pipeline = builder.Build();
         await Wait.For(pipeline.RunAsync());
 
-        await Assert.That(Wait.Join(after.Received.Select(m => ((Word)m).Value))).IsEqualTo("a,b");
-        await Assert.That(pipeline.GetStats(words).Filtered).IsEqualTo(2);
+        // Q54: a message no inflection takes becomes an error from the module, made from the message.
+        await Assert.That(Wait.Join(after.Received.OfType<Word>().Select(w => w.Value))).IsEqualTo("a,b");
+        var refused = after.Received.OfType<ErrorMessage>().ToList();
+        await Assert.That(refused.Count).IsEqualTo(2);
+        await Assert.That(refused[0].Error).IsEqualTo("Map #2 doesn't take Number messages.");
+        await Assert.That(refused[0].Parent).IsTypeOf<Number>();
+        await Assert.That(refused[0].EmittedBy).IsSameReferenceAs(words);
+        await Assert.That(pipeline.GetStats(words).Refused).IsEqualTo(2);
     }
 
     [Test]
@@ -191,9 +197,9 @@ public class FlowTests
     }
 
     [Test]
-    public async Task A_passthrough_module_still_stops_types_it_cannot_handle()
+    public async Task A_passthrough_module_turns_types_it_cannot_handle_into_errors()
     {
-        var builder = new PipelineBuilder();
+        var builder = new PipelineBuilder(options: new PipelineOptions { UnhandledError = _ => { } });
         var after = new Collect<Message>();
         builder.Chain(
             builder.AddSource(() => new Messages(new Number(1), new Word("a"))),
@@ -203,7 +209,8 @@ public class FlowTests
         await using var pipeline = builder.Build();
         await Wait.For(pipeline.RunAsync());
 
-        await Assert.That(after.Received.Count).IsEqualTo(1);
-        await Assert.That(after.Received[0]).IsTypeOf<Word>();
+        await Assert.That(after.Received.Count).IsEqualTo(2);
+        await Assert.That(after.Received.OfType<Word>().Single().Value).IsEqualTo("a");
+        await Assert.That(after.Received.OfType<ErrorMessage>().Single().Error).IsEqualTo("Recorder #2 doesn't take Number messages.");
     }
 }

@@ -10,22 +10,29 @@ namespace Meep2.Runtime.Internal;
 internal sealed class InflectionContext(InflectionNode node) : ModuleContext
 {
     private Message? _current;
+    private ModuleInfo? _emitter;
     private bool _passedOn;
 
-    public override ModuleInfo Module => node.Info;
+    // While handling a message, the inflection doing the work, so the messages it emits record it.
+    public override ModuleInfo Module => _emitter ?? node.Info;
 
     public override CancellationToken Stopping => node.Pipeline.StoppingToken;
 
     /// <summary>Whether the module emitted the message it was given, passing it on unchanged.</summary>
     public bool PassedOn => _passedOn;
 
-    public void Begin(Message message)
+    public void Begin(Message message, ModuleInfo emitter)
     {
         _current = message;
+        _emitter = emitter;
         _passedOn = false;
     }
 
-    public void End() => _current = null;
+    public void End()
+    {
+        _current = null;
+        _emitter = null;
+    }
 
     public override void Emit(Message message)
     {
@@ -39,21 +46,21 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
                 node.Pipeline.Deliver(node.Downstream, message);
             return;
         }
-        node.Pipeline.Emit(node, message, defaultParent: current);
+        node.Pipeline.Emit(node, Module, message, defaultParent: current);
     }
 
     public override Task<MessageOutcome> EmitTracked(Message message)
     {
         ArgumentNullException.ThrowIfNull(message);
         var current = _current ?? throw NotHandling();
-        return node.Pipeline.EmitTracked(node, message, defaultParent: current);
+        return node.Pipeline.EmitTracked(node, Module, message, defaultParent: current);
     }
 
     /// <summary>Emits an error in place of the message the module failed on.</summary>
     public void EmitFailure(Message message, Exception exception)
     {
         var error = new ErrorMessage { Error = exception.Message, Exception = exception, Parents = new Parents(message) };
-        node.Pipeline.Emit(node, error, defaultParent: message);
+        node.Pipeline.Emit(node, Module, error, defaultParent: message);
     }
 
     private InvalidOperationException NotHandling() =>
@@ -64,6 +71,7 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
 internal sealed class SourceContext(SourceNode node) : ModuleContext
 {
     private volatile bool _closed;
+    private volatile bool _emitted;
 
     public override ModuleInfo Module => node.Info;
 
@@ -72,18 +80,30 @@ internal sealed class SourceContext(SourceNode node) : ModuleContext
     /// <summary>Called when the source finishes. Emitting after that is a mistake.</summary>
     public void Close() => _closed = true;
 
+    /// <summary>Whether the source has emitted a message, other than an error, since this was last asked (Q79).</summary>
+    public bool TakeEmitted()
+    {
+        var emitted = _emitted;
+        _emitted = false;
+        return emitted;
+    }
+
     public override void Emit(Message message)
     {
         ArgumentNullException.ThrowIfNull(message);
         ThrowIfClosed();
-        node.Pipeline.Emit(node, message, defaultParent: null);
+        if (message is not ErrorMessage)
+            _emitted = true;
+        node.Pipeline.Emit(node, node.Info, message, defaultParent: null);
     }
 
     public override Task<MessageOutcome> EmitTracked(Message message)
     {
         ArgumentNullException.ThrowIfNull(message);
         ThrowIfClosed();
-        return node.Pipeline.EmitTracked(node, message, defaultParent: null);
+        if (message is not ErrorMessage)
+            _emitted = true;
+        return node.Pipeline.EmitTracked(node, node.Info, message, defaultParent: null);
     }
 
     /// <summary>Emits an error for a source that threw, or reports it directly if the source has finished.</summary>
@@ -97,7 +117,7 @@ internal sealed class SourceContext(SourceNode node) : ModuleContext
         }
         else
         {
-            node.Pipeline.Emit(node, error, defaultParent: null);
+            node.Pipeline.Emit(node, node.Info, error, defaultParent: null);
         }
     }
 

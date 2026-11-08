@@ -15,4 +15,7 @@ public enum MessageOutcome
 
     /// <summary>The pipeline stopped before they were finished.</summary>
     Abandoned = 4,
+
+    /// <summary>At least one expired before a module could take it, or while a module was handling it.</summary>
+    Expired = 8,
 }

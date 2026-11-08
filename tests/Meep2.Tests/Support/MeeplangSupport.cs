@@ -49,6 +49,30 @@ public sealed class NumberSource(NumberSourceParameters parameters) : ASource
     }
 }
 
+/// <summary>One of two inflections of Echo that take the same messages, for testing how a verb chooses (Q20).</summary>
+[Verb("Echo", Inflection = "Loud")]
+[EmitsInput]
+public sealed class LoudEcho : AInflection<Message>
+{
+    protected override ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
+    {
+        context.Emit(message);
+        return ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>The other inflection of Echo.</summary>
+[Verb("Echo", Inflection = "Quiet")]
+[EmitsInput]
+public sealed class QuietEcho : AInflection<Message>
+{
+    protected override ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
+    {
+        context.Emit(message);
+        return ValueTask.CompletedTask;
+    }
+}
+
 public sealed record NumberSourceParameters
 {
     [Positional]
@@ -58,11 +82,12 @@ public sealed record NumberSourceParameters
 /// <summary>Loads Meeplang text with the core modules plus Sink, Boom and Numbers, and runs it.</summary>
 public sealed class TestRun
 {
-    private TestRun(LoadResult result, ConcurrentQueue<(string, Message)> received, ConcurrentQueue<ErrorMessage> unhandled, StringWriter output)
+    private TestRun(LoadResult result, ConcurrentQueue<(string, Message)> received, ConcurrentQueue<ErrorMessage> unhandled, ConcurrentQueue<string> notices, StringWriter output)
     {
         Result = result;
         Received = received;
         Unhandled = unhandled;
+        Notices = notices;
         Output = output;
     }
 
@@ -71,6 +96,9 @@ public sealed class TestRun
     public ConcurrentQueue<(string Module, Message Message)> Received { get; }
 
     public ConcurrentQueue<ErrorMessage> Unhandled { get; }
+
+    /// <summary>Notices about the pipeline, such as a branch the error policy stopped.</summary>
+    public ConcurrentQueue<string> Notices { get; }
 
     /// <summary>What WriteLine wrote.</summary>
     public StringWriter Output { get; }
@@ -84,24 +112,27 @@ public sealed class TestRun
     {
         var received = new ConcurrentQueue<(string, Message)>();
         var unhandled = new ConcurrentQueue<ErrorMessage>();
+        var notices = new ConcurrentQueue<string>();
         var output = new StringWriter();
         var registry = new ModuleRegistry()
             .AddAssembly(CoreModules.Assembly)
             .Add("Sink", () => new TestSink(received))
             .Add("Boom", () => new Boom())
             .Add(typeof(NumberSource))
+            .Add(typeof(LoudEcho))
+            .Add(typeof(QuietEcho))
             .AddMessageType(typeof(Word))
             .Add<WriteLine, WriteLineParameters>("WriteLine", p => new WriteLine(p, TextWriter.Synchronized(output)));
 
         var result = new PipelineLoader(registry).Load(
             Script.Parse(text),
-            new PipelineOptions { UnhandledError = unhandled.Enqueue });
+            new PipelineOptions { UnhandledError = unhandled.Enqueue, Notice = notices.Enqueue });
         if (run && result.Pipeline is { } pipeline)
         {
             await using (pipeline)
                 await Wait.For(pipeline.RunAsync());
         }
-        return new TestRun(result, received, unhandled, output);
+        return new TestRun(result, received, unhandled, notices, output);
     }
 }
 

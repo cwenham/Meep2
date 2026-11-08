@@ -9,11 +9,16 @@ namespace Meep2.Runtime.Internal;
 /// </summary>
 internal static class Stamper
 {
+    /// <param name="message">The message being emitted.</param>
+    /// <param name="emitter">The module, or the inflection of it, that emitted the message.</param>
+    /// <param name="from">The module's place in the pipeline, for its <c>@expires</c>.</param>
     /// <param name="defaultParent">The parent for a new message that doesn't name its own: the message being handled.</param>
+    /// <param name="pipeline">The pipeline, for its default expiry and for tracking errors.</param>
     /// <param name="created">Collects tracking scopes made for new errors. The caller releases them after delivery.</param>
     public static void Stamp(
         Message message,
         ModuleInfo emitter,
+        Node from,
         Message? defaultParent,
         Pipeline pipeline,
         ref List<TrackingScope>? created)
@@ -30,10 +35,16 @@ internal static class Stamper
         foreach (var parent in message.Parents)
         {
             // A parent the module made but didn't emit, such as an intermediate copy, is stamped first.
-            Stamp(parent, emitter, defaultParent, pipeline, ref created);
+            Stamp(parent, emitter, from, defaultParent, pipeline, ref created);
             expires = Deadline.Earliest(expires, parent.ExpiresTimestamp);
             tracking = ScopeSet.Union(tracking, parent.Tracking);
         }
+
+        // @expires replaces what the message would inherit. A source's own messages get the pipeline's default.
+        if (from.Options.Expires is { } lifetime)
+            expires = lifetime == Timeout.InfiniteTimeSpan ? 0 : Deadline.After(lifetime).Timestamp;
+        else if (expires == 0 && from is SourceNode && pipeline.Options.Expires is { } defaultLifetime)
+            expires = Deadline.After(defaultLifetime).Timestamp;
 
         if (message is ErrorMessage error)
         {

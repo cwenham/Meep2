@@ -12,7 +12,7 @@ internal sealed class SourceNode : Node
     public SourceNode(Pipeline pipeline, NodeSpec spec)
         : base(pipeline, spec) => _context = new SourceContext(this);
 
-    public override void CreateModule() => _module = (ASource)CreateInstance();
+    public override void CreateModule() => _module = (ASource)CreateInstance(Spec.Inflections[0]);
 
     public void Start(CancellationToken cancellationToken) => _ = Task.Run(() => RunAsync(cancellationToken));
 
@@ -24,23 +24,69 @@ internal sealed class SourceNode : Node
 
     private async Task RunAsync(CancellationToken cancellationToken)
     {
+        var failuresInARow = 0;
         try
         {
-            await _module!.Run(_context, cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            // Stopped, as asked.
-        }
-        catch (Exception exception)
-        {
-            // Until the error policy arrives, a source that throws reports the error and counts as finished.
-            CountFailed();
-            _context.EmitFailure(exception);
+            while (true)
+            {
+                try
+                {
+                    await _module!.Run(_context, cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    return; // stopped, as asked
+                }
+                catch (Exception exception)
+                {
+                    CountFailed();
+                    _context.EmitFailure(exception);
+
+                    // Q79: restart after a delay, until the source fails too often in a row without emitting anything.
+                    failuresInARow = _context.TakeEmitted() ? 1 : failuresInARow + 1;
+                    if (Policy.RestartSources is not { } restart)
+                        return;
+                    if (failuresInARow >= restart.FailuresInARow)
+                    {
+                        Pipeline.Notify($"Gave up on {Info}: it failed {failuresInARow} times in a row without emitting anything else.");
+                        return;
+                    }
+                    if (!await RestartAsync(restart.Delay, cancellationToken).ConfigureAwait(false))
+                        return;
+                }
+            }
         }
         finally
         {
             Finish();
+        }
+    }
+
+    // Waits, then replaces the source with a fresh one. Returns false if the pipeline stopped meanwhile, or the
+    // source couldn't be made again.
+    private async Task<bool> RestartAsync(TimeSpan delay, CancellationToken cancellationToken)
+    {
+        await DisposeInstanceAsync(_module, $"{Info} couldn't be disposed after it failed").ConfigureAwait(false);
+        _module = null;
+        try
+        {
+            await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        try
+        {
+            _module = (ASource)CreateInstance(Spec.Inflections[0]);
+            CountRestart();
+            return true;
+        }
+        catch (Exception exception)
+        {
+            Pipeline.ReportFault(Info, $"{Info} couldn't be restarted", exception);
+            return false;
         }
     }
 
