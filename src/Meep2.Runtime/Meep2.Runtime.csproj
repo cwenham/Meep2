@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The push core, in-flight tracking, buffers and hosting. -->
+  <PropertyGroup>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Meep2.SDK\Meep2.SDK.csproj" />
+  </ItemGroup>
+</Project>

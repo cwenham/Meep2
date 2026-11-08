@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The core modules that ship with Meep (Interval, Fetch, Where, WriteLine, Save, Tap …). -->
+  <PropertyGroup>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Meep2.SDK\Meep2.SDK.csproj" />
+  </ItemGroup>
+</Project>

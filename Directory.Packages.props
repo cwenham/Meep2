@@ -1,0 +1,10 @@
+<Project>
+  <!-- Package versions are set here once, not in each project. -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageVersion Include="BenchmarkDotNet" Version="0.16.0-preview.2" />
+    <PackageVersion Include="TUnit" Version="1.81.10" />
+  </ItemGroup>
+</Project>

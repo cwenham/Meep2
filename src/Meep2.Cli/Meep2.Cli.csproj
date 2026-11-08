@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The meep command. A JIT host, so it can load and unload plugins. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>meep</AssemblyName>
+    <RootNamespace>Meep2.Cli</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Meep2.SDK\Meep2.SDK.csproj" />
+    <ProjectReference Include="..\Meep2.Runtime\Meep2.Runtime.csproj" />
+    <ProjectReference Include="..\Meep2.Meeplang\Meep2.Meeplang.csproj" />
+    <ProjectReference Include="..\Meep2.Modules\Meep2.Modules.csproj" />
+  </ItemGroup>
+</Project>
