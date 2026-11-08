@@ -6,4 +6,8 @@
   <ItemGroup>
     <ProjectReference Include="..\Meep2.SDK\Meep2.SDK.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Meep2.Tests" />
+    <InternalsVisibleTo Include="Meep2.Benchmarks" />
+  </ItemGroup>
 </Project>

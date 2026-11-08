@@ -6,4 +6,10 @@
   <PropertyGroup>
     <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
+  <ItemGroup>
+    <!-- The runtime stamps and tracks messages through internal members. -->
+    <InternalsVisibleTo Include="Meep2.Runtime" />
+    <InternalsVisibleTo Include="Meep2.Tests" />
+    <InternalsVisibleTo Include="Meep2.Benchmarks" />
+  </ItemGroup>
 </Project>
