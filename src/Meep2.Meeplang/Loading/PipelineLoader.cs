@@ -115,7 +115,10 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
             constants,
             FamTarget,
             name => registry.TryGetMessageType(name, out var type) ? type : null,
-            [.. _ordered.Select(n => n.Label).Distinct()]);
+            [.. _ordered.Select(n => n.Label).Distinct()],
+            name => registry.SharedBy(name) is { } plugins
+                ? SharedMessage(name, plugins)
+                : $"There's no message type called {name}." + Suggestions.For(name, registry.MessageTypeNames));
         foreach (var node in _ordered)
         {
             BindCandidates(node, scope);
@@ -262,27 +265,46 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
     }
 
     // The inflections a module line could mean: all of a verb's, the one Verb.Inflection names, or an inflection
-    // named on its own when no other verb has one by that name.
+    // named on its own when no other verb has one by that name. Plugin.Verb and Plugin.Verb.Inflection look only
+    // in that plugin (Q105).
     private IReadOnlyList<ModuleRegistration>? Resolve(ModuleSyntax module)
     {
-        if (registry.TryGetVerb(module.Verb, out var inflections))
+        if (module.Plugin is { } plugin)
+            return ResolveInPlugin(module, plugin, module.Verb, module.Inflection);
+
+        if (registry.TryGetVerb(module.Verb, out var inflections) && inflections.Count > 0)
         {
             if (module.Inflection is null)
+            {
+                var shared = registry.SharedBy(module.Verb)
+                    ?? inflections.Select(r => registry.SharedBy($"{r.Verb}.{r.Inflection}")).FirstOrDefault(plugins => plugins is not null);
+                if (shared is not null)
+                {
+                    diagnostics.Error(SharedMessage(module.Verb, shared), module.VerbSpan);
+                    return null;
+                }
                 return inflections;
+            }
             var chosen = inflections.Where(r => r.Inflection == module.Inflection).ToList();
             if (chosen.Count == 1)
-                return chosen;
-            diagnostics.Error(
-                $"{module.Verb} has no inflection called {module.Inflection}." + Suggestions.For(module.Inflection, inflections.Select(r => r.Inflection)),
-                module.VerbSpan);
-            return null;
+                return Unshared(module, chosen, $"{module.Verb}.{module.Inflection}");
+            if (!registry.IsPlugin(module.Verb))
+            {
+                diagnostics.Error(
+                    $"{module.Verb} has no inflection called {module.Inflection}." + Suggestions.For(module.Inflection, inflections.Select(r => r.Inflection)),
+                    module.VerbSpan);
+                return null;
+            }
         }
+
+        if (module.Inflection is { } second && registry.IsPlugin(module.Verb))
+            return ResolveInPlugin(module, module.Verb, second, inflection: null);
 
         if (module.Inflection is null)
         {
             var named = registry.FindInflection(module.Verb);
             if (named.Count == 1)
-                return named;
+                return Unshared(module, named, $"{named[0].Verb}.{module.Verb}");
             if (named.Count > 1)
             {
                 var verbs = string.Join(" and ", named.Select(r => r.Verb).Distinct());
@@ -293,6 +315,60 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
 
         diagnostics.Error($"There's no module called {module.Verb}." + Suggestions.For(module.Verb, registry.Verbs.Concat(registry.Inflections)), module.VerbSpan);
         return null;
+    }
+
+    // A plugin's own verb, inflection of a verb, or inflection named on its own.
+    private IReadOnlyList<ModuleRegistration>? ResolveInPlugin(ModuleSyntax module, string plugin, string verb, string? inflection)
+    {
+        if (!registry.IsPlugin(plugin))
+        {
+            diagnostics.Error($"There's no plugin called {plugin}." + Suggestions.For(plugin, registry.Plugins), module.VerbSpan);
+            return null;
+        }
+        if (registry.TryGetPluginVerb(plugin, verb, out var inflections))
+        {
+            if (inflection is null)
+                return inflections;
+            var chosen = inflections.Where(r => r.Inflection == inflection).ToList();
+            if (chosen.Count == 1)
+                return chosen;
+            diagnostics.Error(
+                $"{plugin}.{verb} has no inflection called {inflection}." + Suggestions.For(inflection, inflections.Select(r => r.Inflection)),
+                module.VerbSpan);
+            return null;
+        }
+        if (inflection is null)
+        {
+            var named = registry.FindPluginInflection(plugin, verb);
+            if (named.Count == 1)
+                return named;
+            if (named.Count > 1)
+            {
+                diagnostics.Error($"{verb} is an inflection of more than one of {plugin}'s verbs. Write the one you mean, as in {plugin}.{named[0].Verb}.{verb}.", module.VerbSpan);
+                return null;
+            }
+        }
+        diagnostics.Error($"The plugin {plugin} has no module called {verb}." + Suggestions.For(verb, registry.PluginVerbs(plugin)), module.VerbSpan);
+        return null;
+    }
+
+    // The inflections found, unless two plugins share them, so only the plugin's name can say which is meant.
+    private IReadOnlyList<ModuleRegistration>? Unshared(ModuleSyntax module, IReadOnlyList<ModuleRegistration> found, string name)
+    {
+        if ((registry.SharedBy(name) ?? registry.SharedBy(found[0].Verb)) is not { } plugins)
+            return found;
+        diagnostics.Error(SharedMessage(name, plugins), module.VerbSpan);
+        return null;
+    }
+
+    // "Send is in both Mail and Chat, so write Mail.Send or Chat.Send."
+    private static string SharedMessage(string name, IReadOnlyList<string> plugins)
+    {
+        var listed = plugins.Count == 2
+            ? $"both {plugins[0]} and {plugins[1]}"
+            : string.Join(", ", plugins.Take(plugins.Count - 1)) + " and " + plugins[^1];
+        var choices = plugins.Select(plugin => $"{plugin}.{name}").ToList();
+        return $"{name} is in {listed}, so write {string.Join(", ", choices.Take(choices.Count - 1))} or {choices[^1]}.";
     }
 
     private void CheckNames()

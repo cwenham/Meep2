@@ -233,7 +233,7 @@ internal sealed class InflectionNode : Node
                 {
                     await slot.Module!.Handle(message, _context, cancellationToken).ConfigureAwait(false);
                     CountHandled();
-                    if (message is ErrorMessage error && TookCareOf(error))
+                    if (message is ErrorMessage error && TookCareOf(error) && !ReferenceEquals(error.AnsweredBy, slot.Spec.Info))
                         error.MarkHandled();
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

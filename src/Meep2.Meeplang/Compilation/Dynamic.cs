@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Globalization;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
@@ -17,7 +18,8 @@ namespace Meep2.Meeplang.Compilation;
 [EditorBrowsable(EditorBrowsableState.Never)]
 public static class Dynamic
 {
-    private static readonly ConcurrentDictionary<(Type, string), Func<object, object?>?> s_members = new();
+    // Weak on the type, so a plugin's types don't stay loaded because a getter was cached for them.
+    private static readonly ConditionalWeakTable<Type, ConcurrentDictionary<string, Func<object, object?>?>> s_members = new();
 
     internal static readonly MethodInfo GetMemberMethod = Method(nameof(GetMember));
     internal static readonly MethodInfo IndexMethod = Method(nameof(Index));
@@ -49,7 +51,8 @@ public static class Dynamic
             case JsonElement json:
                 throw new EvaluationException($"Can't read '{name}' from a JSON {Describe(json)}.");
             case var other:
-                var getter = s_members.GetOrAdd((other.GetType(), name), static key => FindGetter(key.Item1, key.Item2));
+                var type = other.GetType();
+                var getter = s_members.GetValue(type, static _ => new(StringComparer.Ordinal)).GetOrAdd(name, static (member, owner) => FindGetter(owner, member), type);
                 return getter is not null
                     ? Normalize(getter(other))
                     : throw new EvaluationException($"{other.GetType().Name} has no '{name}'.");

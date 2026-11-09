@@ -5,6 +5,11 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="BenchmarkDotNet" Version="0.16.0-preview.2" />
+    <!-- For Ed25519, the key type most SSH keys use, which .NET doesn't have (Q101). -->
+    <PackageVersion Include="BouncyCastle.Cryptography" Version="2.7.0" />
+    <PackageVersion Include="NuGet.Protocol" Version="7.9.0" />
+    <!-- NuGet.Protocol asks for 8.0.1, which has known vulnerabilities; this matches the .NET 11 runtime. -->
+    <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="11.0.0-rc.3.26522.148" />
     <PackageVersion Include="TUnit" Version="1.81.10" />
   </ItemGroup>
 </Project>

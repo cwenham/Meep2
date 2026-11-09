@@ -51,4 +51,16 @@ public abstract class ModuleContext
     /// </summary>
     public void EmitError(string error, Exception? exception = null) =>
         Emit(new ErrorMessage { Error = error, Exception = exception });
+
+    /// <summary>
+    /// Says the module has answered an error for whoever was waiting, such as by sending a reply to the request it
+    /// came from. Taking the error then doesn't count as handling it: unless a module after this one handles it, the
+    /// error policy logs it, but doesn't count it towards stopping the pipeline (Q100). So a server that answers bad
+    /// requests keeps a record of them, and can't be stopped by them.
+    /// </summary>
+    public void Answered(ErrorMessage error)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        error.AnsweredBy = Module;
+    }
 }

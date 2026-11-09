@@ -22,7 +22,8 @@ public sealed record PipelineOptions
 
     /// <summary>
     /// Called with each error that nothing handled, when the error policy says to log it. By default they're written
-    /// to standard error.
+    /// to standard error. Errors a module answered, such as Respond, come here too, with
+    /// <see cref="ErrorMessage.AnsweredBy"/> set, unless a module after it handled them (Q100).
     /// </summary>
     public Action<ErrorMessage>? UnhandledError { get; init; }
 

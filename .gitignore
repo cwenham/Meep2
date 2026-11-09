@@ -485,3 +485,6 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# BenchmarkDotNet builds its runs here, and cleans up after.
+.bdn/

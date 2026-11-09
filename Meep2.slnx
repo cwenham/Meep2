@@ -6,10 +6,13 @@
     <Project Path="src/Meep2.Cli/Meep2.Cli.csproj" />
     <Project Path="src/Meep2.Meeplang/Meep2.Meeplang.csproj" />
     <Project Path="src/Meep2.Modules/Meep2.Modules.csproj" />
+    <Project Path="src/Meep2.Plugins/Meep2.Plugins.csproj" />
     <Project Path="src/Meep2.Runtime/Meep2.Runtime.csproj" />
     <Project Path="src/Meep2.SDK/Meep2.SDK.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Meep2.TestPlugin.Words/Meep2.TestPlugin.Words.csproj" />
+    <Project Path="tests/Meep2.TestPlugin/Meep2.TestPlugin.csproj" />
     <Project Path="tests/Meep2.Tests/Meep2.Tests.csproj" />
   </Folder>
 </Solution>

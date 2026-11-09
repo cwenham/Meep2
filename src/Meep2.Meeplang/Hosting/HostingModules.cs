@@ -9,12 +9,32 @@ namespace Meep2.Meeplang.Hosting;
 
 /// <summary>A parsed pipeline file, as <see cref="Parse"/> emits it.</summary>
 /// <param name="Syntax">The parsed file, including any warnings.</param>
-public sealed record ParsedPipeline(PipelineSyntax Syntax) : Message;
+public sealed record ParsedPipeline(PipelineSyntax Syntax) : Message
+{
+    /// <summary>
+    /// The verbs this pipeline can use, when it needs its own, as a pipeline with plugins does. Null means the ones
+    /// <see cref="Build"/> was given.
+    /// </summary>
+    public ModuleRegistry? Registry { get; init; }
+
+    /// <summary>
+    /// What keeps the pipeline's plugins loaded. The pipeline lets go of them when it's finished with, so they can
+    /// unload.
+    /// </summary>
+    public IReadOnlyList<IDisposable> Holds { get; init; } = [];
+
+    /// <summary>Warnings found after parsing, such as a plugin loaded without a signature in developer mode.</summary>
+    public IReadOnlyList<Diagnostic> Warnings { get; init; } = [];
+}
 
 /// <summary>A pipeline ready to run, as <see cref="Build"/> emits it.</summary>
 /// <param name="Pipeline">The pipeline.</param>
 /// <param name="Warnings">Warnings from parsing and loading.</param>
-public sealed record BuiltPipeline(Pipeline Pipeline, IReadOnlyList<Diagnostic> Warnings) : Message;
+public sealed record BuiltPipeline(Pipeline Pipeline, IReadOnlyList<Diagnostic> Warnings) : Message
+{
+    /// <summary>What keeps the pipeline's plugins loaded, let go of once the pipeline has finished.</summary>
+    public IReadOnlyList<IDisposable> Holds { get; init; } = [];
+}
 
 /// <summary>Problems that stopped a pipeline file loading.</summary>
 public sealed record MeeplangErrorMessage : ErrorMessage
@@ -22,7 +42,8 @@ public sealed record MeeplangErrorMessage : ErrorMessage
     /// <summary>Every error and warning found.</summary>
     public required IReadOnlyList<Diagnostic> Diagnostics { get; init; }
 
-    internal static MeeplangErrorMessage From(IReadOnlyList<Diagnostic> diagnostics) => new()
+    /// <summary>The error for a set of diagnostics, described by its errors.</summary>
+    public static MeeplangErrorMessage From(IReadOnlyList<Diagnostic> diagnostics) => new()
     {
         Error = string.Join(Environment.NewLine, diagnostics.Where(d => d.IsError)),
         Diagnostics = diagnostics,
@@ -60,13 +81,36 @@ public sealed class Parse : AInflection<IHasText>
 /// <param name="options">Settings for the pipelines it builds.</param>
 public sealed class Build(ModuleRegistry registry, PipelineOptions? options = null) : AInflection<ParsedPipeline>
 {
+    /// <summary>Lets go of a pipeline's plugins, as when it doesn't load or has finished.</summary>
+    public static void Release(IReadOnlyList<IDisposable> holds)
+    {
+        ArgumentNullException.ThrowIfNull(holds);
+        foreach (var hold in holds)
+            hold.Dispose();
+    }
+
     /// <inheritdoc/>
     protected override ValueTask HandleAsync(ParsedPipeline message, ModuleContext context, CancellationToken cancellationToken)
     {
-        var result = new PipelineLoader(registry).Load(message.Syntax, options);
-        context.Emit(result.Pipeline is { } pipeline
-            ? new BuiltPipeline(pipeline, [.. result.Diagnostics.Where(d => !d.IsError)])
-            : MeeplangErrorMessage.From(result.Diagnostics));
+        LoadResult result;
+        try
+        {
+            result = new PipelineLoader(message.Registry ?? registry).Load(message.Syntax, options);
+        }
+        catch
+        {
+            Release(message.Holds);
+            throw;
+        }
+        if (result.Pipeline is { } pipeline)
+        {
+            context.Emit(new BuiltPipeline(pipeline, [.. message.Warnings, .. result.Diagnostics.Where(d => !d.IsError)]) { Holds = message.Holds });
+        }
+        else
+        {
+            Release(message.Holds);
+            context.Emit(MeeplangErrorMessage.From([.. message.Warnings, .. result.Diagnostics]));
+        }
         return ValueTask.CompletedTask;
     }
 }
@@ -82,14 +126,21 @@ public sealed class Host(TextWriter? diagnostics = null) : AInflection<BuiltPipe
     /// <inheritdoc/>
     protected override async ValueTask HandleAsync(BuiltPipeline message, ModuleContext context, CancellationToken cancellationToken)
     {
-        if (diagnostics is not null)
+        try
         {
-            foreach (var warning in message.Warnings)
-                await diagnostics.WriteLineAsync(warning.ToString()).ConfigureAwait(false);
+            await using var pipeline = message.Pipeline;
+            if (diagnostics is not null)
+            {
+                foreach (var warning in message.Warnings)
+                    await diagnostics.WriteLineAsync(warning.ToString()).ConfigureAwait(false);
+            }
+            await pipeline.RunAsync(context.Stopping).ConfigureAwait(false);
+            if (pipeline.StoppedBecause is { } reason)
+                context.Emit(new PipelineStoppedMessage { Error = $"{pipeline.Name} was stopped, because {reason}.", Reason = reason });
         }
-        await using var pipeline = message.Pipeline;
-        await pipeline.RunAsync(context.Stopping).ConfigureAwait(false);
-        if (pipeline.StoppedBecause is { } reason)
-            context.Emit(new PipelineStoppedMessage { Error = $"{pipeline.Name} was stopped, because {reason}.", Reason = reason });
+        finally
+        {
+            Build.Release(message.Holds);
+        }
     }
 }

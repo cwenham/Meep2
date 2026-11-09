@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    A plugin for the tests: the Shout verb and the Shouted message. It's built as a folder, as dotnet publish would
+    make it, and packed as a NuGet package; the tests sign them and install them as a plugin would be.
+  -->
+  <PropertyGroup>
+    <Version>1.0.0</Version>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The host provides the SDK, so it isn't copied beside the plugin. -->
+    <ProjectReference Include="..\..\src\Meep2.SDK\Meep2.SDK.csproj" Private="false" />
+    <ProjectReference Include="..\Meep2.TestPlugin.Words\Meep2.TestPlugin.Words.csproj" />
+  </ItemGroup>
+</Project>

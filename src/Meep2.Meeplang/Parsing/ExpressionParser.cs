@@ -82,8 +82,17 @@ internal sealed class ExpressionParser(List<Token> tokens, int position, Diagnos
                     return null;
                 }
                 var type = Current;
+                var typeName = type.Text;
+                var typeSpan = type.Span;
                 position++;
-                left = new IsSyntax(left, type.Text, negated, SourceSpan.Between(left.Span, type.Span));
+                if (Current.Is(".") && tokens[position + 1].Kind == TokenKind.Identifier)
+                {
+                    // A plugin's message type, as in msg is Transit.Departure (Q105).
+                    typeName += "." + tokens[position + 1].Text;
+                    typeSpan = SourceSpan.Between(type.Span, tokens[position + 1].Span);
+                    position += 2;
+                }
+                left = new IsSyntax(left, typeName, negated, SourceSpan.Between(left.Span, typeSpan));
                 continue;
             }
 

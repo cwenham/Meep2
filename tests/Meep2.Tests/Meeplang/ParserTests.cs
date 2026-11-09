@@ -126,6 +126,78 @@ public class ParserTests
     }
 
     [Test]
+    public async Task Plugin_lines_name_github_nuget_and_local_plugins()
+    {
+        var syntax = Script.Parse($$"""
+            const Stop = "Hove"
+            #plugin github.com/cwenham/MeepTransit 1.2.0 sha256:{{new string('A', 64)}}
+            #plugin nuget:Meep.Transit 2.0.0-beta.1   // a comment
+            #plugin '../Transit/bin/Debug/net11.0/Transit.dll'
+            Interval 1s
+            """);
+
+        await Assert.That(Script.Diagnostics(syntax)).IsEmpty();
+        await Assert.That(syntax.Plugins.Count).IsEqualTo(3);
+        await Assert.That(syntax.Plugins[0]).IsEqualTo(new PluginDirective(PluginOrigin.GitHub, "cwenham/MeepTransit", "1.2.0", new string('a', 64), new SourceSpan(2, 1, 116)));
+        await Assert.That(syntax.Plugins[1].ToString()).IsEqualTo("nuget:Meep.Transit 2.0.0-beta.1");
+        await Assert.That(syntax.Plugins[1].Sha256).IsNull();
+        await Assert.That(syntax.Plugins[2].Origin).IsEqualTo(PluginOrigin.Local);
+        await Assert.That(syntax.Plugins[2].Name).IsEqualTo("../Transit/bin/Debug/net11.0/Transit.dll");
+    }
+
+    [Test]
+    public async Task Plugin_lines_report_their_mistakes()
+    {
+        var syntax = Script.Parse("""
+            #plugin github.com/cwenham/MeepTransit 1.2.0
+            #plugin github.com/cwenham 1.2.0 sha256:abc
+            #plugin nuget:Meep.Transit
+            #plugin nuget:Meep.Transit 1.0 sha256:xyz
+            #plugin ftp://example.com/plugin.zip
+            #plugin "local.dll" 1.0
+            #plugins nuget:Meep.Transit 1.0
+            Interval 1s
+            #plugin nuget:Late 1.0
+            """);
+        var diagnostics = Script.Diagnostics(syntax);
+
+        await Assert.That(diagnostics).Contains("(1,1): error: github.com/cwenham/MeepTransit 1.2.0 needs the SHA-256 of its release asset, as in sha256:3f9a…, so the release can't change under you.");
+        await Assert.That(diagnostics).Contains("(2,9): error: A plugin on GitHub is named as github.com/owner/repo, not github.com/cwenham.");
+        await Assert.That(diagnostics).Contains("(3,9): error: nuget:Meep.Transit needs a version, as in nuget:Meep.Transit 1.2.0.");
+        await Assert.That(diagnostics).Contains("(4,32): error: A plugin's SHA is written as sha256: and 64 hex digits.");
+        await Assert.That(diagnostics).Contains("(5,9): error: Write a plugin as #plugin github.com/owner/repo 1.2.0 sha256:…");
+        await Assert.That(diagnostics).Contains("(6,21): error: A plugin on this machine takes just its path, with no version or SHA.");
+        await Assert.That(diagnostics).Contains("(7,1): error: There's no #plugins directive. Meeplang has #plugin, and #include is to come.");
+        await Assert.That(diagnostics).Contains("(9,1): error: #plugin goes before the pipeline's modules.");
+        await Assert.That(syntax.Plugins.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task A_plugin_line_can_name_the_plugin_and_modules_can_name_plugins()
+    {
+        var syntax = Script.Parse("""
+            #plugin nuget:Meep.Transit 2.0.0 as Transit
+            #plugin "local.dll" as Mine
+            #plugin "other.dll" as 9lives
+            #plugin "other.dll" as
+            Transit.Departures.Live
+                Mine.Shout
+            """);
+        var diagnostics = Script.Diagnostics(syntax);
+
+        await Assert.That(diagnostics).Contains("(3,24): error: A plugin's name after 'as' is a word of letters and digits, such as Transit, not 9lives.");
+        await Assert.That(diagnostics).Contains("(4,21): error: Expected a name for the plugin after 'as'.");
+        await Assert.That(syntax.Plugins.Count).IsEqualTo(2);
+        await Assert.That(syntax.Plugins[0].Alias).IsEqualTo("Transit");
+        await Assert.That(syntax.Plugins[0].ToString()).IsEqualTo("nuget:Meep.Transit 2.0.0");
+        await Assert.That(syntax.Plugins[1].Alias).IsEqualTo("Mine");
+        var module = syntax.Modules[0];
+        await Assert.That((module.Plugin, module.Verb, module.Inflection)).IsEqualTo(("Transit", "Departures", "Live"));
+        var child = module.Children[0];
+        await Assert.That((child.Plugin, child.Verb, child.Inflection)).IsEqualTo(((string?)null, "Mine", "Shout"));
+    }
+
+    [Test]
     public async Task Features_that_arrive_later_are_reported_as_not_supported_yet()
     {
         var syntax = Script.Parse("""

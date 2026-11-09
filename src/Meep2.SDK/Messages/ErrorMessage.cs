@@ -1,4 +1,5 @@
 using System.Text;
+using Meep2.SDK.Modules;
 
 namespace Meep2.SDK.Messages;
 
@@ -16,6 +17,11 @@ namespace Meep2.SDK.Messages;
 /// last module in a branch handles any error it takes. Errors that reach the end of the pipeline unhandled go to the
 /// error policy.
 /// </para>
+/// <para>
+/// A module can also answer an error for whoever was waiting, as Respond does (<see cref="Modules.ModuleContext.Answered"/>).
+/// Its own taking of the error doesn't count as handling it then: unless a module after it handles the error, the
+/// error policy logs it, but doesn't count it towards stopping the pipeline (Q100).
+/// </para>
 /// </remarks>
 public record ErrorMessage : Message
 {
@@ -26,6 +32,9 @@ public record ErrorMessage : Message
 
     /// <summary>The exception behind the error, if there was one.</summary>
     public Exception? Exception { get; init; }
+
+    /// <summary>The module that answered the error for whoever was waiting, such as Respond, or null.</summary>
+    public ModuleInfo? AnsweredBy { get; internal set; }
 
     internal bool IsHandled => (Volatile.Read(ref RuntimeFlags) & HandledFlag) != 0;
 

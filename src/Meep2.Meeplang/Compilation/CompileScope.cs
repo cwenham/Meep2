@@ -11,12 +11,14 @@ internal sealed class CompileScope
         IReadOnlyDictionary<string, ConstantValue> constants,
         Func<string, FamTarget?> fam,
         Func<string, Type?> messageType,
-        IReadOnlyCollection<string> moduleNames)
+        IReadOnlyCollection<string> moduleNames,
+        Func<string, string>? noMessageType = null)
     {
         Constants = constants;
         Fam = fam;
         MessageType = messageType;
         ModuleNames = moduleNames;
+        NoMessageType = noMessageType ?? (name => $"There's no message type called {name}.");
     }
 
     /// <summary>Constants declared with <c>const</c>.</summary>
@@ -30,6 +32,9 @@ internal sealed class CompileScope
 
     /// <summary>Names that <c>fam</c> can use, for suggestions.</summary>
     public IReadOnlyCollection<string> ModuleNames { get; }
+
+    /// <summary>Why <see cref="MessageType"/> found nothing for a name, in words.</summary>
+    public Func<string, string> NoMessageType { get; }
 }
 
 /// <summary>A constant's value and type.</summary>

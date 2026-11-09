@@ -10,5 +10,6 @@
     <ProjectReference Include="..\Meep2.Runtime\Meep2.Runtime.csproj" />
     <ProjectReference Include="..\Meep2.Meeplang\Meep2.Meeplang.csproj" />
     <ProjectReference Include="..\Meep2.Modules\Meep2.Modules.csproj" />
+    <ProjectReference Include="..\Meep2.Plugins\Meep2.Plugins.csproj" />
   </ItemGroup>
 </Project>

@@ -46,6 +46,7 @@ internal sealed class LineParser(SourceFile source)
     private readonly Diagnostics _diagnostics = new(source.Path);
     private readonly List<ArgumentSyntax> _defaults = [];
     private readonly List<ConstantSyntax> _constants = [];
+    private readonly List<PluginDirective> _plugins = [];
     private readonly List<ModuleSyntax> _modules = [];
 
     // Open blocks, outermost first. Null owner means the left margin.
@@ -62,12 +63,18 @@ internal sealed class LineParser(SourceFile source)
             ParseLine(lines[i].TrimEnd('\r'), i + 1);
 
         CheckFeeders(_modules);
-        return new PipelineSyntax(source, _defaults, _constants, _modules, _diagnostics.Items);
+        return new PipelineSyntax(source, _defaults, _constants, _plugins, _modules, _diagnostics.Items);
     }
 
     private void ParseLine(string text, int lineNumber)
     {
         var (indent, contentStart) = MeasureIndent(text);
+        if (contentStart < text.Length && text[contentStart] == '#')
+        {
+            // Directives have a grammar of their own: addresses and versions, not Meeplang expressions.
+            ParseDirective(text, contentStart, indent, lineNumber);
+            return;
+        }
 
         // on-error's value has a grammar of its own (log, stop-branch after 5 in 1s, …), so under defaults it's
         // kept as written. Problems lexing it as Meeplang only count if the line turns out to be something else.
@@ -93,13 +100,6 @@ internal sealed class LineParser(SourceFile source)
         }
 
         var first = tokens[0];
-        if (first.Is("#"))
-        {
-            var directive = tokens[1].Kind == TokenKind.Identifier ? $"#{tokens[1].Text}" : "#";
-            _diagnostics.Error($"{directive} isn't supported yet: #include arrives with templates, and #plugin with plugins.", first.Span);
-            _lastOpener = null;
-            return;
-        }
         if (first.Kind == TokenKind.Identifier && tokens[1].Kind != TokenKind.Symbol)
         {
             switch (first.Text)
@@ -200,6 +200,168 @@ internal sealed class LineParser(SourceFile source)
         return _levels[^1].Owner;
     }
 
+    private const string PluginUsage =
+        "Write a plugin as #plugin github.com/owner/repo 1.2.0 sha256:…, #plugin nuget:Package.Id 1.2.0, or #plugin \"path/to/Plugin.dll\" for one on this machine. Any of them can end with 'as Name'.";
+
+    // #plugin github.com/owner/repo 1.2.0 sha256:… | #plugin nuget:Id 1.2.0 [sha256:…] | #plugin "path", then [as Name]
+    private void ParseDirective(string text, int start, int indent, int lineNumber)
+    {
+        _lastOpener = null;
+        var words = DirectiveWords(text, start, lineNumber);
+        var name = words[0];
+        if (name.Text != "#plugin")
+        {
+            _diagnostics.Error(
+                name.Text == "#include" ? "#include isn't supported yet: it arrives with templates." : $"There's no {name.Text} directive. Meeplang has #plugin, and #include is to come.",
+                name.Span);
+            return;
+        }
+        if (indent > 0)
+        {
+            _diagnostics.Error("#plugin goes at the left margin.", name.Span);
+            return;
+        }
+        while (_levels.Count > 1)
+            _levels.RemoveAt(_levels.Count - 1);
+        if (_seenModule)
+        {
+            _diagnostics.Error("#plugin goes before the pipeline's modules.", name.Span);
+            return;
+        }
+        if (words.Count < 2)
+        {
+            _diagnostics.Error(PluginUsage, name.Span);
+            return;
+        }
+
+        var span = SourceSpan.Between(name.Span, words[^1].Span);
+        string? alias = null;
+        if (words.Count > 2 && words[^2] is { Text: "as", Quoted: false })
+        {
+            alias = words[^1].Text;
+            if (words[^1].Quoted || !IsIdentifier(alias))
+            {
+                _diagnostics.Error($"A plugin's name after 'as' is a word of letters and digits, such as Transit, not {words[^1].Text}.", words[^1].Span);
+                return;
+            }
+            words.RemoveRange(words.Count - 2, 2);
+        }
+        else if (words.Count > 1 && words[^1] is { Text: "as", Quoted: false })
+        {
+            _diagnostics.Error("Expected a name for the plugin after 'as'.", words[^1].Span);
+            return;
+        }
+
+        var reference = words[1];
+        if (reference.Quoted)
+        {
+            if (words.Count > 2)
+                _diagnostics.Error("A plugin on this machine takes just its path, with no version or SHA.", words[2].Span);
+            else
+                _plugins.Add(new PluginDirective(PluginOrigin.Local, reference.Text, null, null, span) { Alias = alias });
+            return;
+        }
+
+        PluginOrigin origin;
+        string id;
+        if (reference.Text.StartsWith("github.com/", StringComparison.OrdinalIgnoreCase))
+        {
+            origin = PluginOrigin.GitHub;
+            id = reference.Text["github.com/".Length..];
+            if (id.Split('/') is not [{ Length: > 0 }, { Length: > 0 }])
+            {
+                _diagnostics.Error($"A plugin on GitHub is named as github.com/owner/repo, not {reference.Text}.", reference.Span);
+                return;
+            }
+        }
+        else if (reference.Text.StartsWith("nuget:", StringComparison.OrdinalIgnoreCase))
+        {
+            origin = PluginOrigin.NuGet;
+            id = reference.Text["nuget:".Length..];
+            if (id.Length == 0 || id.Contains('/', StringComparison.Ordinal))
+            {
+                _diagnostics.Error($"A plugin on NuGet is named as nuget:Package.Id, not {reference.Text}.", reference.Span);
+                return;
+            }
+        }
+        else
+        {
+            _diagnostics.Error(PluginUsage, reference.Span);
+            return;
+        }
+
+        if (words.Count < 3 || words[2].Text.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
+        {
+            _diagnostics.Error($"{reference.Text} needs a version, as in {reference.Text} 1.2.0.", reference.Span);
+            return;
+        }
+        var version = words[2].Text;
+        string? sha = null;
+        if (words.Count > 3)
+        {
+            var hash = words[3];
+            if (!hash.Text.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
+                || hash.Text.Length != "sha256:".Length + 64
+                || !hash.Text["sha256:".Length..].All(char.IsAsciiHexDigit))
+            {
+                _diagnostics.Error("A plugin's SHA is written as sha256: and 64 hex digits.", hash.Span);
+                return;
+            }
+            sha = hash.Text["sha256:".Length..].ToLowerInvariant();
+            if (words.Count > 4)
+            {
+                _diagnostics.Error("A #plugin line ends after the SHA, or after 'as' and a name.", words[4].Span);
+                return;
+            }
+        }
+        if (origin == PluginOrigin.GitHub && sha is null)
+        {
+            _diagnostics.Error(
+                $"{reference.Text} {version} needs the SHA-256 of its release asset, as in sha256:3f9a…, so the release can't change under you.",
+                span);
+            return;
+        }
+        _plugins.Add(new PluginDirective(origin, id, version, sha, span) { Alias = alias });
+    }
+
+    private static bool IsIdentifier(string text) =>
+        text.Length > 0 && (char.IsLetter(text[0]) || text[0] == '_') && text.All(c => char.IsLetterOrDigit(c) || c == '_');
+
+    // Splits a directive line into words at spaces, keeping quoted strings whole and stopping at a // comment.
+    private List<(string Text, SourceSpan Span, bool Quoted)> DirectiveWords(string text, int start, int lineNumber)
+    {
+        var words = new List<(string Text, SourceSpan Span, bool Quoted)>();
+        var i = start;
+        while (i < text.Length)
+        {
+            if (char.IsWhiteSpace(text[i]))
+            {
+                i++;
+                continue;
+            }
+            if (text[i] == '/' && i + 1 < text.Length && text[i + 1] == '/')
+                break;
+            var wordStart = i;
+            if (text[i] is '"' or '\'')
+            {
+                var quote = text[i];
+                var end = text.IndexOf(quote, i + 1);
+                if (end < 0)
+                {
+                    _diagnostics.Error($"This string isn't closed with a {quote}.", new SourceSpan(lineNumber, i + 1, text.Length - i));
+                    end = text.Length - 1;
+                }
+                words.Add((text[(i + 1)..end], new SourceSpan(lineNumber, wordStart + 1, end + 1 - wordStart), true));
+                i = end + 1;
+                continue;
+            }
+            while (i < text.Length && !char.IsWhiteSpace(text[i]))
+                i++;
+            words.Add((text[wordStart..i], new SourceSpan(lineNumber, wordStart + 1, i - wordStart), false));
+        }
+        return words;
+    }
+
     private void ParseDefaultsHeader(Token first, object? owner)
     {
         _lastOpener = null;
@@ -286,6 +448,16 @@ internal sealed class LineParser(SourceFile source)
         {
             module.Inflection = tokens[position + 1].Text;
             position += 2;
+            if (tokens[position].Is(".") && tokens[position + 1].Kind == TokenKind.Identifier)
+            {
+                // Plugin.Verb.Inflection
+                module = new ModuleSyntax(isFeeder, module.Inflection, SourceSpan.Between(verb.Span, tokens[position - 1].Span))
+                {
+                    Plugin = verb.Text,
+                    Inflection = tokens[position + 1].Text,
+                };
+                position += 2;
+            }
         }
 
         if (!AtArgumentBoundary(tokens, position))

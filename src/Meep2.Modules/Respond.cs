@@ -21,6 +21,10 @@ namespace Meep2.Modules;
 /// and exception text to whoever asked (Q98).
 /// </para>
 /// <para>
+/// An error Respond answers is still logged, unless a module after it handles the error, but it doesn't count towards
+/// stopping the pipeline, so bad requests can't stop a server (Q100).
+/// </para>
+/// <para>
 /// An HTTP request can only be answered once; trying again is an error. A TCP connection can be written to any
 /// number of times. Each write ends the way the connection's messages do (a line, or Listen's <c>end</c>) unless
 /// <c>end</c> says otherwise, and <c>final=true</c> closes the connection after writing.
@@ -74,12 +78,17 @@ public sealed class Respond(RespondParameters parameters) : APassthrough<Message
                 {
                     case HttpRequestLease http:
                         if (!await AnswerAsync(http, message, text, status, contentType, cancellationToken).ConfigureAwait(false))
+                        {
                             context.EmitError($"The request for {http.Url} has already been answered, so Respond couldn't answer it again.");
+                            continue;
+                        }
                         break;
                     case TcpConnectionLease tcp:
                         await tcp.WriteAsync(text ?? message.ToText(), parameters.End ?? tcp.Ending, parameters.Final, cancellationToken).ConfigureAwait(false);
                         break;
                 }
+                if (message is ErrorMessage answered)
+                    context.Answered(answered);
             }
             catch (Exception exception) when (exception is IOException or ObjectDisposedException or InvalidOperationException or System.Net.Sockets.SocketException)
             {

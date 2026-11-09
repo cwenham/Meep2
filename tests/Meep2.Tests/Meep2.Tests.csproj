@@ -12,5 +12,18 @@
     <ProjectReference Include="..\..\src\Meep2.Meeplang\Meep2.Meeplang.csproj" />
     <ProjectReference Include="..\..\src\Meep2.Modules\Meep2.Modules.csproj" />
     <ProjectReference Include="..\..\src\Meep2.Cli\Meep2.Cli.csproj" />
+    <ProjectReference Include="..\..\src\Meep2.Plugins\Meep2.Plugins.csproj" />
+    <!-- Built, but not referenced: the tests install it as a plugin. -->
+    <ProjectReference Include="..\Meep2.TestPlugin\Meep2.TestPlugin.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
+
+  <!-- Puts the test plugin beside the tests: its build output in plugins/build, and its packages in plugins/feed. -->
+  <Target Name="CopyTestPlugin" AfterTargets="Build">
+    <ItemGroup>
+      <TestPluginFiles Include="..\Meep2.TestPlugin\bin\$(Configuration)\net11.0\**\*" />
+      <TestPluginPackages Include="..\Meep2.TestPlugin\bin\$(Configuration)\*.nupkg;..\Meep2.TestPlugin.Words\bin\$(Configuration)\*.nupkg" />
+    </ItemGroup>
+    <Copy SourceFiles="@(TestPluginFiles)" DestinationFiles="@(TestPluginFiles->'$(OutDir)plugins/build/%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(TestPluginPackages)" DestinationFolder="$(OutDir)plugins/feed" SkipUnchangedFiles="true" />
+  </Target>
 </Project>

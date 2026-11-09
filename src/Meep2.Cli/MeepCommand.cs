@@ -2,6 +2,7 @@ using System.Reflection;
 using Meep2.Meeplang.Hosting;
 using Meep2.Meeplang.Loading;
 using Meep2.Modules;
+using Meep2.Plugins;
 using Meep2.Runtime;
 using Meep2.SDK.Messages;
 
@@ -12,9 +13,16 @@ public static class MeepCommand
 {
     private const string Usage = """
         Usage:
-          meep run <file.meep>    Run a pipeline until it halts, or until Ctrl+C
-          meep --version          Show the version
-          meep --help             Show this help
+          meep run [--dev] <file.meep>          Run a pipeline until it halts, or until Ctrl+C.
+                                                --dev loads unsigned plugins from this machine.
+          meep keys trust <name> <type> <key>   Trust plugins signed with someone's SSH key,
+          meep keys trust <name> <file.pub>       as their .pub file has it,
+          meep keys trust github:<user>           or as their GitHub account has it
+          meep keys list                        Show the keys you trust
+          meep sign <folder or files> [--key <private key>]
+                                                Sign a plugin's files with your SSH key, using ssh-keygen
+          meep --version                        Show the version
+          meep --help                           Show this help
         """;
 
     /// <summary>
@@ -23,9 +31,25 @@ public static class MeepCommand
     /// <paramref name="error"/>, with notices such as a branch the error policy stopped, and don't change the exit
     /// code (Q84).
     /// </summary>
-    public static async Task<int> RunAsync(string[] args, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    public static Task<int> RunAsync(string[] args, TextWriter output, TextWriter error, CancellationToken cancellationToken) =>
+        RunAsync(args, output, error, home: null, cancellationToken);
+
+    /// <summary>
+    /// Runs a command, with <paramref name="home"/> as Meep's folder instead of <c>MEEP_HOME</c> or <c>~/.meep</c>,
+    /// for tests.
+    /// </summary>
+    public static Task<int> RunAsync(string[] args, TextWriter output, TextWriter error, string? home, CancellationToken cancellationToken) =>
+        RunAsync(args, output, error, home is null ? PluginOptions.ForUser() : new PluginOptions { Home = home }, cancellationToken);
+
+    /// <summary>Runs a command with these plugin settings, for tests. <c>--dev</c> turns developer mode on.</summary>
+    public static async Task<int> RunAsync(string[] args, TextWriter output, TextWriter error, PluginOptions plugins, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(args);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(error);
+        ArgumentNullException.ThrowIfNull(plugins);
+        PluginOptions Options(bool developerMode = false) => plugins with { DeveloperMode = plugins.DeveloperMode || developerMode };
+
         switch (args)
         {
             case ["--help"] or ["-h"] or ["help"]:
@@ -35,7 +59,22 @@ public static class MeepCommand
                 await output.WriteLineAsync($"meep {Version} on .NET {Environment.Version}").ConfigureAwait(false);
                 return 0;
             case ["run", var file]:
-                return await RunFileAsync(file, output, error, cancellationToken).ConfigureAwait(false);
+                return await RunFileAsync(file, Options(), output, error, cancellationToken).ConfigureAwait(false);
+            case ["run", "--dev", var file]:
+                return await RunFileAsync(file, Options(developerMode: true), output, error, cancellationToken).ConfigureAwait(false);
+            case ["run", var file, "--dev"]:
+                return await RunFileAsync(file, Options(developerMode: true), output, error, cancellationToken).ConfigureAwait(false);
+            case ["keys", "trust", .. var key] when key.Length > 0:
+                return await KeysCommands.TrustAsync(key, Options(), output, error, cancellationToken).ConfigureAwait(false);
+            case ["keys", "trust"]:
+                await error.WriteLineAsync(KeysCommands.TrustUsage).ConfigureAwait(false);
+                return 2;
+            case ["keys", "list"]:
+                return await KeysCommands.ListAsync(Options(), output, error).ConfigureAwait(false);
+            case ["sign", .. var rest] when rest is [.., "--key", _] && rest.Length > 2:
+                return await KeysCommands.SignAsync(rest[..^2], rest[^1], Options(), output, error, cancellationToken).ConfigureAwait(false);
+            case ["sign", .. var rest] when rest.Length > 0 && !rest.Contains("--key"):
+                return await KeysCommands.SignAsync(rest, keyPath: null, Options(), output, error, cancellationToken).ConfigureAwait(false);
             case []:
                 await error.WriteLineAsync(Usage).ConfigureAwait(false);
                 return 2;
@@ -51,8 +90,8 @@ public static class MeepCommand
         ?? typeof(MeepCommand).Assembly.GetName().Version?.ToString()
         ?? "?";
 
-    // Runs the fixed bootstrap pipeline: Read the file, Parse it, Build the pipeline, Host it.
-    private static async Task<int> RunFileAsync(string file, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    // Runs the fixed bootstrap pipeline: Read the file, Parse it, Install its plugins, Build the pipeline, Host it.
+    private static async Task<int> RunFileAsync(string file, PluginOptions plugins, TextWriter output, TextWriter error, CancellationToken cancellationToken)
     {
         var exitCode = 0;
         void Log(string text)
@@ -72,7 +111,9 @@ public static class MeepCommand
 
         var hosted = new PipelineOptions
         {
-            UnhandledError = e => Log($"error from {e.EmittedBy?.ToString() ?? "the pipeline"}: {e.Error}"),
+            UnhandledError = e => Log(e.AnsweredBy is { } answerer
+                ? $"error from {e.EmittedBy?.ToString() ?? "the pipeline"}, answered by {answerer}: {e.Error}"
+                : $"error from {e.EmittedBy?.ToString() ?? "the pipeline"}: {e.Error}"),
             Notice = Log,
         };
         var bootstrap = new PipelineOptions
@@ -99,6 +140,7 @@ public static class MeepCommand
         builder.Chain(
             builder.AddSource(() => new Read(new ReadParameters { Path = file })),
             builder.Add(() => new Parse()),
+            builder.Add(() => new Install(registry, new PluginInstaller(plugins))),
             builder.Add(() => new Build(registry, hosted)),
             builder.Add(() => new Host(error)));
 

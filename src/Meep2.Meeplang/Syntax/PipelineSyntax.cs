@@ -7,12 +7,14 @@ public sealed class PipelineSyntax
         SourceFile source,
         IReadOnlyList<ArgumentSyntax> defaults,
         IReadOnlyList<ConstantSyntax> constants,
+        IReadOnlyList<PluginDirective> plugins,
         IReadOnlyList<ModuleSyntax> modules,
         IReadOnlyList<Diagnostic> diagnostics)
     {
         Source = source;
         Defaults = defaults;
         Constants = constants;
+        Plugins = plugins;
         Modules = modules;
         Diagnostics = diagnostics;
     }
@@ -25,6 +27,9 @@ public sealed class PipelineSyntax
 
     /// <summary>The <c>const</c> declarations, in order.</summary>
     public IReadOnlyList<ConstantSyntax> Constants { get; }
+
+    /// <summary>The <c>#plugin</c> lines, in order.</summary>
+    public IReadOnlyList<PluginDirective> Plugins { get; }
 
     /// <summary>The modules written at the left margin, in order, including <c>+</c> lines.</summary>
     public IReadOnlyList<ModuleSyntax> Modules { get; }
@@ -50,7 +55,7 @@ public sealed class PipelineSyntax
 
 /// <summary>
 /// One module line, with the parameter lines and modules indented under it.
-/// <c>[+] Verb[.Inflection] [value] [name=value …] [as Name] [@modifier[=value] …]</c>
+/// <c>[+] [Plugin.]Verb[.Inflection] [value] [name=value …] [as Name] [@modifier[=value] …]</c>
 /// </summary>
 public sealed class ModuleSyntax
 {
@@ -68,8 +73,15 @@ public sealed class ModuleSyntax
     /// <summary>Whether the line starts with <c>+</c>, so it feeds the next unmarked line at the same indentation.</summary>
     public bool IsFeeder { get; }
 
-    /// <summary>The verb, such as <c>Fetch</c>.</summary>
+    /// <summary>
+    /// The verb, such as <c>Fetch</c>. In <c>Transit.Departures</c>, this is <c>Transit</c> and
+    /// <see cref="Inflection"/> is <c>Departures</c>: whether that's a verb and inflection or a plugin and verb is only
+    /// known once the plugins are loaded.
+    /// </summary>
     public string Verb { get; }
+
+    /// <summary>The plugin named in <c>Plugin.Verb.Inflection</c>, the one form that can only mean a plugin (Q105).</summary>
+    public string? Plugin { get; internal set; }
 
     /// <summary>Where the verb is.</summary>
     public SourceSpan VerbSpan { get; }
@@ -102,7 +114,7 @@ public sealed class ModuleSyntax
     internal void AddChild(ModuleSyntax child) => _children.Add(child);
 
     /// <inheritdoc/>
-    public override string ToString() => $"{(IsFeeder ? "+ " : "")}{Verb}{(Name is null ? "" : $" as {Name}")} (line {VerbSpan.Line})";
+    public override string ToString() => $"{(IsFeeder ? "+ " : "")}{(Plugin is null ? "" : Plugin + ".")}{Verb}{(Name is null ? "" : $" as {Name}")} (line {VerbSpan.Line})";
 }
 
 /// <summary>A named value: a parameter (<c>timeout = 5s</c> or <c>timeout=5s</c>) or a setting under <c>defaults</c>.</summary>
@@ -122,3 +134,43 @@ public sealed record ModifierSyntax(string Name, ExpressionSyntax? Value, Source
 /// <param name="Value">Its value.</param>
 /// <param name="NameSpan">Where the name is.</param>
 public sealed record ConstantSyntax(string Name, ExpressionSyntax Value, SourceSpan NameSpan);
+
+/// <summary>Where a plugin comes from.</summary>
+public enum PluginOrigin
+{
+    /// <summary>A release on GitHub: <c>#plugin github.com/owner/repo 1.2.0 sha256:…</c>.</summary>
+    GitHub,
+
+    /// <summary>A NuGet package: <c>#plugin nuget:Meep.Transit 1.2.0</c>.</summary>
+    NuGet,
+
+    /// <summary>A plugin on this machine, by path: <c>#plugin "../Transit/bin/Debug/net11.0/Transit.dll"</c>.</summary>
+    Local,
+}
+
+/// <summary>
+/// A <c>#plugin</c> line, naming a plugin the pipeline needs:
+/// <c>#plugin github.com/owner/repo 1.2.0 sha256:…</c>, <c>#plugin nuget:Id 1.2.0 [sha256:…]</c>, or
+/// <c>#plugin "path"</c> for one on this machine, each optionally followed by <c>as Name</c>.
+/// </summary>
+/// <param name="Origin">Where it comes from.</param>
+/// <param name="Name"><c>owner/repo</c> on GitHub, the package ID on NuGet, or the path of a local plugin as written.</param>
+/// <param name="Version">The version, or null for a local plugin.</param>
+/// <param name="Sha256">The SHA-256 of the release asset or package, in lowercase hex, if given.</param>
+/// <param name="Span">Where the line is, for diagnostics.</param>
+public sealed record PluginDirective(PluginOrigin Origin, string Name, string? Version, string? Sha256, SourceSpan Span)
+{
+    /// <summary>
+    /// The name the line gives the plugin with <c>as Name</c>, for reaching its verbs as <c>Name.Verb</c> (Q105).
+    /// Without it, the plugin is named after its assembly.
+    /// </summary>
+    public string? Alias { get; init; }
+
+    /// <summary>The plugin as it's written after <c>#plugin</c>, without the SHA.</summary>
+    public override string ToString() => Origin switch
+    {
+        PluginOrigin.GitHub => $"github.com/{Name} {Version}",
+        PluginOrigin.NuGet => $"nuget:{Name} {Version}",
+        _ => Name,
+    };
+}

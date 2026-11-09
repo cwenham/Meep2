@@ -145,7 +145,52 @@ public class ServerTests
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.InternalServerError);
         await Assert.That(await response.Content.ReadAsStringAsync()).IsEqualTo("Something went wrong.");
-        await Assert.That(running.Run.Unhandled.Count).IsEqualTo(0); // Respond handled it
+        await Wait.Until(() => !running.Run.Unhandled.IsEmpty);
+        var logged = running.Run.Unhandled.Single();
+        await Assert.That(logged.AnsweredBy?.Verb).IsEqualTo("Respond");
+        await Assert.That(logged.EmittedBy?.ToString()).StartsWith("Extract");
+    }
+
+    [Test]
+    public async Task Answered_errors_are_logged_but_cant_stop_a_server()
+    {
+        var port = TestServer.FreePort();
+        await using var running = TestRun.Begin($$"""
+            Listen "http://127.0.0.1:{{port}}/"
+                Extract "$.x"
+                    Respond "x is {msg.Text}"
+            """);
+
+        // Far more than the 10% of 20 messages that stops a pipeline whose errors go unhandled.
+        for (var i = 0; i < 30; i++)
+        {
+            using var bad = await PostAsync($"http://127.0.0.1:{port}/", "this isn't JSON");
+            await Assert.That(bad.StatusCode).IsEqualTo(HttpStatusCode.InternalServerError);
+        }
+        using var good = await PostAsync($"http://127.0.0.1:{port}/", """{"x":7}""");
+
+        await Assert.That(await good.Content.ReadAsStringAsync()).IsEqualTo("x is 7");
+        await Wait.Until(() => running.Run.Unhandled.Count == 30);
+        await Assert.That(running.Run.Notices).IsEmpty();
+    }
+
+    [Test]
+    public async Task An_answered_error_that_a_later_module_handles_isnt_logged()
+    {
+        var port = TestServer.FreePort();
+        await using var running = TestRun.Begin($$"""
+            Listen "http://127.0.0.1:{{port}}/"
+                Extract "$.x"
+                    Respond
+                        Sink
+            """);
+
+        using var response = await PostAsync($"http://127.0.0.1:{port}/", "this isn't JSON");
+
+        await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.InternalServerError);
+        await Wait.Until(() => running.Run.At("Sink").Count == 1);
+        await Task.Delay(50);
+        await Assert.That(running.Run.Unhandled).IsEmpty();
     }
 
     [Test]

@@ -389,11 +389,14 @@ public sealed class Pipeline : IAsyncDisposable
 
     /// <summary>
     /// Deals with an error that nothing handled, following the error policy of the module that emitted it: logs it
-    /// unless the policy ignores it, and counts it towards stopping the pipeline.
+    /// unless the policy ignores it, and counts it towards stopping the pipeline. An error a module answered, such as
+    /// Respond, is logged but not counted (Q100).
     /// </summary>
     internal void ReportUnhandled(ErrorMessage error)
     {
-        ScopeSet.Flag(error.Tracking, MessageOutcome.UnhandledError);
+        var answered = error.AnsweredBy is not null;
+        if (!answered)
+            ScopeSet.Flag(error.Tracking, MessageOutcome.UnhandledError);
         var policy = error.EmittedBy is { } emitter && _nodesByModule.TryGetValue(emitter, out var node)
             ? node.Policy
             : Options.ErrorPolicy;
@@ -407,7 +410,8 @@ public sealed class Pipeline : IAsyncDisposable
         {
             Console.Error.WriteLine($"The pipeline's unhandled-error callback failed: {exception}");
         }
-        CountTowardsStopping(error);
+        if (!answered)
+            CountTowardsStopping(error);
     }
 
     /// <summary>Passes a notice about the pipeline itself to the notice callback.</summary>
@@ -478,7 +482,9 @@ public sealed class Pipeline : IAsyncDisposable
     }
 
     private static void WriteToStandardError(ErrorMessage error) =>
-        Console.Error.WriteLine($"Unhandled error from {error.EmittedBy?.ToString() ?? "the pipeline"}: {error.Error}");
+        Console.Error.WriteLine(error.AnsweredBy is { } answerer
+            ? $"Error from {error.EmittedBy?.ToString() ?? "the pipeline"}, answered by {answerer}: {error.Error}"
+            : $"Unhandled error from {error.EmittedBy?.ToString() ?? "the pipeline"}: {error.Error}");
 
     private static void WriteNoticeToStandardError(string notice) => Console.Error.WriteLine(notice);
 }

@@ -449,7 +449,7 @@ internal sealed class ExpressionBinder(CompileScope scope, Type? messageType, Pa
     private Expression Is(IsSyntax test)
     {
         var type = scope.MessageType(test.TypeName)
-            ?? throw new BindException($"There's no message type called {test.TypeName}.", test.Span);
+            ?? throw new BindException(scope.NoMessageType(test.TypeName), test.Span);
         Expression result = Expression.TypeIs(Box(Bind(test.Operand)), type);
         return test.Negated ? Expression.Not(result) : result;
     }

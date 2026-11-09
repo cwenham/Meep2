@@ -185,7 +185,8 @@ public sealed class TestServer : IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        _listener.Stop();
+        // Close alone: Stop then Close removes the listener twice, and .NET's managed HttpListener binds the port
+        // again to remove it the second time, which fails if another test has just taken that port.
         _listener.Close();
         return ValueTask.CompletedTask;
     }
