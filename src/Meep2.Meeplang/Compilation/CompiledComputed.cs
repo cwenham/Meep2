@@ -16,6 +16,24 @@ internal interface ICheckedComputed
 
     /// <summary>Why the expression doesn't fit messages of this type, and where, or null if it does.</summary>
     (string Problem, SourceSpan Span)? ProblemWith(Type messageType);
+
+    /// <summary>
+    /// Which messages the parameter is worked out for: null for all, true for errors only, false for the rest
+    /// (<see cref="ForErrorsAttribute"/>).
+    /// </summary>
+    bool? ForErrors { get; set; }
+}
+
+/// <summary>Checks expressions against message types, minding which messages each is worked out for.</summary>
+internal static class CheckedComputed
+{
+    /// <summary>Whether the parameter is worked out for messages of this type.</summary>
+    public static bool IsUsedFor(this ICheckedComputed computed, Type messageType) =>
+        computed.ForErrors is not { } errors || errors == typeof(ErrorMessage).IsAssignableFrom(messageType);
+
+    /// <summary>Whether messages of this type can go into the module as far as this parameter is concerned.</summary>
+    public static bool Fits(this ICheckedComputed computed, Type messageType) =>
+        !computed.IsUsedFor(messageType) || computed.AppliesTo(messageType);
 }
 
 /// <summary>
@@ -33,6 +51,8 @@ internal sealed class CompiledComputed<T>(ExpressionSyntax syntax, CompileScope 
     private volatile Compiled? _last;
 
     public string Text => text;
+
+    public bool? ForErrors { get; set; }
 
     public override T Evaluate(Message message)
     {

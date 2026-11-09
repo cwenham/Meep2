@@ -49,6 +49,14 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
         node.Pipeline.Emit(node, Module, message, defaultParent: current);
     }
 
+    public override void Emit(Message message, Lease lease)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentNullException.ThrowIfNull(lease);
+        var current = _current ?? throw NotHandling();
+        node.Pipeline.EmitLeased(node, Module, message, lease, defaultParent: current);
+    }
+
     public override Task<MessageOutcome> EmitTracked(Message message)
     {
         ArgumentNullException.ThrowIfNull(message);
@@ -95,6 +103,16 @@ internal sealed class SourceContext(SourceNode node) : ModuleContext
         if (message is not ErrorMessage)
             _emitted = true;
         node.Pipeline.Emit(node, node.Info, message, defaultParent: null);
+    }
+
+    public override void Emit(Message message, Lease lease)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentNullException.ThrowIfNull(lease);
+        ThrowIfClosed();
+        if (message is not ErrorMessage)
+            _emitted = true;
+        node.Pipeline.EmitLeased(node, node.Info, message, lease, defaultParent: null);
     }
 
     public override Task<MessageOutcome> EmitTracked(Message message)

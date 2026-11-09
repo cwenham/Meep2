@@ -51,9 +51,18 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(parameters.Timeout);
+        HttpResponseMessage? response = null;
         try
         {
-            using var response = await s_client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+            response = await s_client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+            if (parameters.Stream && response.IsSuccessStatusCode)
+            {
+                // From here the lease owns the response, and disposes it when it closes.
+                var streamed = response;
+                response = null;
+                await EmitStreamedAsync(streamed, url, context, timeout.Token).ConfigureAwait(false);
+                return;
+            }
             var body = await ReadBodyAsync(response.Content, url, timeout.Token).ConfigureAwait(false);
             var text = Decode(body, response.Content.Headers.ContentType);
             var status = (int)response.StatusCode;
@@ -92,6 +101,40 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         {
             context.EmitError(exception.Message, exception);
         }
+        finally
+        {
+            response?.Dispose();
+        }
+    }
+
+    // Emits the response with its body unread. A lease keeps the response open until the body has been read and
+    // every message made from this one has left the pipeline.
+    private static async Task EmitStreamedAsync(HttpResponseMessage response, string url, ModuleContext context, CancellationToken cancellationToken)
+    {
+        var lease = new OpenResponse(response);
+        Stream body;
+        try
+        {
+            body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            await lease.CloseAsync().ConfigureAwait(false);
+            throw;
+        }
+        context.Emit(
+            new HttpResponse
+            {
+                Url = url,
+                StatusCode = (int)response.StatusCode,
+                ReasonPhrase = response.ReasonPhrase,
+                ContentType = response.Content.Headers.ContentType?.MediaType,
+                Headers = Headers(response),
+                Body = default,
+                Text = "",
+                Streamed = new StreamedBody(body, "response body"),
+            },
+            lease);
     }
 
     private async Task<byte[]> ReadBodyAsync(HttpContent content, string url, CancellationToken cancellationToken)
@@ -170,10 +213,12 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
 [Emits(typeof(FileText))]
 public sealed class FileFetch(FetchParameters parameters) : AInflection<Message>, IChosenByParameters<FetchParameters>
 {
-    /// <summary>Takes file paths and file:// addresses.</summary>
+    /// <summary>Takes file paths and file:// addresses, and doesn't stream.</summary>
     public static string? WhyNot(FetchParameters parameters, Message message)
     {
         ArgumentNullException.ThrowIfNull(parameters);
+        if (parameters.Stream)
+            return "doesn't stream, so leave out stream=true";
         var address = parameters.Url.Evaluate(message);
         return Addresses.FilePath(address) is null ? $"needs a file path or a file:// address, not {address}" : null;
     }
@@ -248,6 +293,12 @@ public sealed record FetchParameters
         get;
         init => field = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(Timeout), "The timeout must be longer than zero.");
     } = TimeSpan.FromSeconds(100);
+
+    /// <summary>
+    /// Leaves a successful response's body unread, for one module to read, such as Respond passing it on to a client
+    /// without holding it all in memory (Q51). The connection stays open until then. Only HTTP streams.
+    /// </summary>
+    public bool Stream { get; init; }
 
     /// <summary>The largest body to read, in bytes. 16 MiB unless set.</summary>
     public long MaxSize

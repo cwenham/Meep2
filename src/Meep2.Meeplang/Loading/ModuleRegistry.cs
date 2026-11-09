@@ -174,7 +174,9 @@ public sealed class ModuleRegistration
         IsSource = typeof(ASource).IsAssignableFrom(moduleType);
         IsPassthrough = DerivesFrom(moduleType, typeof(APassthrough<>));
         InputType = IsSource ? null : FindInputType(moduleType);
-        Emits = [.. moduleType.GetCustomAttributes<EmitsAttribute>().Select(a => a.MessageType)];
+        var emits = moduleType.GetCustomAttributes<EmitsAttribute>().ToList();
+        Emits = [.. emits.Select(a => a.MessageType)];
+        _emitsWhen = [.. emits.Select(a => (a.MessageType, a.When is null ? null : SwitchFor(moduleType, parametersType, a)))];
         EmitsInput = moduleType.IsDefined(typeof(EmitsInputAttribute), inherit: false);
         WhyNot = FindWhyNot(moduleType, parametersType);
     }
@@ -206,6 +208,17 @@ public sealed class ModuleRegistration
     /// <summary>Whether it passes on the messages it receives.</summary>
     public bool EmitsInput { get; }
 
+    private readonly List<(Type Type, PropertyInfo? When)> _emitsWhen;
+
+    /// <summary>
+    /// The message types it emits with these parameters: all it declares, leaving out those whose
+    /// <see cref="EmitsAttribute.When"/> parameter is off.
+    /// </summary>
+    public IReadOnlyList<Type> EmitsWith(object? parameters) =>
+        _emitsWhen.All(e => e.When is null)
+            ? Emits
+            : [.. _emitsWhen.Where(e => e.When is null || (parameters is not null && e.When.GetValue(parameters) is true)).Select(e => e.Type)];
+
     /// <summary>Whether its parameters can rule it out (<see cref="IChosenByParameters{TParameters}"/>).</summary>
     public bool IsChosenByParameters => WhyNot is not null;
 
@@ -213,6 +226,18 @@ public sealed class ModuleRegistration
 
     /// <summary>The inflection's <see cref="IChosenByParameters{TParameters}.WhyNot"/>, taking its parameters record.</summary>
     internal Func<object, Message, string?>? WhyNot { get; }
+
+    // The bool parameter an [Emits(When = ...)] names.
+    private static PropertyInfo SwitchFor(Type moduleType, Type? parametersType, EmitsAttribute emits)
+    {
+        var property = parametersType?.GetProperty(emits.When!, BindingFlags.Public | BindingFlags.Instance);
+        if (property is null || property.PropertyType != typeof(bool))
+        {
+            throw new ArgumentException(
+                $"{moduleType.Name} emits {emits.MessageType.Name} when {emits.When} is on, but {emits.When} isn't a bool parameter of {parametersType?.Name ?? "its (missing) parameters"}.");
+        }
+        return property;
+    }
 
     private static bool DerivesFrom(Type type, Type genericBase)
     {

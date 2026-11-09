@@ -110,6 +110,28 @@ public sealed class TestRun
     /// <summary>Loads the text and, if it loads, runs it until it halts.</summary>
     public static async Task<TestRun> Start(string text, bool run = true)
     {
+        var testRun = Load(text);
+        if (run && testRun.Result.Pipeline is { } pipeline)
+        {
+            await using (pipeline)
+                await Wait.For(pipeline.RunAsync());
+        }
+        return testRun;
+    }
+
+    /// <summary>
+    /// Loads the text and starts running it, for pipelines that don't halt on their own, such as ones that listen.
+    /// Dispose the result to stop the pipeline and wait for it to finish.
+    /// </summary>
+    public static Running Begin(string text)
+    {
+        var testRun = Load(text);
+        var pipeline = testRun.Result.Pipeline ?? throw new InvalidOperationException($"The pipeline didn't load:\n{testRun.Diagnostics}");
+        return new Running(testRun, pipeline, pipeline.RunAsync());
+    }
+
+    private static TestRun Load(string text)
+    {
         var received = new ConcurrentQueue<(string, Message)>();
         var unhandled = new ConcurrentQueue<ErrorMessage>();
         var notices = new ConcurrentQueue<string>();
@@ -127,12 +149,22 @@ public sealed class TestRun
         var result = new PipelineLoader(registry).Load(
             Script.Parse(text),
             new PipelineOptions { UnhandledError = unhandled.Enqueue, Notice = notices.Enqueue });
-        if (run && result.Pipeline is { } pipeline)
-        {
-            await using (pipeline)
-                await Wait.For(pipeline.RunAsync());
-        }
         return new TestRun(result, received, unhandled, notices, output);
+    }
+
+    /// <summary>A pipeline running in the background.</summary>
+    public sealed class Running(TestRun run, Pipeline pipeline, Task running) : IAsyncDisposable
+    {
+        public TestRun Run { get; } = run;
+
+        public Pipeline Pipeline { get; } = pipeline;
+
+        public async ValueTask DisposeAsync()
+        {
+            Pipeline.Stop();
+            await Wait.For(running);
+            await Pipeline.DisposeAsync();
+        }
     }
 }
 
@@ -195,7 +227,7 @@ public sealed class TestServer : IAsyncDisposable
         }
     }
 
-    private static int FreePort()
+    public static int FreePort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();

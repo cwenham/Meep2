@@ -58,6 +58,16 @@ public class ExpressionTests
     }
 
     [Test]
+    public async Task Strings_take_escapes_for_control_characters()
+    {
+        var text = Compile<string>("""
+            "a\tb\0c\u0003d\u00e9 C:\data \uzzzz"
+            """).Evaluate(new Number(1));
+
+        await Assert.That(text).IsEqualTo("a\tb\0c\u0003d\u00e9 C:\\data \\uzzzz");
+    }
+
+    [Test]
     public async Task Logic_and_type_tests_work()
     {
         var condition = Compile<bool>("msg is Number and not (msg.Value == 3 or msg.Value > 10)");

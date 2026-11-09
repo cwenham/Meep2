@@ -236,6 +236,14 @@ internal static class TemplateParser
         for (var i = 0; i < content.Length; i++)
         {
             var c = content[i];
+            if (c == '\\' && i + 1 < content.Length && content[i + 1] == 'u' && i + 5 < content.Length
+                && ushort.TryParse(content.AsSpan(i + 2, 4), System.Globalization.NumberStyles.AllowHexSpecifier, null, out var code))
+            {
+                // \u0003: a character by its code, for control characters such as the end of a TCP message.
+                text.Append((char)code);
+                i += 5;
+                continue;
+            }
             if (c == '\\' && i + 1 < content.Length)
             {
                 var next = content[++i];
@@ -244,6 +252,7 @@ internal static class TemplateParser
                     'n' => "\n",
                     'r' => "\r",
                     't' => "\t",
+                    '0' => "\0",
                     '"' => "\"",
                     '\\' => "\\",
                     _ => "\\" + next, // not an escape: keep the backslash, as in a Windows path

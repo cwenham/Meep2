@@ -478,7 +478,7 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
         {
             options = options with
             {
-                HandlesType = type => candidates.Any(c => c.InputType.IsAssignableFrom(type) && c.Parameters.Computed.All(computed => computed.AppliesTo(type))),
+                HandlesType = type => candidates.Any(c => c.InputType.IsAssignableFrom(type) && c.Parameters.Computed.All(computed => computed.Fits(type))),
             };
         }
         return options;
@@ -615,7 +615,7 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
                             node.Outputs.Add(type); // goes past the module
                         continue;
                     }
-                    if (type != s_unknown && !taking.Any(c => c.Parameters.Computed.All(computed => computed.AppliesTo(type))))
+                    if (type != s_unknown && !taking.Any(c => c.Parameters.Computed.All(computed => computed.Fits(type))))
                     {
                         node.Outputs.Add(type); // its expressions don't fit, so it skips the module
                         continue;
@@ -636,7 +636,7 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
     {
         var registration = candidate.Registration;
         if (registration.Emits.Count > 0)
-            return registration.Emits;
+            return registration.EmitsWith(candidate.Parameters.Value);
         return registration.EmitsInput || registration.IsPassthrough ? [] : [s_unknown];
     }
 
@@ -733,9 +733,13 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
                 var takenHere = taken
                     .Where(t => node.Candidates.Any(c => c.Parameters == parameters && c.InputType.IsAssignableFrom(t)))
                     .ToList();
+                var errorsHere = node.Inputs
+                    .Where(t => t != s_unknown && IsError(t) && node.Candidates.Any(c => c.Parameters == parameters && c.InputType.IsAssignableFrom(t)))
+                    .ToList();
                 foreach (var computed in parameters.Computed)
                 {
-                    if (takenHere.Count == 0)
+                    var checkedAgainst = computed.ForErrors == true ? errorsHere : takenHere;
+                    if (checkedAgainst.Count == 0)
                     {
                         if (unknown)
                         {
@@ -745,7 +749,7 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
                         }
                         continue;
                     }
-                    if (!takenHere.Any(computed.AppliesTo) && computed.ProblemWith(takenHere[0]) is var (problem, span))
+                    if (!checkedAgainst.Any(computed.AppliesTo) && computed.ProblemWith(checkedAgainst[0]) is var (problem, span))
                         diagnostics.Error(problem, span);
                 }
             }

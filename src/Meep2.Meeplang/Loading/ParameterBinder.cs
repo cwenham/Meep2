@@ -124,7 +124,15 @@ internal sealed class ParameterBinder(CompileScope scope, Diagnostics diagnostic
     {
         try
         {
-            property.SetValue(instance, Convert(syntax, property.PropertyType, Kebab(property.Name), result));
+            var value = Convert(syntax, property.PropertyType, Kebab(property.Name), result);
+            if (value is ICheckedComputed computed)
+            {
+                // Parameters for errors, and the rest when there are some, are only worked out for their own kind.
+                computed.ForErrors = property.IsDefined(typeof(ForErrorsAttribute))
+                    ? true
+                    : instance.GetType().GetProperties().Any(p => p.IsDefined(typeof(ForErrorsAttribute))) ? false : null;
+            }
+            property.SetValue(instance, value);
         }
         catch (BindException exception)
         {

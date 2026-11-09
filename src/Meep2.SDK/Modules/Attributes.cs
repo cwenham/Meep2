@@ -39,7 +39,21 @@ public sealed class EmitsAttribute(Type messageType) : Attribute
 {
     /// <summary>The message type.</summary>
     public Type MessageType { get; } = messageType;
+
+    /// <summary>
+    /// The name of a <c>bool</c> parameter that turns these messages on, as <c>connections=true</c> does for
+    /// Listen.TCP's connection messages. Without it, the module may always emit them.
+    /// </summary>
+    public string? When { get; init; }
 }
+
+/// <summary>
+/// Marks a parameter worked out only for errors, such as Respond's <c>error-reply</c>. When a parameters record has
+/// one, its other parameters worked out per message are only for messages that aren't errors. So an expression
+/// written for one kind doesn't keep the other kind out of the module, as it otherwise would (Q69).
+/// </summary>
+[AttributeUsage(AttributeTargets.Property)]
+public sealed class ForErrorsAttribute : Attribute;
 
 /// <summary>
 /// Declares that a module passes on messages it receives, as a filter does, so its output has the same types as

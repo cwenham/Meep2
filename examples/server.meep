@@ -1,0 +1,16 @@
+// A web greeting and a TCP echo, side by side. While it runs, try:
+//   curl "http://127.0.0.1:8080/hello/?name=Ann"
+//   nc 127.0.0.1 7000      (then type a line)
+// A request that nothing answers, such as one without a name, gets a 500.
+// Ctrl+C stops it once the requests in flight have been answered.
+
+Listen "http://127.0.0.1:8080/hello/"
+    Respond "Hello, {msg.Query['name']}!"
+
+Listen "tcp://127.0.0.1:7000" connections=true
+    Where msg is TcpConnected
+        Respond "Welcome. Say something."
+    Where msg is TcpMessage
+        Respond "You said: {msg.Text}"
+    Where msg is TcpDisconnected
+        WriteLine "Connection {msg.Connection} from {msg.RemoteAddress} ended: {msg.Reason}"

@@ -92,6 +92,12 @@ public abstract record Message
     /// <summary>The runtime's tracking scopes that this message counts towards, if any.</summary>
     internal object? Tracking { get; set; }
 
+    /// <summary>
+    /// The leases this message carries: live resources, such as a request waiting for its reply, from this message
+    /// or the messages it was made from.
+    /// </summary>
+    public IEnumerable<Lease> Leases => Lease.In(Tracking);
+
     internal void SetParents(Parents parents) => _parents = parents;
 
     /// <summary>

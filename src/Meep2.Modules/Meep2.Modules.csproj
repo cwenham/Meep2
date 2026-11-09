@@ -4,6 +4,10 @@
     <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
   <ItemGroup>
+    <!-- Kestrel, for Listen's HTTP inflection (Q96). -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Meep2.SDK\Meep2.SDK.csproj" />
   </ItemGroup>
 </Project>

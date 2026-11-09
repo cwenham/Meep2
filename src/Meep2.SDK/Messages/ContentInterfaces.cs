@@ -7,6 +7,26 @@ public interface IHasText
     string Text { get; }
 }
 
+/// <summary>A message with a body of bytes, such as an HTTP request or response.</summary>
+/// <remarks>
+/// Bodies are read into memory by default, up to a size limit. A streamed body is left unread instead, so a large
+/// one can be passed on without holding it all in memory, and only one module can read it (Q51).
+/// </remarks>
+public interface IHasBody
+{
+    /// <summary>The body's media type, such as <c>application/json</c>, if it's known.</summary>
+    string? ContentType { get; }
+
+    /// <summary>Whether the body was left unread, to be read once.</summary>
+    bool IsStreamed { get; }
+
+    /// <summary>
+    /// Opens the body to read. A body in memory can be opened any number of times. A streamed body can only be
+    /// opened once, by one module; after that this throws <see cref="InvalidOperationException"/>.
+    /// </summary>
+    Stream OpenBody();
+}
+
 /// <summary>A message about a file, such as a file's contents.</summary>
 public interface IHasPath
 {

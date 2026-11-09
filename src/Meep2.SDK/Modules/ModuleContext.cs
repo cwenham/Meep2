@@ -29,6 +29,13 @@ public abstract class ModuleContext
     public abstract void Emit(Message message);
 
     /// <summary>
+    /// Emits a new message carrying a lease, such as a request waiting for its reply. The lease stays open while the
+    /// message, or any message made from it, is in the pipeline, and while anything holds it. A lease can go out
+    /// with several messages, such as each line read from one connection.
+    /// </summary>
+    public abstract void Emit(Message message, Lease lease);
+
+    /// <summary>
     /// Emits a new message and reports when it, and every message made from it, has left the pipeline.
     /// Sources use this to acknowledge or commit what they read.
     /// </summary>

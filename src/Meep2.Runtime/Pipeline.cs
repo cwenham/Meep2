@@ -245,6 +245,32 @@ public sealed class Pipeline : IAsyncDisposable
         ScopeSet.ReleaseAll(created);
     }
 
+    /// <summary>Emits a new message carrying a lease, which stays open while the message or its descendants are in flight.</summary>
+    internal void EmitLeased(Node from, ModuleInfo emitter, Message message, Lease lease, Message? defaultParent)
+    {
+        if (message.IsStamped)
+            throw new ArgumentException("Only a new message can carry a lease, not one that has been emitted before.", nameof(message));
+
+        List<TrackingScope>? created = null;
+        Stamper.Stamp(message, emitter, from, defaultParent, this, ref created);
+        if (!lease.IsAttached)
+        {
+            // A failure while the lease closes is reported as coming from the module that first emitted it.
+            var maker = from.Info;
+            lease.Attach((closing, exception) => ReportFault(maker, $"Couldn't close lease {closing.Number}", exception));
+        }
+        message.Tracking = ScopeSet.Append(message.Tracking, lease.Scope);
+        from.CountEmitted();
+        if (from is SourceNode && message is not ErrorMessage)
+            _sourceWindow?.Add(message.Id);
+        Deliver(from.Downstream, message);
+        ScopeSet.ReleaseAll(created);
+
+        // The module that made the lease held it until now, so it couldn't close before it was emitted.
+        if (lease.TakeMakersHold())
+            lease.Scope.Release();
+    }
+
     /// <summary>Emits a new message, and reports when it and every message made from it have finished.</summary>
     internal Task<MessageOutcome> EmitTracked(Node from, ModuleInfo emitter, Message message, Message? defaultParent)
     {
