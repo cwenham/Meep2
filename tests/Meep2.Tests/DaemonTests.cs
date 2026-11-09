@@ -292,7 +292,7 @@ public sealed class DaemonLab : IAsyncDisposable
             SocketPath = System.IO.Path.Combine(_socket.Path, "meep.sock"),
             Output = TextWriter.Synchronized(Output),
             Log = TextWriter.Synchronized(Log),
-            Start = [.. start.Select(file => _home.Write(file.Name, file.Text))],
+            Start = [.. start.Select(file => new DaemonStart(_home.Write(file.Name, file.Text)))],
         };
         Daemon = new MeepDaemon(Options);
         Client = new DaemonClient(Options.Socket);

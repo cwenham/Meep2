@@ -14,6 +14,7 @@
     <ProjectReference Include="..\..\src\Meep2.Cli\Meep2.Cli.csproj" />
     <ProjectReference Include="..\..\src\Meep2.Plugins\Meep2.Plugins.csproj" />
     <ProjectReference Include="..\..\src\Meep2.Daemon\Meep2.Daemon.csproj" />
+    <ProjectReference Include="..\..\src\Meep2.Git\Meep2.Git.csproj" />
     <!-- Built, but not referenced: the tests install it as a plugin. -->
     <ProjectReference Include="..\Meep2.TestPlugin\Meep2.TestPlugin.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
@@ -26,5 +27,7 @@
     </ItemGroup>
     <Copy SourceFiles="@(TestPluginFiles)" DestinationFiles="@(TestPluginFiles->'$(OutDir)plugins/build/%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
     <Copy SourceFiles="@(TestPluginPackages)" DestinationFolder="$(OutDir)plugins/feed" SkipUnchangedFiles="true" />
+    <!-- The same plugin as version 1.0.1, for reloading a plugin whose version was bumped (Q127). -->
+    <MSBuild Projects="..\Meep2.TestPlugin\Meep2.TestPlugin.csproj" Targets="Build" Properties="Configuration=$(Configuration);Version=1.0.1;GeneratePackageOnBuild=false;OutDir=$(MSBuildProjectDirectory)/$(OutDir)plugins/build-1.0.1/;IntermediateOutputPath=obj/$(Configuration)/v1.0.1/" />
   </Target>
 </Project>

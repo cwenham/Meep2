@@ -220,31 +220,35 @@ public class HostingTests
     }
 
     [Test]
-    public async Task The_settings_file_lists_pipelines_and_telemetry()
+    public async Task The_settings_file_is_meeplang_and_lists_pipelines_and_telemetry()
     {
         using var folder = new TemporaryFolder();
-        var path = folder.Write("config.json", """
-            {
-              // Started when the daemon starts.
-              "start": ["ticker.meep", "/elsewhere/feed.meep", "~/pipelines/home.meep"],
-              "otlp": "http://localhost:4318",
-              "sample": 0.25,
-            }
+        var path = folder.Write("daemon.meep", """
+            // What the daemon starts, and where it reports.
+            defaults
+                otlp = "http://localhost:4318"
+                sample = 0.25
+            const Elsewhere = "/elsewhere"
+            Start "ticker.meep" watch=true
+            Start "{Elsewhere}/feed.meep" dev=true
+            Start "~/pipelines/home.meep"
             """);
-        var typo = folder.Write("typo.json", """{ "strat": ["ticker.meep"] }""");
-        var share = folder.Write("share.json", """{ "sample": 2 }""");
+        var typo = folder.Write("typo.meep", "Strat \"ticker.meep\"\n");
+        var share = folder.Write("share.meep", "defaults\n    sample = 2\n");
+        var flag = folder.Write("flag.meep", "Start \"ticker.meep\" watch=\"yes\"\n");
 
         var config = DaemonConfig.Load(path);
 
         await Assert.That(config.Start).IsEquivalentTo([
-            Path.Combine(folder.Path, "ticker.meep"),
-            "/elsewhere/feed.meep",
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "pipelines", "home.meep")]);
+            new DaemonStart(Path.Combine(folder.Path, "ticker.meep"), Watch: true),
+            new DaemonStart("/elsewhere/feed.meep", DeveloperMode: true),
+            new DaemonStart(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "pipelines", "home.meep"))]);
         await Assert.That(config.Otlp).IsEqualTo("http://localhost:4318");
         await Assert.That(config.Sample).IsEqualTo(0.25);
-        await Assert.That(DaemonConfig.Load(Path.Combine(folder.Path, "missing.json")).Start).IsEmpty();
-        await Assert.That(() => DaemonConfig.Load(typo)).Throws<FormatException>().WithMessageContaining("there's no setting called strat");
+        await Assert.That(DaemonConfig.Load(Path.Combine(folder.Path, "missing.meep")).Start).IsEmpty();
+        await Assert.That(() => DaemonConfig.Load(typo)).Throws<FormatException>().WithMessageContaining("typo.meep(1,1): error: The daemon's settings have Start lines, not Strat");
         await Assert.That(() => DaemonConfig.Load(share)).Throws<FormatException>().WithMessageContaining("at most 1");
+        await Assert.That(() => DaemonConfig.Load(flag)).Throws<FormatException>().WithMessageContaining("watch is true or false.");
     }
 
     [Test]

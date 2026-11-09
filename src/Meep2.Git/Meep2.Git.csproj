@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Git, through LibGit2Sharp: committing edits to a running pipeline's file to a branch without touching the
+    checkout (Q32). HTTPS remotes only, when remotes come (Q66).
+  -->
+  <ItemGroup>
+    <PackageReference Include="LibGit2Sharp" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Meep2.Tests" />
+  </ItemGroup>
+</Project>

@@ -6,7 +6,11 @@ namespace Meep2.Runtime.Internal;
 internal sealed class SourceNode : Node
 {
     private readonly SourceContext _context;
+    private readonly TaskCompletionSource _ended = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly Lock _changing = new();
     private ASource? _module;
+    private CancellationTokenSource? _instance;
+    private NodeSpec? _restartWith;
     private int _finished;
 
     public SourceNode(Pipeline pipeline, NodeSpec spec)
@@ -22,6 +26,47 @@ internal sealed class SourceNode : Node
     public override ValueTask DisposeModuleAsync() =>
         DisposeInstanceAsync(_module, $"{Info} couldn't be disposed");
 
+    /// <summary>Takes the source out of the running pipeline: it's stopped, and disposed once it has.</summary>
+    public async Task RemoveAsync()
+    {
+        lock (_changing)
+        {
+            IsRemoved = true;
+            _restartWith = null;
+            _instance?.Cancel();
+        }
+        await _ended.Task.ConfigureAwait(false);
+        CloseTaps();
+        await DisposeModuleAsync().ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    /// <remarks>
+    /// A source that takes new parameters is asked while it runs. One that doesn't is stopped, and started again
+    /// with them.
+    /// </remarks>
+    public override Task<bool> UpdateAsync(NodeSpec next, bool reconfigure)
+    {
+        lock (_changing)
+        {
+            var old = Spec.Inflections[0];
+            var running = _module;
+            if (!reconfigure || (running is not null && TryReconfigure(running, old, next.Inflections[0])))
+            {
+                Spec = next;
+                return Task.FromResult(true);
+            }
+            if (_finished != 0 || running is null)
+            {
+                Spec = next; // it isn't running, so the new parameters wait for a restart that won't come
+                return Task.FromResult(false);
+            }
+            _restartWith = next;
+            _instance?.Cancel();
+            return Task.FromResult(false);
+        }
+    }
+
     private async Task RunAsync(CancellationToken cancellationToken)
     {
         var failuresInARow = 0;
@@ -29,14 +74,25 @@ internal sealed class SourceNode : Node
         {
             while (true)
             {
+                CancellationToken token;
+                lock (_changing)
+                {
+                    if (IsRemoved)
+                        return;
+                    _instance?.Dispose();
+                    _instance = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    token = _instance.Token;
+                }
                 try
                 {
-                    await _module!.Run(_context, cancellationToken).ConfigureAwait(false);
-                    return;
+                    await _module!.Run(_context, token).ConfigureAwait(false);
+                    if (!token.IsCancellationRequested || cancellationToken.IsCancellationRequested || IsRemoved)
+                        return; // it finished, or stopped as asked
                 }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
-                    return; // stopped, as asked
+                    if (cancellationToken.IsCancellationRequested || IsRemoved)
+                        return; // stopped, as asked
                 }
                 catch (Exception exception)
                 {
@@ -54,13 +110,45 @@ internal sealed class SourceNode : Node
                     }
                     if (!await RestartAsync(restart.Delay, cancellationToken).ConfigureAwait(false))
                         return;
+                    continue;
                 }
+
+                // A change stopped this instance to give the source new parameters.
+                if (!await SwapAsync().ConfigureAwait(false))
+                    return;
             }
         }
         finally
         {
             Finish();
         }
+    }
+
+    // A change stopped the running instance to give it new parameters: replace it with one made with them.
+    private async Task<bool> SwapAsync()
+    {
+        NodeSpec next;
+        lock (_changing)
+        {
+            if (_restartWith is null)
+                return false;
+            next = _restartWith;
+            _restartWith = null;
+        }
+        var old = _module;
+        try
+        {
+            _module = (ASource)CreateInstance(next.Inflections[0]);
+            Spec = next;
+        }
+        catch (Exception exception)
+        {
+            // The old instance can't be resumed once stopped, so the source ends.
+            Pipeline.ReportFault(next.Info, $"{next.Info} couldn't be made with its new parameters, so it has stopped", exception);
+            return false;
+        }
+        await DisposeInstanceAsync(old, $"{Info} couldn't be disposed after its parameters changed").ConfigureAwait(false);
+        return true;
     }
 
     // Waits, then replaces the source with a fresh one. Returns false if the pipeline stopped meanwhile, or the
@@ -94,7 +182,13 @@ internal sealed class SourceNode : Node
     {
         if (Interlocked.Exchange(ref _finished, 1) != 0)
             return;
+        lock (_changing)
+        {
+            _instance?.Dispose();
+            _instance = null;
+        }
         _context.Close();
+        _ended.TrySetResult();
         Pipeline.ReleaseHold();
     }
 }

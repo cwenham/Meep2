@@ -12,6 +12,7 @@
     <ProjectReference Include="..\Meep2.Meeplang\Meep2.Meeplang.csproj" />
     <ProjectReference Include="..\Meep2.Modules\Meep2.Modules.csproj" />
     <ProjectReference Include="..\Meep2.Plugins\Meep2.Plugins.csproj" />
+    <ProjectReference Include="..\Meep2.Git\Meep2.Git.csproj" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Meep2.Tests" />

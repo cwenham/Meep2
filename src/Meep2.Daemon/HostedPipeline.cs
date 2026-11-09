@@ -1,5 +1,7 @@
+using Meep2.Meeplang.Editing;
 using Meep2.Meeplang.Hosting;
 using Meep2.Meeplang.Loading;
+using Meep2.Plugins;
 using Meep2.Runtime;
 
 namespace Meep2.Daemon;
@@ -17,12 +19,39 @@ public sealed class HostedPipeline
     private string? _failure;
     private bool _stopRequested;
     private PipelineDetail? _final;
+    private readonly SemaphoreSlim _reloading = new(1, 1);
+    private PipelineWatcher? _watcher;
+    private readonly List<(string Edit, string? Commit)> _unsaved = [];
 
-    internal HostedPipeline(string name, string path)
+    internal HostedPipeline(string name, string path, ModuleRegistry registry, PluginOptions plugins)
     {
         Name = name;
         Path = path;
+        BaseRegistry = registry;
+        Plugins = plugins;
     }
+
+    /// <summary>The pipeline as one that can be changed while it runs, once it's built (goal 4).</summary>
+    public LivePipeline? Live
+    {
+        get
+        {
+            lock (_lock)
+                return _built?.Live;
+        }
+    }
+
+    /// <summary>Whether edits made through the API make its text differ from its file as last loaded.</summary>
+    public bool Edited { get; internal set; }
+
+    /// <summary>Whether it reloads whenever its file changes.</summary>
+    public bool Watching => _watcher is not null;
+
+    /// <summary>The verbs it has without its plugins.</summary>
+    internal ModuleRegistry BaseRegistry { get; }
+
+    /// <summary>Where its plugins come from.</summary>
+    internal PluginOptions Plugins { get; }
 
     /// <summary>Its name: the file's name without <c>.meep</c>.</summary>
     public string Name { get; }
@@ -163,9 +192,101 @@ public sealed class HostedPipeline
         Bootstrap?.Stop(); // also ends a wait to restart
     }
 
+    /// <summary>
+    /// Reads its file again and changes the running pipeline to match, plugins included (Q107). Unless
+    /// <paramref name="force"/> is set, it refuses if that would undo edits made through the API that aren't in the
+    /// file yet (Q120).
+    /// </summary>
+    /// <exception cref="DaemonException">Reloading would undo edits, so it says which and how to go ahead.</exception>
+    internal async Task<LiveChange> ReloadAsync(bool force, CancellationToken cancellationToken)
+    {
+        var live = Live ?? throw new DaemonException(409, $"{Name} isn't running yet, so it can't be reloaded.");
+        await _reloading.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!force && WouldUndoEdits() is { } warning)
+                throw new DaemonException(409, warning);
+            var change = await Reloading.ReloadAsync(live, Path, BaseRegistry, Plugins, cancellationToken).ConfigureAwait(false);
+            if (change.Applied)
+            {
+                Edited = false;
+                lock (_lock)
+                    _unsaved.Clear();
+            }
+            return change;
+        }
+        finally
+        {
+            _reloading.Release();
+        }
+    }
+
+    /// <summary>Records edits made through the API: committed to a branch, or not saved at all, so not in the file yet.</summary>
+    internal void EditedApart(IEnumerable<string> edits, string? commit)
+    {
+        Edited = true;
+        lock (_lock)
+            _unsaved.AddRange(edits.Select(edit => (edit, commit)));
+    }
+
+    /// <summary>Records edits made through the API and written to the file, which a reload then keeps (Q124).</summary>
+    internal void EditedInFile()
+    {
+        Edited = false;
+        lock (_lock)
+            _unsaved.Clear();
+    }
+
+    // What a reload from the file would undo, as a warning, or null if nothing: edits made through the API that went
+    // to a branch that hasn't been merged into the one checked out, or weren't saved.
+    private string? WouldUndoEdits()
+    {
+        List<(string Edit, string? Commit)> unsaved;
+        lock (_lock)
+            unsaved = [.. _unsaved];
+        if (unsaved.Count == 0)
+            return null;
+        var commits = unsaved.Select(u => u.Commit).Distinct().ToList();
+        if (commits.All(commit => commit is not null && Meep2.Git.PendingBranch.IsMerged(Path, commit)))
+        {
+            lock (_lock)
+                _unsaved.Clear();
+            return null; // they've been merged, so the file has them
+        }
+        var where = commits.Where(c => c is not null).Select(c => c![..7]).ToList();
+        var saved = where.Count > 0 ? $" They're committed as {string.Join(", ", where)}; merge them into your branch to keep them." : " They weren't saved anywhere.";
+        return $"Reloading {Name} from its file would undo edits made through meep edit that aren't in the file: {string.Join("; ", unsaved.Select(u => u.Edit))}.{saved} To reload anyway: meep reload {Name} --force";
+    }
+
+    /// <summary>Reloads the pipeline whenever its file changes, once the changes settle, telling <paramref name="log"/> what happened.</summary>
+    internal void Watch(Action<string> log) => _watcher = new PipelineWatcher(Path, Name, token => ReloadAsync(force: false, token), log);
+
+    /// <summary>A change in a sentence: what was added, removed, reconfigured and replaced.</summary>
+    internal static string Summary(PipelineChangeReport report)
+    {
+        var parts = new List<string>();
+        void Part(string what, IReadOnlyList<Meep2.SDK.Modules.ModuleInfo> modules)
+        {
+            if (modules.Count > 0)
+                parts.Add($"{what} {string.Join(", ", modules)}");
+        }
+        Part("added", report.Added);
+        Part("removed", report.Removed);
+        Part("reconfigured", report.Reconfigured);
+        Part("replaced", report.Replaced);
+        return parts.Count == 0 ? "nothing changed" : string.Join("; ", parts);
+    }
+
+    private void StopWatching()
+    {
+        _watcher?.Dispose();
+        _watcher = null;
+    }
+
     /// <summary>Records how it ended, with its final counts.</summary>
     internal void End()
     {
+        StopWatching();
         var final = DetailNow();
         lock (_lock)
         {

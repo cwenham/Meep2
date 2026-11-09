@@ -93,10 +93,11 @@ public sealed class PluginLab : IDisposable
 
         var output = new StringWriter();
         var warnings = new StringWriter();
+        var shared = TextWriter.Synchronized(output); // one lock for every WriteLine, so lines from parallel branches don't mix
         var errors = new ConcurrentQueue<string>();
         var registry = new ModuleRegistry()
             .AddAssembly(CoreModules.Assembly)
-            .Add<WriteLine, WriteLineParameters>("WriteLine", p => new WriteLine(p, TextWriter.Synchronized(output)));
+            .Add<WriteLine, WriteLineParameters>("WriteLine", p => new WriteLine(p, shared));
         var hosted = new PipelineOptions { UnhandledError = e => errors.Enqueue(e.Error) };
         var bootstrap = new PipelineOptions
         {

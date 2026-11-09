@@ -33,12 +33,15 @@ public sealed class Pipeline : IAsyncDisposable
     // The pipelines running in this process, for OpenTelemetry's metrics.
     private static readonly ConcurrentDictionary<Pipeline, byte> s_running = new();
 
-    private readonly Node[] _nodes;
-    private readonly InflectionNode[] _inflections;
-    private readonly SourceNode[] _sources;
-    private readonly Dictionary<ModuleInfo, Node> _nodesByModule;
-    private readonly HashSet<ModuleInfo> _sourceInfos;
-    private readonly SourceWindow? _sourceWindow;
+    // The modules and how they're connected. A change to the running pipeline replaces these whole (goal 4).
+    private volatile Node[] _nodes = [];
+    private volatile InflectionNode[] _inflections = [];
+    private volatile SourceNode[] _sources = [];
+    private volatile Dictionary<ModuleInfo, Node> _nodesByModule = [];
+    private volatile HashSet<ModuleInfo> _sourceInfos = [];
+    private volatile SourceWindow? _sourceWindow;
+    private volatile IReadOnlyList<ModuleInfo> _modules = [];
+    private readonly SemaphoreSlim _changing = new(1, 1);
     private readonly InFlightCounter _inFlight = new();
     private readonly CancellationTokenSource _stopSources = new();
     private readonly CancellationTokenSource _abort = new();
@@ -59,37 +62,59 @@ public sealed class Pipeline : IAsyncDisposable
         AbortToken = _abort.Token;
         StoppingToken = _stopSources.Token;
 
-        _nodesByModule = new Dictionary<ModuleInfo, Node>(specs.Length);
         var nodes = new Node[specs.Length];
         for (var i = 0; i < specs.Length; i++)
-        {
-            var spec = specs[i];
-            nodes[i] = spec.IsSource
-                ? new SourceNode(this, spec)
-                : new InflectionNode(this, spec, spec.Options.BufferSize ?? options.BufferSize);
-            _nodesByModule.Add(spec.Info, nodes[i]);
-            foreach (var inflection in spec.Inflections)
-                _nodesByModule.TryAdd(inflection.Info, nodes[i]);
-        }
-        _sourceInfos = [.. specs.Where(spec => spec.IsSource).Select(spec => spec.Info)];
-        if (options.ErrorPolicy.StopPipelineAtPercent is not null)
-            _sourceWindow = new SourceWindow(ErrorPolicy.StopPipelineWindow);
+            nodes[i] = NewNode(specs[i], options);
+        Wire(nodes, specs, connections);
+        Install(nodes, specs, options, kept: null);
+    }
 
+    private Node NewNode(NodeSpec spec, PipelineOptions options) =>
+        spec.IsSource ? new SourceNode(this, spec) : new InflectionNode(this, spec, spec.Options.BufferSize ?? options.BufferSize);
+
+    // Points each module at the ones it feeds. Specs are what the modules are to be: a kept module takes its new
+    // spec a little later, between messages.
+    private static void Wire(Node[] nodes, NodeSpec[] specs, (ModuleInfo From, ModuleInfo To)[] connections)
+    {
+        var byInfo = new Dictionary<ModuleInfo, Node>();
+        for (var i = 0; i < nodes.Length; i++)
+            byInfo[specs[i].Info] = nodes[i];
         var downstream = new Dictionary<Node, List<InflectionNode>>();
         foreach (var (from, to) in connections)
         {
-            var upstream = _nodesByModule[from];
+            var upstream = byInfo[from];
             if (!downstream.TryGetValue(upstream, out var targets))
                 downstream[upstream] = targets = [];
-            targets.Add((InflectionNode)_nodesByModule[to]);
+            targets.Add((InflectionNode)byInfo[to]);
         }
-        foreach (var (node, targets) in downstream)
-            node.Downstream = [.. targets];
+        foreach (var node in nodes)
+            node.Downstream = downstream.TryGetValue(node, out var targets) ? [.. targets] : [];
+    }
 
-        _nodes = nodes;
+    // Makes these the pipeline's modules. Kept modules can still be found by their old identities, which messages
+    // they emitted before the change record.
+    private void Install(Node[] nodes, NodeSpec[] specs, PipelineOptions options, IEnumerable<(ModuleInfo Old, Node Node)>? kept)
+    {
+        var byModule = new Dictionary<ModuleInfo, Node>(nodes.Length);
+        foreach (var (old, node) in kept ?? [])
+        {
+            byModule[old] = node;
+            foreach (var inflection in node.Spec.Inflections)
+                byModule.TryAdd(inflection.Info, node);
+        }
+        for (var i = 0; i < nodes.Length; i++)
+        {
+            byModule[specs[i].Info] = nodes[i];
+            foreach (var inflection in specs[i].Inflections)
+                byModule[inflection.Info] = nodes[i];
+        }
+        _nodesByModule = byModule;
+        _sourceInfos = [.. specs.Where(spec => spec.IsSource).Select(spec => spec.Info)];
+        _sourceWindow = options.ErrorPolicy.StopPipelineAtPercent is null ? null : _sourceWindow ?? new SourceWindow(ErrorPolicy.StopPipelineWindow);
         _inflections = [.. nodes.OfType<InflectionNode>()];
         _sources = [.. nodes.OfType<SourceNode>()];
-        Modules = [.. nodes.Select(node => node.Info)];
+        _modules = [.. specs.Select(spec => spec.Info)];
+        _nodes = nodes;
     }
 
     /// <summary>The pipelines running in this process now.</summary>
@@ -97,8 +122,8 @@ public sealed class Pipeline : IAsyncDisposable
 
     internal IReadOnlyList<Node> Nodes => _nodes;
 
-    /// <summary>The pipeline's modules, in the order they were added.</summary>
-    public IReadOnlyList<ModuleInfo> Modules { get; }
+    /// <summary>The pipeline's modules, in the order they were added, or as the last change to it has them.</summary>
+    public IReadOnlyList<ModuleInfo> Modules => _modules;
 
     /// <summary>Whether the pipeline has started and hasn't finished.</summary>
     public bool IsRunning => Volatile.Read(ref _state) == Running;
@@ -109,8 +134,8 @@ public sealed class Pipeline : IAsyncDisposable
     /// <summary>The pipeline's name.</summary>
     public string Name { get; }
 
-    /// <summary>Settings for the whole pipeline.</summary>
-    public PipelineOptions Options { get; }
+    /// <summary>Settings for the whole pipeline. A change to the running pipeline can replace them.</summary>
+    public PipelineOptions Options { get; private set; }
 
     /// <summary>Cancelled when the pipeline gives up waiting for messages to finish. Modules receive it.</summary>
     internal CancellationToken AbortToken { get; }
@@ -179,6 +204,158 @@ public sealed class Pipeline : IAsyncDisposable
 
     /// <summary>What injected messages record as emitting them.</summary>
     public static ModuleInfo Injector { get; } = new(0, "Inject", "Inject");
+
+    /// <summary>
+    /// Changes the running pipeline into the one <paramref name="change"/> describes, without stopping it (goal 4).
+    /// Modules it keeps carry on with their buffers, counts and taps. Those whose parameters changed are offered the
+    /// new ones between two messages, and keep their state if they take them
+    /// (<see cref="IReconfigurable{TParameters}"/>); otherwise they're replaced by new instances. New modules start,
+    /// and modules left out stop taking messages, finish those they have, and are disposed.
+    /// </summary>
+    /// <remarks>
+    /// A kept module is replaced as a whole, with fresh counts, if its inflections or its buffer's size changed. A
+    /// message passing between two modules at the moment their connection changes may be abandoned.
+    /// </remarks>
+    /// <exception cref="InvalidOperationException">The pipeline isn't running, or a new module couldn't be made. Nothing was changed.</exception>
+    /// <exception cref="ArgumentException">The change keeps a module as something it can't be, such as a source as a module that handles messages.</exception>
+    public async Task<PipelineChangeReport> ApplyAsync(PipelineChange change, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+        await _changing.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (!IsRunning || Volatile.Read(ref _stopping) != 0)
+                throw new InvalidOperationException($"{Name} isn't running, so it can't be changed.");
+            _inFlight.Add(); // it can't halt while it changes
+            try
+            {
+                return await ApplyCoreAsync(change).ConfigureAwait(false);
+            }
+            finally
+            {
+                ReleaseHold();
+            }
+        }
+        finally
+        {
+            _changing.Release();
+        }
+    }
+
+    private async Task<PipelineChangeReport> ApplyCoreAsync(PipelineChange change)
+    {
+        var (specs, connections, options) = (change.Next.Specs, change.Next.Connections, change.Next.Options);
+        var before = _nodesByModule;
+        var nodes = new Node[specs.Length];
+        var created = new List<Node>();
+        var updates = new List<(Node Node, ModuleInfo Old, NodeSpec Spec, bool Reconfigure)>();
+        var kept = new HashSet<Node>();
+        var added = new List<ModuleInfo>();
+        var replaced = new List<ModuleInfo>();
+        var replacedOld = new HashSet<Node>();
+        for (var i = 0; i < specs.Length; i++)
+        {
+            var spec = specs[i];
+            Node? node = null;
+            if (change.KeptAs(spec.Info) is var (running, reconfigure) && before.TryGetValue(running, out var old) && _nodes.Contains(old))
+            {
+                if (old.Spec.IsSource != spec.IsSource)
+                    throw new ArgumentException($"{running} can't become {spec.Info}: only one of them is a source.", nameof(change));
+                if (!kept.Add(old))
+                    throw new ArgumentException($"{running} is kept as more than one module.", nameof(change));
+                if (SameShape(old, spec, options))
+                {
+                    node = old;
+                    updates.Add((old, running, spec, reconfigure));
+                }
+                else
+                {
+                    kept.Remove(old); // it goes, and a new one takes its place
+                    replaced.Add(spec.Info);
+                    replacedOld.Add(old);
+                }
+            }
+            if (node is null)
+            {
+                node = NewNode(spec, options);
+                created.Add(node);
+                if (!replaced.Contains(spec.Info))
+                    added.Add(spec.Info);
+            }
+            nodes[i] = node;
+        }
+
+        // The new modules' instances are made first, so a factory that throws leaves the pipeline as it was.
+        try
+        {
+            foreach (var node in created)
+                node.CreateModule();
+        }
+        catch
+        {
+            foreach (var node in created)
+                await node.DisposeModuleAsync().ConfigureAwait(false);
+            throw;
+        }
+        var removed = _nodes.Where(node => !kept.Contains(node)).ToList();
+
+        // New modules are ready before anything feeds them, then everything is connected as the change says.
+        foreach (var node in created.OfType<InflectionNode>())
+            _ = node.Start();
+        var removedLinks = removed.ToDictionary(node => node, node => node.Downstream);
+        Wire(nodes, specs, connections);
+        foreach (var (node, links) in removedLinks)
+            node.Downstream = [.. links.Where(target => !kept.Contains(target) || nodes.Contains(target))]; // they finish where they were going
+        Options = options;
+        Install(nodes, specs, options, updates.Select(u => (u.Old, u.Node)));
+
+        // Kept modules take their new specs, between messages.
+        var keptState = await Task.WhenAll(updates.Select(u => u.Node.UpdateAsync(u.Spec, u.Reconfigure))).ConfigureAwait(false);
+        var unchanged = new List<ModuleInfo>();
+        var reconfigured = new List<ModuleInfo>();
+        for (var i = 0; i < updates.Count; i++)
+        {
+            var info = updates[i].Spec.Info;
+            if (!updates[i].Reconfigure)
+                unchanged.Add(info);
+            else if (keptState[i])
+                reconfigured.Add(info);
+            else
+                replaced.Add(info);
+        }
+
+        foreach (var source in created.OfType<SourceNode>())
+        {
+            _inFlight.Add(); // held until the source finishes
+            source.Start(_stopSources.Token);
+        }
+        await RemoveAsync(removed).ConfigureAwait(false);
+        return new PipelineChangeReport(added, [.. removed.Where(node => !replacedOld.Contains(node)).Select(node => node.Spec.Info)], reconfigured, replaced, unchanged);
+    }
+
+    // Whether a kept module can carry on in place: the same inflections, and the same size of buffer.
+    private bool SameShape(Node old, NodeSpec spec, PipelineOptions options)
+    {
+        if (!old.Spec.Inflections.Select(i => i.Info.Inflection).SequenceEqual(spec.Inflections.Select(i => i.Info.Inflection)))
+            return false;
+        return old is not InflectionNode inflection || inflection.Capacity == (spec.Options.BufferSize ?? options.BufferSize);
+    }
+
+    // Takes modules out: sources first, then the rest, each after the removed modules that feed it, so what's in
+    // their buffers can finish on its way.
+    private static async Task RemoveAsync(List<Node> removed)
+    {
+        await Task.WhenAll(removed.OfType<SourceNode>().Select(source => source.RemoveAsync())).ConfigureAwait(false);
+        var waiting = removed.OfType<InflectionNode>().ToHashSet();
+        while (waiting.Count > 0)
+        {
+            var ready = waiting.Where(node => !waiting.Any(other => other != node && other.Downstream.Contains(node))).ToList();
+            if (ready.Count == 0)
+                ready = [.. waiting]; // they feed each other round in a loop
+            await Task.WhenAll(ready.Select(node => node.RemoveAsync())).ConfigureAwait(false);
+            waiting.ExceptWith(ready);
+        }
+    }
 
     private Node NodeOf(ModuleInfo module)
     {
@@ -260,9 +437,8 @@ public sealed class Pipeline : IAsyncDisposable
 
             // Held while starting up, so the pipeline can't halt before every source is running.
             _inFlight.Add();
-            var loops = new Task[_inflections.Length];
-            for (var i = 0; i < _inflections.Length; i++)
-                loops[i] = _inflections[i].Start();
+            foreach (var node in _inflections)
+                _ = node.Start();
             foreach (var source in _sources)
             {
                 _inFlight.Add(); // held until the source finishes
@@ -276,7 +452,10 @@ public sealed class Pipeline : IAsyncDisposable
                 await _halted.Task.ConfigureAwait(false);
             }
 
-            await Task.WhenAll(loops).ConfigureAwait(false);
+            // A change being applied as the pipeline halted finishes first.
+            await _changing.WaitAsync().ConfigureAwait(false);
+            _changing.Release();
+            await Task.WhenAll(_inflections.Select(node => node.Loop)).ConfigureAwait(false);
         }
         finally
         {
@@ -329,7 +508,11 @@ public sealed class Pipeline : IAsyncDisposable
     }
 
     /// <summary>Emits a new message carrying a lease, which stays open while the message or its descendants are in flight.</summary>
-    internal void EmitLeased(Node from, ModuleInfo emitter, Message message, Lease lease, Message? defaultParent)
+    /// <param name="holdUntilDone">
+    /// Where a module that handles messages keeps the leases it made, so it holds them until it has finished handling
+    /// its message (Q123). A source, which runs for as long as it likes, lets go of its hold at the lease's first emit.
+    /// </param>
+    internal void EmitLeased(Node from, ModuleInfo emitter, Message message, Lease lease, Message? defaultParent, List<Lease>? holdUntilDone = null)
     {
         if (message.IsStamped)
             throw new ArgumentException("Only a new message can carry a lease, not one that has been emitted before.", nameof(message));
@@ -352,9 +535,15 @@ public sealed class Pipeline : IAsyncDisposable
         Deliver(from.Downstream, message);
         ScopeSet.ReleaseAll(created);
 
-        // The module that made the lease held it until now, so it couldn't close before it was emitted.
+        // The module that made the lease held it until now, so it couldn't close before it was emitted. One that
+        // handles messages keeps holding it until it has finished with the message it's on.
         if (lease.TakeMakersHold())
-            lease.Scope.Release();
+        {
+            if (holdUntilDone is not null)
+                holdUntilDone.Add(lease);
+            else
+                lease.Scope.Release();
+        }
     }
 
     /// <summary>Emits a new message, and reports when it and every message made from it have finished.</summary>

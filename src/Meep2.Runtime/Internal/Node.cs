@@ -8,7 +8,17 @@ namespace Meep2.Runtime.Internal;
 /// <param name="Info">The inflection's identity, recorded on the messages it emits.</param>
 /// <param name="Create">Makes the inflection.</param>
 /// <param name="WhyNot">For each message, why the inflection can't take it, or null if it can. Null takes them all.</param>
-internal sealed record InflectionSpec(ModuleInfo Info, Func<AModule> Create, Func<Message, string?>? WhyNot);
+internal sealed record InflectionSpec(ModuleInfo Info, Func<AModule> Create, Func<Message, string?>? WhyNot)
+{
+    /// <summary>The parameters it's made with, if it has a record of them, for <see cref="Reconfigure"/>.</summary>
+    public object? Parameters { get; init; }
+
+    /// <summary>
+    /// Offers a running instance new parameters: the instance, its old parameters and the new ones. True if it took
+    /// them (<see cref="IReconfigurable{TParameters}"/>). Null if the module can't take new parameters.
+    /// </summary>
+    public Func<AModule, object?, object?, bool>? Reconfigure { get; init; }
+}
 
 /// <summary>How a module was added to a pipeline.</summary>
 /// <param name="Info">The module's identity.</param>
@@ -32,17 +42,31 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
     private readonly Lock _tapping = new();
     private volatile DebugTap[]? _taps;
 
+    private NodeSpec _spec = spec;
+
     public Pipeline Pipeline { get; } = pipeline;
 
     /// <summary>The message the module is handling now and the span tracing it, if tracing is on (OpenTelemetry).</summary>
     public (Message Message, System.Diagnostics.Activity Span)? Handling { get; set; }
 
-    public NodeSpec Spec { get; } = spec;
+    /// <summary>How the module was added. A change to the running pipeline can replace it (goal 4).</summary>
+    public NodeSpec Spec
+    {
+        get => _spec;
+        protected set
+        {
+            _spec = value;
+            Label = value.Info.ToString();
+        }
+    }
 
     public ModuleInfo Info => Spec.Info;
 
     /// <summary>The module as people see it, as in "Fetch #2", kept so metrics don't make it again for each message.</summary>
-    public string Label { get; } = spec.Info.ToString();
+    public string Label { get; private set; } = spec.Info.ToString();
+
+    /// <summary>Whether a change to the running pipeline has taken the module out.</summary>
+    public bool IsRemoved { get; protected set; }
 
     public NodeOptions Options => Spec.Options;
 
@@ -57,6 +81,30 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
 
     /// <summary>Disposes the module's instances when the pipeline finishes.</summary>
     public abstract ValueTask DisposeModuleAsync();
+
+    /// <summary>
+    /// Takes a new spec for the same module, as when its line was edited: new options, identity and factories, and if
+    /// <paramref name="reconfigure"/> is set, new parameters for its running instances, which keep their state if they
+    /// take them (<see cref="IReconfigurable{TParameters}"/>) and are replaced otherwise.
+    /// </summary>
+    /// <returns>Whether every instance kept its state.</returns>
+    public abstract Task<bool> UpdateAsync(NodeSpec next, bool reconfigure);
+
+    /// <summary>Offers an instance new parameters, returning whether it took them. A hook that throws counts as no.</summary>
+    protected bool TryReconfigure(AModule module, InflectionSpec old, InflectionSpec next)
+    {
+        if (next.Reconfigure is not { } reconfigure)
+            return false;
+        try
+        {
+            return reconfigure(module, old.Parameters, next.Parameters);
+        }
+        catch (Exception exception)
+        {
+            Pipeline.ReportFault(next.Info, $"{Describe(next.Info)} couldn't take its new parameters, so it's replaced", exception);
+            return false;
+        }
+    }
 
     public ModuleStats GetStats() => new(
         Interlocked.Read(ref _received),

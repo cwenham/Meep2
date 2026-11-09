@@ -341,6 +341,7 @@ public sealed class ModuleRegistration
         _emitsWhen = [.. emits.Select(a => (a.MessageType, a.When is null ? null : SwitchFor(moduleType, parametersType, a)))];
         EmitsInput = moduleType.IsDefined(typeof(EmitsInputAttribute), inherit: false);
         WhyNot = FindWhyNot(moduleType, parametersType);
+        Reconfigure = FindReconfigure(moduleType, parametersType);
     }
 
     /// <summary>The verb's name.</summary>
@@ -392,6 +393,12 @@ public sealed class ModuleRegistration
     /// <summary>The inflection's <see cref="IChosenByParameters{TParameters}.WhyNot"/>, taking its parameters record.</summary>
     internal Func<object, Message, string?>? WhyNot { get; }
 
+    /// <summary>
+    /// Offers a running instance new parameters (<see cref="IReconfigurable{TParameters}"/>), or null if the class
+    /// can't take them.
+    /// </summary>
+    internal Func<AModule, object?, object?, bool>? Reconfigure { get; }
+
     // The bool parameter an [Emits(When = ...)] names.
     private static PropertyInfo SwitchFor(Type moduleType, Type? parametersType, EmitsAttribute emits)
     {
@@ -422,6 +429,32 @@ public sealed class ModuleRegistration
                 return current.GetGenericArguments()[0];
         }
         return null;
+    }
+
+    // A call to the class's ParametersChanged, if it takes new parameters of its record's type.
+    private static Func<AModule, object?, object?, bool>? FindReconfigure(Type moduleType, Type? parametersType)
+    {
+        if (parametersType is null)
+            return null;
+        var contract = moduleType.GetInterfaces().FirstOrDefault(i =>
+            i.IsGenericType
+            && i.GetGenericTypeDefinition() == typeof(IReconfigurable<>)
+            && i.GetGenericArguments()[0].IsAssignableFrom(parametersType));
+        if (contract is null)
+            return null;
+
+        var module = Expression.Parameter(typeof(AModule), "module");
+        var old = Expression.Parameter(typeof(object), "old");
+        var next = Expression.Parameter(typeof(object), "next");
+        var argument = contract.GetGenericArguments()[0];
+        var call = Expression.Call(
+            Expression.Convert(module, contract),
+            contract.GetMethod(nameof(IReconfigurable<object>.ParametersChanged))!,
+            Expression.Convert(old, argument),
+            Expression.Convert(next, argument));
+        var hook = Expression.Lambda<Func<AModule, object?, object?, bool>>(call, module, old, next).Compile();
+        // Only an instance of this class can take them; one made from an older copy of a reloaded plugin can't.
+        return (instance, before, after) => moduleType.IsInstanceOfType(instance) && before is not null && after is not null && hook(instance, before, after);
     }
 
     // Finds the class's WhyNot for its parameters, whether it's written as a public method or an explicit interface

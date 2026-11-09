@@ -11,7 +11,28 @@ namespace Meep2.Runtime;
 /// For each message, why this inflection can't take it, or null if it can: how parameters worked out per message
 /// choose between inflections. Null takes every message of the inflection's input type.
 /// </param>
-public sealed record VerbInflection(string Name, Func<AInflection> Create, Func<Message, string?>? WhyNot = null);
+public sealed record VerbInflection(string Name, Func<AInflection> Create, Func<Message, string?>? WhyNot = null)
+{
+    /// <summary>The parameters it's made with, if it has a record of them, so a running instance can be offered new ones.</summary>
+    public object? Parameters { get; init; }
+
+    /// <summary>
+    /// Offers a running instance new parameters: the instance, its old parameters and the new ones. Returns whether it
+    /// took them (<see cref="IReconfigurable{TParameters}"/>). Null if it can't take new parameters.
+    /// </summary>
+    public Func<AModule, object?, object?, bool>? Reconfigure { get; init; }
+}
+
+/// <summary>How to make a source, with a record of its parameters so it can be offered new ones while it runs.</summary>
+/// <param name="Create">Makes the source.</param>
+public sealed record SourceSetup(Func<ASource> Create)
+{
+    /// <summary>The parameters it's made with, if it has a record of them.</summary>
+    public object? Parameters { get; init; }
+
+    /// <summary>Offers a running instance new parameters, returning whether it took them. Null if it can't take any.</summary>
+    public Func<AModule, object?, object?, bool>? Reconfigure { get; init; }
+}
 
 /// <summary>
 /// Puts a pipeline together from C#: add modules, connect them, then <see cref="Build"/>.
@@ -64,15 +85,19 @@ public sealed class PipelineBuilder
 
     /// <summary>Adds a source under a given verb name, as the Meeplang loader does.</summary>
     /// <param name="inflection">The inflection's name, if it has one of its own.</param>
-    public ModuleInfo AddSource(string verb, Func<ASource> create, string? name = null, NodeOptions? options = null, string? inflection = null)
+    public ModuleInfo AddSource(string verb, Func<ASource> create, string? name = null, NodeOptions? options = null, string? inflection = null) =>
+        AddSource(verb, new SourceSetup(create), name, options, inflection);
+
+    /// <summary>Adds a source with a record of its parameters, so it can be offered new ones while it runs.</summary>
+    public ModuleInfo AddSource(string verb, SourceSetup setup, string? name = null, NodeOptions? options = null, string? inflection = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(verb);
-        ArgumentNullException.ThrowIfNull(create);
+        ArgumentNullException.ThrowIfNull(setup);
         options ??= NodeOptions.Default;
         if (options.BufferSize is not null || options.Bypass || options.Errors != ErrorDelivery.Include || options.AcceptExpired || options.HandlesType is not null)
             throw new ArgumentException("A source doesn't receive messages, so only Expires and ErrorPolicy apply to it.", nameof(options));
         var info = NewInfo(verb, name, inflection);
-        _specs.Add(new NodeSpec(info, [new InflectionSpec(info, create, WhyNot: null)], options, IsSource: true));
+        _specs.Add(new NodeSpec(info, [new InflectionSpec(info, setup.Create, WhyNot: null) { Parameters = setup.Parameters, Reconfigure = setup.Reconfigure }], options, IsSource: true));
         return info;
     }
 
@@ -105,13 +130,13 @@ public sealed class PipelineBuilder
         {
             var only = inflections[0];
             var single = NewInfo(verb, name, only.Name);
-            _specs.Add(new NodeSpec(single, [new InflectionSpec(single, only.Create, only.WhyNot)], options ?? NodeOptions.Default, IsSource: false));
+            _specs.Add(new NodeSpec(single, [Spec(single, only)], options ?? NodeOptions.Default, IsSource: false));
             return single;
         }
 
         var info = NewInfo(verb, name, inflection: null);
         var specs = inflections
-            .Select(i => new InflectionSpec(new ModuleInfo(info.Number, verb, name, i.Name), i.Create, i.WhyNot))
+            .Select(i => Spec(new ModuleInfo(info.Number, verb, name, i.Name), i))
             .ToArray();
         _specs.Add(new NodeSpec(info, specs, options ?? NodeOptions.Default, IsSource: false));
         return info;
@@ -141,6 +166,12 @@ public sealed class PipelineBuilder
 
     /// <summary>Makes a pipeline that's ready to run. The builder can be used again afterwards.</summary>
     public Pipeline Build() => new(Name, Options, [.. _specs], [.. _connections]);
+
+    /// <summary>What the builder has so far, for changing a running pipeline into it.</summary>
+    internal PipelineDefinition Definition() => new(Name, Options, [.. _specs], [.. _connections]);
+
+    private static InflectionSpec Spec(ModuleInfo info, VerbInflection inflection) =>
+        new(info, inflection.Create, inflection.WhyNot) { Parameters = inflection.Parameters, Reconfigure = inflection.Reconfigure };
 
     private ModuleInfo NewInfo(string verb, string? name, string? inflection)
     {

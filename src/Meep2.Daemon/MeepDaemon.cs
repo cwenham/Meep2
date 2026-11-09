@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Meep2.Meeplang.Compilation;
+using Meep2.Meeplang.Editing;
 using Meep2.Meeplang.Hosting;
 using Meep2.Meeplang.Loading;
 using Meep2.Modules;
@@ -117,15 +118,15 @@ public sealed class MeepDaemon : IAsyncDisposable
         Log($"meep daemon {Version} is listening on {socket}");
 
         // The pipelines its command line and settings file name. A file that doesn't load is logged, not fatal.
-        foreach (var file in _options.Start)
+        foreach (var start in _options.Start)
         {
             try
             {
-                await StartPipelineAsync(file, cancellationToken: cancellationToken).ConfigureAwait(false);
+                await StartPipelineAsync(start.Path, start.DeveloperMode, start.Watch, cancellationToken).ConfigureAwait(false);
             }
             catch (DaemonException exception)
             {
-                Log($"[{Path.GetFileNameWithoutExtension(file)}] {exception.Message}");
+                Log($"[{Path.GetFileNameWithoutExtension(start.Path)}] {exception.Message}");
                 foreach (var detail in exception.Details)
                     Log($"  {detail}");
             }
@@ -178,14 +179,25 @@ public sealed class MeepDaemon : IAsyncDisposable
     /// replaced.
     /// </summary>
     /// <exception cref="DaemonException">A pipeline of that name is running already, or the file didn't load.</exception>
-    public async Task<HostedPipeline> StartPipelineAsync(string path, bool developerMode = false, CancellationToken cancellationToken = default)
+    public async Task<HostedPipeline> StartPipelineAsync(string path, bool developerMode = false, CancellationToken cancellationToken = default) =>
+        await StartPipelineAsync(path, developerMode, watch: false, cancellationToken).ConfigureAwait(false);
+
+    /// <summary>
+    /// Loads a pipeline file and starts it, returning once it's running, and if <paramref name="watch"/> is set,
+    /// reloads it whenever the file changes (goal 4).
+    /// </summary>
+    /// <exception cref="DaemonException">A pipeline of that name is running already, or the file didn't load.</exception>
+    public async Task<HostedPipeline> StartPipelineAsync(string path, bool developerMode, bool watch, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(path);
         if (Volatile.Read(ref _stopped) != 0)
             throw new DaemonException(503, "The daemon is stopping.");
         path = Path.GetFullPath(path);
         var name = Path.GetFileNameWithoutExtension(path);
-        var hosted = new HostedPipeline(name, path);
+        var registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly);
+        registry.Add<WriteLine, WriteLineParameters>("WriteLine", parameters => new WriteLine(parameters, _options.Output));
+        var plugins = _options.Plugins with { DeveloperMode = _options.Plugins.DeveloperMode || developerMode };
+        var hosted = new HostedPipeline(name, path, registry, plugins);
         while (!_pipelines.TryAdd(name, hosted))
         {
             if (_pipelines.TryGetValue(name, out var existing) && existing.Ended is null)
@@ -196,8 +208,6 @@ public sealed class MeepDaemon : IAsyncDisposable
 
         var problems = new ConcurrentQueue<string>();
         var ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly);
-        registry.Add<WriteLine, WriteLineParameters>("WriteLine", parameters => new WriteLine(parameters, _options.Output));
         var hostedOptions = new PipelineOptions
         {
             UnhandledError = e => Log(e.AnsweredBy is { } answerer
@@ -228,8 +238,6 @@ public sealed class MeepDaemon : IAsyncDisposable
             },
             Notice = notice => Log($"[{name}] {notice}"),
         };
-        var plugins = _options.Plugins with { DeveloperMode = _options.Plugins.DeveloperMode || developerMode };
-
         var builder = new PipelineBuilder($"{name} (bootstrap)", bootstrapOptions);
         builder.Chain(
             builder.AddSource(() => new Read(new ReadParameters { Path = path })),
@@ -280,7 +288,9 @@ public sealed class MeepDaemon : IAsyncDisposable
         }
         foreach (var warning in hosted.Warnings)
             Log($"[{name}] {warning}");
-        Log($"[{name}] is running, from {path}");
+        if (watch)
+            hosted.Watch(Log);
+        Log($"[{name}] is running, from {path}{(watch ? ", and reloads when it changes" : "")}");
         return hosted;
     }
 
@@ -448,7 +458,7 @@ public sealed class MeepDaemon : IAsyncDisposable
                 var start = request.Json is { } json
                     ? Deserialize(json, DaemonJson.Default.StartRequest)
                     : throw new DaemonException(400, "Starting a pipeline needs a JSON body, such as {\"path\": \"/home/you/ticker.meep\"}.");
-                var hosted = await StartPipelineAsync(start.Path, start.DeveloperMode, request.Aborted).ConfigureAwait(false);
+                var hosted = await StartPipelineAsync(start.Path, start.DeveloperMode, start.Watch, request.Aborted).ConfigureAwait(false);
                 return Answer.Json(201, hosted.Summary(), DaemonJson.Default.PipelineSummary);
             }
             case ("GET", ["pipelines", var name]):
@@ -467,6 +477,27 @@ public sealed class MeepDaemon : IAsyncDisposable
             case ("POST", ["pipelines", var name, "modules", var module, "inject"]):
                 Require(capabilities, Capabilities.Inject);
                 return Inject(Find(name), module, request);
+            case ("GET", ["pipelines", var name, "source"]):
+            {
+                Require(capabilities, Capabilities.Observe);
+                var hosted = Find(name);
+                var live = hosted.Live ?? throw new DaemonException(409, $"{name} isn't running yet."); // one that has ended still shows what it ran
+                return Answer.Json(200, new SourceText(hosted.Path, live.Syntax.Source.Text, hosted.Edited), DaemonJson.Default.SourceText);
+            }
+            case ("POST", ["pipelines", var name, "reload"]):
+            {
+                Require(capabilities, Capabilities.Control);
+                var hosted = Find(name);
+                LiveOf(hosted);
+                var change = await hosted.ReloadAsync(request.Query.GetValueOrDefault("force") is "true" or "1", request.Aborted).ConfigureAwait(false);
+                if (!change.Applied)
+                    throw new DaemonException(400, $"{name}'s file doesn't load, so it runs as it was.", [.. change.Diagnostics.Where(d => d.IsError).Select(d => d.ToString())]);
+                Log($"[{name}] reloaded: {HostedPipeline.Summary(change.Report!)}");
+                return Answer.Json(200, Reloading.Describe(change), DaemonJson.Default.ChangeResult);
+            }
+            case ("POST", ["pipelines", var name, "edits"]):
+                Require(capabilities, Capabilities.Control);
+                return await EditAsync(Find(name), request).ConfigureAwait(false);
             default:
                 throw new DaemonException(404, $"The daemon has nothing at {request.Method} /{string.Join('/', request.Parts.Select(Uri.EscapeDataString))}.");
         }
@@ -527,6 +558,68 @@ public sealed class MeepDaemon : IAsyncDisposable
         hosted.Pipeline is { IsRunning: true } pipeline && hosted.Ended is null
             ? pipeline
             : throw new DaemonException(409, $"{hosted.Name} isn't running. It's {hosted.State}" + (hosted.Reason is { } reason ? $", because {reason}." : "."));
+
+    private static LivePipeline LiveOf(HostedPipeline hosted) =>
+        hosted.Ended is null && hosted.Live is { } live
+            ? live
+            : throw new DaemonException(409, $"{hosted.Name} isn't running" + (hosted.Ended is null ? " yet." : $". It's {hosted.State}."));
+
+    // Edits the running pipeline's text, changes the pipeline to match, and commits the text to pending (Q32).
+    private async Task<Answer> EditAsync(HostedPipeline hosted, ApiRequest request)
+    {
+        var edit = request.Json is { } json
+            ? Deserialize(json, DaemonJson.Default.EditRequest)
+            : throw new DaemonException(400, "Editing needs a JSON body, such as {\"edits\": [{\"module\": \"Interval\", \"kind\": \"set\", \"name\": \"count\", \"value\": \"5\"}]}.");
+        if (edit.Edits is not { Count: > 0 })
+            throw new DaemonException(400, "There are no edits to make.");
+        var live = LiveOf(hosted);
+        var edits = edit.Edits.Select(Reloading.EditOf).ToList();
+        Meep2.Meeplang.Syntax.PipelineSyntax next;
+        try
+        {
+            next = SourceEditor.Apply(live.Syntax, edits);
+        }
+        catch (EditException exception)
+        {
+            throw new DaemonException(400, exception.Message);
+        }
+        var change = await Reloading.ApplyAsync(live, next, hosted.BaseRegistry, hosted.Plugins, request.Aborted).ConfigureAwait(false);
+        if (!change.Applied)
+            throw new DaemonException(400, $"After those edits {hosted.Name} wouldn't load, so nothing changed.", [.. change.Diagnostics.Where(d => d.IsError).Select(d => d.ToString())]);
+        Log($"[{hosted.Name}] edited: {string.Join("; ", edits)}. {HostedPipeline.Summary(change.Report!)}");
+
+        var result = Reloading.Describe(change) with { Text = next.Source.Text };
+        var described = edits.Select(e => e.ToString()).ToList();
+        if (!edit.Save)
+        {
+            hosted.EditedApart(described, commit: null);
+        }
+        else if (Meep2.Git.PendingBranch.RepositoryOf(hosted.Path) is null)
+        {
+            // Not in a repository: the edit goes into the file itself (Q124), so a reload keeps it.
+            await File.WriteAllTextAsync(hosted.Path, next.Source.Text, request.Aborted).ConfigureAwait(false);
+            hosted.EditedInFile();
+            result = result with { WrittenTo = hosted.Path };
+            Log($"[{hosted.Name}] wrote the edit to {hosted.Path}");
+        }
+        else
+        {
+            var message = edit.Message ?? $"Edit {hosted.Name} while it runs\n\n{string.Join("\n", described.Select(e => "- " + char.ToUpperInvariant(e[0]) + e[1..]))}";
+            try
+            {
+                var commit = Meep2.Git.PendingBranch.Commit(hosted.Path, next.Source.Text, message, edit.Branch ?? Meep2.Git.PendingBranch.Default);
+                hosted.EditedApart(described, commit.Sha);
+                result = result with { Saved = new SavedCommit(commit.Branch, commit.Sha, commit.Repository, commit.Path) { Unsigned = commit.Unsigned } };
+                Log($"[{hosted.Name}] committed to {commit.Branch} as {commit.Sha[..7]}{(commit.Unsigned is null ? ", signed" : $", unsigned: {commit.Unsigned}")}");
+            }
+            catch (Meep2.Git.PendingBranchException exception)
+            {
+                hosted.EditedApart(described, commit: null);
+                result = result with { NotSaved = exception.Message };
+            }
+        }
+        return Answer.Json(200, result, DaemonJson.Default.ChangeResult);
+    }
 
     // A module by its number, its name, or a verb or inflection only one module has.
     private static ModuleInfo FindModule(Pipeline pipeline, string id)

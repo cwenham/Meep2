@@ -24,11 +24,14 @@ public class LeaseTests
         }
     }
 
-    // Emits each message with the same lease.
+    // Emits each message with the same lease. A lease's maker only holds it until its first emit, so with several it
+    // holds the lease itself until it has emitted them all (step 5); otherwise the first could finish and close the
+    // lease before the next went out.
     private sealed class Leasing(Lease lease, params Message[] messages) : ASource
     {
         protected override Task RunAsync(ModuleContext context, CancellationToken cancellationToken)
         {
+            using var hold = messages.Length > 1 ? lease.Hold() : null;
             foreach (var message in messages)
                 context.Emit(message, lease);
             return Task.CompletedTask;
@@ -84,6 +87,7 @@ public class LeaseTests
 
         await using var pipeline = builder.Build();
         await Wait.For(pipeline.RunAsync());
+        await Wait.For(lease.Closed); // it closes in the background, once its last message has finished
 
         var word = observer.Seen.Single().Message;
         await Assert.That(word.Leases.Single()).IsSameReferenceAs(lease);
@@ -107,6 +111,36 @@ public class LeaseTests
         await Assert.That(observer.Seen.Count).IsEqualTo(3);
         await Assert.That(observer.Seen.All(seen => seen.Open)).IsTrue();
         await Assert.That(lease.Closes).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task A_module_holds_a_lease_it_made_until_it_has_finished_its_message()
+    {
+        // Q123: a module that emits several messages with one lease needs no Hold() of its own, however quickly the
+        // first is handled.
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            var lease = new TestLease();
+            var observer = new Observer(lease);
+            var builder = new PipelineBuilder();
+            builder.Chain(
+                builder.AddSource(() => new Numbers(1)),
+                builder.Add(() => new Map<Number>(async (n, context) =>
+                {
+                    context.Emit(new Word("a"), lease);
+                    await Task.Delay(1); // the first can be handled meanwhile
+                    context.Emit(new Word("b"), lease);
+                })),
+                builder.Add(() => observer));
+
+            await using var pipeline = builder.Build();
+            await Wait.For(pipeline.RunAsync());
+            await Wait.For(lease.Closed);
+
+            await Assert.That(observer.Seen.Count).IsEqualTo(2);
+            await Assert.That(observer.Seen.All(seen => seen.Open)).IsTrue();
+            await Assert.That(lease.Closes).IsEqualTo(1);
+        }
     }
 
     [Test]

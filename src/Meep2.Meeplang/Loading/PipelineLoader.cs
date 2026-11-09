@@ -40,7 +40,34 @@ public sealed class PipelineLoader(ModuleRegistry registry)
         var sorted = diagnostics.Items.OrderBy(d => d.Span.Line).ThenBy(d => d.Span.Column).ToList();
         return new LoadResult(diagnostics.HasErrors ? null : pipeline, sorted);
     }
+
+    /// <summary>
+    /// Loads a parsed file as far as a builder, knowing which module of it each module line became, so a running
+    /// pipeline can be changed into it (goal 4). Null, with the problems, if it doesn't load.
+    /// </summary>
+    internal (LoadedModules? Modules, IReadOnlyList<Diagnostic> Diagnostics) Define(PipelineSyntax syntax, PipelineOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(syntax);
+        var diagnostics = new Diagnostics(syntax.Source.Path);
+        foreach (var diagnostic in syntax.Diagnostics)
+            diagnostics.Add(diagnostic);
+        LoadedModules? modules = null;
+        if (!diagnostics.HasErrors)
+        {
+            var load = new Load(registry, syntax, diagnostics);
+            if (load.Prepare(options ?? PipelineOptions.Default) && !diagnostics.HasErrors)
+                modules = load.Define(load.Options);
+        }
+        var sorted = diagnostics.Items.OrderBy(d => d.Span.Line).ThenBy(d => d.Span.Column).ToList();
+        return (diagnostics.HasErrors ? null : modules, sorted);
+    }
 }
+
+/// <summary>A loaded pipeline as a builder, with the module each module line became and the classes that make it.</summary>
+/// <param name="Builder">The pipeline, ready to build, or to change a running one into.</param>
+/// <param name="Infos">Each module line's identity in the pipeline.</param>
+/// <param name="Types">The classes each module line's inflections are made from.</param>
+internal sealed record LoadedModules(PipelineBuilder Builder, IReadOnlyDictionary<ModuleSyntax, ModuleInfo> Infos, IReadOnlyDictionary<ModuleSyntax, IReadOnlyList<Type>> Types);
 
 /// <summary>One inflection a module might use, with its parameters filled in.</summary>
 internal sealed class Candidate(ModuleRegistration registration, BoundParameters parameters)
@@ -104,7 +131,13 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
     private readonly Dictionary<ModuleSyntax, LoadNode> _nodes = [];
     private readonly List<LoadNode> _ordered = [];
 
-    public Pipeline? Run(PipelineOptions options)
+    /// <summary>The pipeline's settings, with its defaults block applied, once it has loaded.</summary>
+    public PipelineOptions Options { get; private set; } = PipelineOptions.Default;
+
+    public Pipeline? Run(PipelineOptions options) => Prepare(options) ? Define(Options).Builder.Build() : null;
+
+    /// <summary>Resolves, binds, wires and checks every module. Returns false if there were errors.</summary>
+    public bool Prepare(PipelineOptions options)
     {
         var constants = EvaluateConstants();
         options = ApplyDefaults(options);
@@ -125,20 +158,20 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
             node.Options = BuildOptions(node);
         }
         if (diagnostics.HasErrors)
-            return null;
+            return false;
 
         Wire(parent: null, syntax.Modules);
         WireReferences();
         if (diagnostics.HasErrors)
-            return null;
+            return false;
 
         ApplyErrorPolicies(options.ErrorPolicy);
         FlowTypes();
         CheckTypes();
         if (diagnostics.HasErrors)
-            return null;
-
-        return Build(options);
+            return false;
+        Options = options;
+        return true;
     }
 
     private Dictionary<string, ConstantValue> EvaluateConstants()
@@ -838,7 +871,11 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
         }
     }
 
-    private Pipeline Build(PipelineOptions options)
+    /// <summary>
+    /// The pipeline as a builder, with each module line's identity in it and what its parameters were made from, for
+    /// building it or changing a running one into it.
+    /// </summary>
+    internal LoadedModules Define(PipelineOptions options)
     {
         var builder = new PipelineBuilder(Path.GetFileNameWithoutExtension(syntax.Source.Path) is { Length: > 0 } name ? name : "Pipeline", options);
         var infos = new Dictionary<LoadNode, ModuleInfo>();
@@ -849,7 +886,11 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
                 var source = node.Candidates[0];
                 infos[node] = builder.AddSource(
                     source.Registration.Verb,
-                    () => (ASource)source.Registration.Create(source.Parameters.Value),
+                    new SourceSetup(() => (ASource)source.Registration.Create(source.Parameters.Value))
+                    {
+                        Parameters = source.Parameters.Value,
+                        Reconfigure = source.Registration.Reconfigure,
+                    },
                     node.Syntax.Name,
                     node.Options,
                     source.Registration.Inflection);
@@ -857,7 +898,11 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
             else
             {
                 var inflections = node.Candidates
-                    .Select(c => new VerbInflection(c.Registration.Inflection, () => (AInflection)c.Registration.Create(c.Parameters.Value), c.WhyNot))
+                    .Select(c => new VerbInflection(c.Registration.Inflection, () => (AInflection)c.Registration.Create(c.Parameters.Value), c.WhyNot)
+                    {
+                        Parameters = c.Parameters.Value,
+                        Reconfigure = c.Registration.Reconfigure,
+                    })
                     .ToList();
                 infos[node] = builder.AddVerb(node.Registration.Verb, inflections, node.Syntax.Name, node.Options);
             }
@@ -867,7 +912,10 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
             foreach (var upstream in node.Upstream)
                 builder.Connect(infos[upstream], infos[node]);
         }
-        return builder.Build();
+        return new LoadedModules(
+            builder,
+            _ordered.ToDictionary(node => node.Syntax, node => infos[node]),
+            _ordered.ToDictionary(node => node.Syntax, node => (IReadOnlyList<Type>)[.. node.Candidates.Select(c => c.Registration.ModuleType)]));
     }
 }
 

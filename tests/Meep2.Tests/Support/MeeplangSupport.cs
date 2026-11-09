@@ -79,6 +79,46 @@ public sealed record NumberSourceParameters
     public required int To { get; init; }
 }
 
+/// <summary>Counts the messages it has received and emits a Number of that count times its step: state a live change should keep.</summary>
+[Verb("Tally")]
+[Emits(typeof(Number))]
+public sealed class Tally(TallyParameters parameters) : AInflection<Message>
+{
+    private int _seen;
+
+    protected override ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
+    {
+        context.Emit(new Number(++_seen * parameters.Step));
+        return ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>Tally, but it takes new parameters while it runs and keeps counting.</summary>
+[Verb("KeepingTally")]
+[Emits(typeof(Number))]
+public sealed class KeepingTally(TallyParameters parameters) : AInflection<Message>, IReconfigurable<TallyParameters>
+{
+    private TallyParameters _parameters = parameters;
+    private int _seen;
+
+    protected override ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
+    {
+        context.Emit(new Number(++_seen * _parameters.Step));
+        return ValueTask.CompletedTask;
+    }
+
+    public bool ParametersChanged(TallyParameters old, TallyParameters next)
+    {
+        _parameters = next;
+        return true;
+    }
+}
+
+public sealed record TallyParameters
+{
+    public int Step { get; init; } = 1;
+}
+
 /// <summary>Loads Meeplang text with the core modules plus Sink, Boom and Numbers, and runs it.</summary>
 public sealed class TestRun
 {
@@ -132,24 +172,61 @@ public sealed class TestRun
 
     private static TestRun Load(string text)
     {
-        var received = new ConcurrentQueue<(string, Message)>();
-        var unhandled = new ConcurrentQueue<ErrorMessage>();
-        var notices = new ConcurrentQueue<string>();
-        var output = new StringWriter();
-        var registry = new ModuleRegistry()
+        var testRun = new TestRun(new LoadResult(null, []), new(), new(), new(), new StringWriter());
+        var result = new PipelineLoader(testRun.Registry()).Load(Script.Parse(text), testRun.Options);
+        return new TestRun(result, testRun.Received, testRun.Unhandled, testRun.Notices, testRun.Output);
+    }
+
+    /// <summary>
+    /// Loads the text as a pipeline that can be changed while it runs, and starts it. Dispose the result to stop it.
+    /// </summary>
+    public static Live BeginLive(string text)
+    {
+        var testRun = new TestRun(new LoadResult(null, []), new(), new(), new(), new StringWriter());
+        var (live, diagnostics) = Meep2.Meeplang.Editing.LivePipeline.Load(Script.Parse(text), testRun.Registry(), testRun.Options);
+        if (live is null)
+            throw new InvalidOperationException($"The pipeline didn't load:\n{string.Join("\n", diagnostics)}");
+        return new Live(testRun, live, live.Pipeline.RunAsync());
+    }
+
+    private PipelineOptions Options => new() { UnhandledError = Unhandled.Enqueue, Notice = Notices.Enqueue };
+
+    // The core modules, plus test modules that record what they receive in this run.
+    private ModuleRegistry Registry()
+    {
+        var output = TextWriter.Synchronized(Output);
+        return new ModuleRegistry()
             .AddAssembly(CoreModules.Assembly)
-            .Add("Sink", () => new TestSink(received))
+            .Add("Sink", () => new TestSink(Received))
             .Add("Boom", () => new Boom())
             .Add(typeof(NumberSource))
             .Add(typeof(LoudEcho))
             .Add(typeof(QuietEcho))
+            .Add(typeof(Tally))
+            .Add(typeof(KeepingTally))
             .AddMessageType(typeof(Word))
-            .Add<WriteLine, WriteLineParameters>("WriteLine", p => new WriteLine(p, TextWriter.Synchronized(output)));
+            .AddMessageType(typeof(Number))
+            .Add<WriteLine, WriteLineParameters>("WriteLine", p => new WriteLine(p, output));
+    }
 
-        var result = new PipelineLoader(registry).Load(
-            Script.Parse(text),
-            new PipelineOptions { UnhandledError = unhandled.Enqueue, Notice = notices.Enqueue });
-        return new TestRun(result, received, unhandled, notices, output);
+    /// <summary>A pipeline that can be changed, running in the background.</summary>
+    public sealed class Live(TestRun run, Meep2.Meeplang.Editing.LivePipeline pipeline, Task running) : IAsyncDisposable
+    {
+        public TestRun Run { get; } = run;
+
+        public Meep2.Meeplang.Editing.LivePipeline Pipeline { get; } = pipeline;
+
+        public Task Running { get; } = running;
+
+        /// <summary>The numbers Sink has received, in order.</summary>
+        public IReadOnlyList<int> Numbers => [.. Run.At("Sink").OfType<Number>().Select(n => n.Value)];
+
+        public async ValueTask DisposeAsync()
+        {
+            Pipeline.Pipeline.Stop();
+            await Wait.For(Running);
+            await Pipeline.Pipeline.DisposeAsync();
+        }
     }
 
     /// <summary>A pipeline running in the background.</summary>

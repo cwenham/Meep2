@@ -54,6 +54,8 @@ public sealed class Install(ModuleRegistry registry, PluginInstaller installer, 
                 if (installed.Warning is { } warning)
                     warnings.Add(new Diagnostic(DiagnosticSeverity.Warning, warning, directive.Span, path));
                 hold = _catalog.Acquire(installed);
+                if (hold.Plugin.RebuiltWithoutNewVersion() is { } stale)
+                    warnings.Add(new Diagnostic(DiagnosticSeverity.Warning, stale, directive.Span, path));
                 var name = directive.Alias ?? NameOf(hold.Plugin);
                 if (own.WhyNotPluginName(name) is { } problem)
                 {

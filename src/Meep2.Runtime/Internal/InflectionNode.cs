@@ -15,11 +15,18 @@ internal sealed class InflectionNode : Node
     // The longest delay CancellationTokenSource.CancelAfter accepts.
     private static readonly TimeSpan s_longestTimer = TimeSpan.FromMilliseconds(uint.MaxValue - 1);
 
+    // What the loop is doing, so a change can be applied between two messages (goal 4).
+    private const int Busy = 0;
+    private const int Waiting = 1;
+    private const int Changing = 2;
+
     private readonly Channel<Message> _buffer;
     private readonly InflectionContext _context;
-    private readonly TypeCheck? _handlesType;
+    private volatile TypeCheck? _handlesType;
     private readonly Slot[] _slots;
     private readonly ConcurrentDictionary<Type, Slot[]> _routes = new();
+    private int _phase = Busy;
+    private volatile Change? _pending;
     private readonly Queue<long> _failures = new();
 
     // Reasons inflections gave for refusing the message being routed. Only the loop uses it, and it's only turned
@@ -43,6 +50,7 @@ internal sealed class InflectionNode : Node
                 SingleWriter = false,
             },
             OnDropped);
+        Capacity = bufferSize;
         _context = new InflectionContext(this);
         _slots = [.. spec.Inflections.Select(inflection => new Slot(inflection))];
         if (spec.Options.HandlesType is { } handlesType)
@@ -59,6 +67,9 @@ internal sealed class InflectionNode : Node
     public bool IsStopped => _stopped;
 
     public override long Queued => _buffer.Reader.Count;
+
+    /// <summary>How many messages its buffer holds.</summary>
+    public int Capacity { get; }
 
     /// <summary>Whether any of the module's inflections can handle this message's type.</summary>
     public bool Accepts(Message message) => RouteFor(message.GetType()).Length > 0;
@@ -85,10 +96,118 @@ internal sealed class InflectionNode : Node
             throw new InvalidOperationException($"{Info}'s inflections don't agree on whether they're passthrough modules, so it can't route between them.");
     }
 
-    public Task Start() => Task.Run(RunLoopAsync);
+    /// <summary>Starts the loop that handles messages.</summary>
+    public Task Start() => Loop = Task.Run(RunLoopAsync);
+
+    /// <summary>The loop that handles messages, once started. It ends once the buffer is completed and empty.</summary>
+    public Task Loop { get; private set; } = Task.CompletedTask;
 
     /// <summary>Stops taking messages. The loop ends once the buffer is empty.</summary>
     public void Complete() => _buffer.Writer.TryComplete();
+
+    /// <summary>
+    /// Takes the module out of the running pipeline: it stops taking messages, handles those in its buffer, then its
+    /// instances are disposed.
+    /// </summary>
+    public async Task RemoveAsync()
+    {
+        IsRemoved = true;
+        Complete();
+        await Loop.ConfigureAwait(false);
+        CloseTaps();
+        await DisposeModuleAsync().ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public override async Task<bool> UpdateAsync(NodeSpec next, bool reconfigure)
+    {
+        var change = new Change(next, reconfigure);
+        _pending = change;
+        while (!change.Done.Task.IsCompleted)
+        {
+            // Between messages, or with none waiting: apply it here. Otherwise the loop applies it after its message.
+            if (Interlocked.CompareExchange(ref _phase, Changing, Waiting) == Waiting)
+            {
+                try
+                {
+                    if (Interlocked.CompareExchange(ref _pending, null, change) == change)
+                        await ApplyAsync(change).ConfigureAwait(false);
+                }
+                finally
+                {
+                    Volatile.Write(ref _phase, Waiting);
+                }
+                break;
+            }
+            await Task.WhenAny(change.Done.Task, Task.Delay(1)).ConfigureAwait(false);
+        }
+        return await change.Done.Task.ConfigureAwait(false);
+    }
+
+    // Applies a change on whichever thread holds the module: the loop, or UpdateAsync while the loop waits.
+    private async ValueTask TakePendingAsync()
+    {
+        if (Interlocked.Exchange(ref _pending, null) is { } change)
+            await ApplyAsync(change).ConfigureAwait(false);
+    }
+
+    private async ValueTask ApplyAsync(Change change)
+    {
+        var keptAll = true;
+        try
+        {
+            var next = change.Spec;
+            foreach (var slot in _slots)
+            {
+                var spec = next.Inflections.First(i => i.Info.Inflection == slot.Spec.Info.Inflection);
+                if (change.Reconfigure && slot.Module is { } module && !slot.Broken && !TryReconfigure(module, slot.Spec, spec))
+                {
+                    keptAll = false;
+                    var old = slot.Spec;
+                    slot.Spec = spec;
+                    try
+                    {
+                        slot.Module = Create(slot);
+                        await DisposeInstanceAsync(module, $"{Describe(old.Info)} couldn't be disposed after its parameters changed").ConfigureAwait(false);
+                    }
+                    catch (Exception exception)
+                    {
+                        // The old instance carries on, with the old parameters.
+                        slot.Spec = old;
+                        Pipeline.ReportFault(spec.Info, $"{Describe(spec.Info)} couldn't be made with its new parameters, so it carries on with the old ones", exception);
+                        continue;
+                    }
+                }
+                else if (change.Reconfigure && slot.Broken)
+                {
+                    // New parameters may let a module that couldn't be restarted be made again.
+                    var old = slot.Spec;
+                    slot.Spec = spec;
+                    try
+                    {
+                        slot.Module = Create(slot);
+                        slot.Broken = false;
+                    }
+                    catch (Exception exception)
+                    {
+                        slot.Spec = old;
+                        Pipeline.ReportFault(spec.Info, $"{Describe(spec.Info)} still couldn't be made", exception);
+                        continue;
+                    }
+                    keptAll = false;
+                }
+                slot.Spec = spec;
+            }
+            Spec = next;
+            _handlesType = next.Options.HandlesType is { } handlesType ? new TypeCheck(handlesType) : null;
+            _routes.Clear();
+            _lastRoute = null;
+        }
+        finally
+        {
+            change.Done.TrySetResult(keptAll);
+        }
+    }
 
     /// <summary>Puts a message in the buffer, dropping the oldest if it's full.</summary>
     public void Enqueue(Message message)
@@ -188,10 +307,12 @@ internal sealed class InflectionNode : Node
     {
         var reader = _buffer.Reader;
         var abort = Pipeline.AbortToken;
-        while (await reader.WaitToReadAsync().ConfigureAwait(false))
+        while (true)
         {
             while (reader.TryRead(out var message))
             {
+                if (_pending is not null)
+                    await TakePendingAsync().ConfigureAwait(false);
                 if (Pipeline.IsAborting)
                 {
                     Pipeline.Release(message, MessageOutcome.Abandoned);
@@ -273,7 +394,18 @@ internal sealed class InflectionNode : Node
                     Pipeline.Release(message, outcome);
                 }
             }
+
+            // Nothing waiting: apply any change now, then let UpdateAsync apply them itself while the loop waits.
+            if (_pending is not null)
+                await TakePendingAsync().ConfigureAwait(false);
+            Volatile.Write(ref _phase, Waiting);
+            var more = await reader.WaitToReadAsync().ConfigureAwait(false);
+            while (Interlocked.CompareExchange(ref _phase, Busy, Waiting) != Waiting)
+                await Task.Yield(); // a change is being applied
+            if (!more)
+                break;
         }
+        Volatile.Write(ref _phase, Waiting); // so a change that arrives after the loop has ended is applied at once
     }
 
     // The token a module gets: cancelled when the pipeline gives up, and when the message expires (Q12). A module
@@ -342,7 +474,7 @@ internal sealed class InflectionNode : Node
     {
         private volatile AInflection? _module;
 
-        public InflectionSpec Spec { get; } = spec;
+        public InflectionSpec Spec { get; set; } = spec;
 
         public AInflection? Module
         {
@@ -356,4 +488,14 @@ internal sealed class InflectionNode : Node
     }
 
     private sealed record Route(Type Type, Slot[] Slots);
+
+    /// <summary>A new spec waiting to be applied between messages.</summary>
+    private sealed class Change(NodeSpec spec, bool reconfigure)
+    {
+        public NodeSpec Spec { get; } = spec;
+
+        public bool Reconfigure { get; } = reconfigure;
+
+        public TaskCompletionSource<bool> Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
 }

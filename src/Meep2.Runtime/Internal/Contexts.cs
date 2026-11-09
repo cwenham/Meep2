@@ -13,6 +13,10 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
     private ModuleInfo? _emitter;
     private bool _passedOn;
 
+    // Leases this module made while handling the message, which it holds until it has finished with it (Q123), so
+    // a lease that goes out on several messages can't close between them.
+    private List<Lease>? _made;
+
     // While handling a message, the inflection doing the work, so the messages it emits record it.
     public override ModuleInfo Module => _emitter ?? node.Info;
 
@@ -32,6 +36,12 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
     {
         _current = null;
         _emitter = null;
+        if (_made is { Count: > 0 } made)
+        {
+            foreach (var lease in made)
+                lease.Scope.Release();
+            made.Clear();
+        }
     }
 
     public override void Emit(Message message)
@@ -57,7 +67,7 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
         ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(lease);
         var current = _current ?? throw NotHandling();
-        node.Pipeline.EmitLeased(node, Module, message, lease, defaultParent: current);
+        node.Pipeline.EmitLeased(node, Module, message, lease, defaultParent: current, holdUntilDone: _made ??= []);
     }
 
     public override Task<MessageOutcome> EmitTracked(Message message)

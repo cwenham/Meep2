@@ -8,20 +8,48 @@ namespace Meep2.Modules;
 /// </summary>
 [Verb("Interval")]
 [Emits(typeof(Tick))]
-public sealed class Interval(IntervalParameters parameters) : ASource
+public sealed class Interval(IntervalParameters parameters) : ASource, IReconfigurable<IntervalParameters>
 {
+    private volatile IntervalParameters _parameters = parameters;
+    private volatile PeriodicTimer? _timer;
+
     /// <inheritdoc/>
     protected override async Task RunAsync(ModuleContext context, CancellationToken cancellationToken)
     {
-        using var timer = new PeriodicTimer(parameters.Period);
+        using var timer = new PeriodicTimer(_parameters.Period);
+        _timer = timer;
         for (long count = 1; ; count++)
         {
-            context.Emit(new Tick(count) { Payload = parameters.Payload });
-            if (count >= parameters.Count)
+            var current = _parameters;
+            context.Emit(new Tick(count) { Payload = current.Payload });
+            if (count >= current.Count)
                 return;
             if (!await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
                 return;
         }
+    }
+
+    /// <summary>
+    /// Takes a new period, count and payload while it runs, carrying on its count (Q121). A new count it has already
+    /// reached ends it at the next tick.
+    /// </summary>
+    public bool ParametersChanged(IntervalParameters old, IntervalParameters next)
+    {
+        ArgumentNullException.ThrowIfNull(old);
+        ArgumentNullException.ThrowIfNull(next);
+        _parameters = next;
+        if (next.Period != old.Period && _timer is { } timer)
+        {
+            try
+            {
+                timer.Period = next.Period;
+            }
+            catch (ObjectDisposedException)
+            {
+                // It has finished meanwhile.
+            }
+        }
+        return true;
     }
 }
 

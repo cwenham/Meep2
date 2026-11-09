@@ -31,8 +31,11 @@ public sealed record InstalledPlugin(PluginDirective Directive, string Folder, s
     /// </summary>
     public IReadOnlyList<string> Packages { get; init; } = [];
 
-    /// <summary>What tells loaded plugins apart: the path for one on this machine, otherwise its name and version.</summary>
-    public string Key => Directive.Origin == PluginOrigin.Local ? MainAssembly : Directive.ToString();
+    /// <summary>
+    /// What tells loaded plugins apart: for one on this machine, its path and version, so a rebuilt plugin with a new
+    /// version loads afresh when its pipeline is reloaded (Q107, Q127); otherwise its name and version.
+    /// </summary>
+    public string Key { get; init; } = Directive.Origin == PluginOrigin.Local ? MainAssembly : Directive.ToString();
 
     /// <summary>The plugin, as its <c>#plugin</c> line names it.</summary>
     public override string ToString() => Directive.ToString();
@@ -93,6 +96,25 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
     }
 
     // A plugin on this machine: a DLL, or a folder holding one.
+    /// <summary>
+    /// A plugin's version, as its project gives it: its informational version without build metadata, such as
+    /// 1.2.0-beta.1, or its assembly version.
+    /// </summary>
+    public static string VersionOf(string assembly)
+    {
+        ArgumentNullException.ThrowIfNull(assembly);
+        try
+        {
+            if (System.Diagnostics.FileVersionInfo.GetVersionInfo(assembly).ProductVersion is { Length: > 0 } product)
+                return product.Split('+')[0];
+            return System.Reflection.AssemblyName.GetAssemblyName(assembly).Version?.ToString() ?? "?";
+        }
+        catch (Exception exception) when (exception is IOException or BadImageFormatException)
+        {
+            return "?";
+        }
+    }
+
     private InstalledPlugin FindLocal(PluginDirective directive, string? baseFolder)
     {
         var path = Path.GetFullPath(directive.Name, baseFolder ?? Directory.GetCurrentDirectory());
@@ -113,17 +135,18 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
             throw new PluginException($"Can't find the plugin {directive.Name} (looked for {path}).");
         }
 
+        var key = $"{main}@{VersionOf(main)}";
         try
         {
             var signer = PluginSignature.Verify(folder, options.TrustedKeys(), Covered, directive.Name);
-            return new InstalledPlugin(directive, folder, main, signer);
+            return new InstalledPlugin(directive, folder, main, signer) { Key = key };
         }
         catch (PluginException exception) when (options.DeveloperMode)
         {
             var warning = exception is UnsignedPluginException
                 ? $"{directive.Name} isn't signed. It's loaded because meep is in developer mode."
                 : $"{exception.Message} It's loaded anyway because meep is in developer mode.";
-            return new InstalledPlugin(directive, folder, main, null) { Warning = warning };
+            return new InstalledPlugin(directive, folder, main, null) { Warning = warning, Key = key };
         }
         catch (UnsignedPluginException exception)
         {

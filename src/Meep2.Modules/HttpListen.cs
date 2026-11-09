@@ -31,8 +31,12 @@ namespace Meep2.Modules;
 /// </remarks>
 [Verb("Listen", Inflection = "HTTP")]
 [Emits(typeof(HttpRequest))]
-public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChosenByParameters<HttpListenParameters>
+public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChosenByParameters<HttpListenParameters>, IReconfigurable<HttpListenParameters>
 {
+    private readonly Lock _changing = new();
+    private volatile HttpListenParameters _parameters = parameters;
+    private Listening? _listening;
+
     /// <summary>Takes http:// and https:// addresses, the latter with a certificate.</summary>
     public static string? WhyNot(HttpListenParameters parameters, Message message)
     {
@@ -53,12 +57,15 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
     /// <inheritdoc/>
     protected override async Task RunAsync(ModuleContext context, CancellationToken cancellationToken)
     {
-        if (!HttpAddress.TryParse(parameters.Url, out var address))
-            throw new InvalidOperationException($"Listen.HTTP needs an http:// or https:// address, not {parameters.Url}");
+        var start = _parameters;
+        if (!HttpAddress.TryParse(start.Url, out var address))
+            throw new InvalidOperationException($"Listen.HTTP needs an http:// or https:// address, not {start.Url}");
         var endpoint = new IPEndPoint(await Endpoints.ResolveAsync(address.Host, cancellationToken).ConfigureAwait(false), address.Port);
-        var certificate = address.Secure ? Certificates.Load(parameters.Certificate!, parameters.Key) : null;
+        var certificate = address.Secure ? Certificates.Load(start.Certificate!, start.Key) : null;
         var route = await HttpServer.AddAsync(endpoint, certificate, address.Path, http => AcceptAsync(http, context, cancellationToken), cancellationToken)
             .ConfigureAwait(false);
+        lock (_changing)
+            _listening = new Listening(address, endpoint, route, context, cancellationToken);
         try
         {
             await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
@@ -70,9 +77,53 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
         finally
         {
             // Requests already in the pipeline still need answering, so the server keeps them until they're done.
-            await route.DisposeAsync().ConfigureAwait(false);
+            HttpServer.Route current;
+            lock (_changing)
+            {
+                current = _listening!.Route;
+                _listening = null;
+            }
+            await current.DisposeAsync().ConfigureAwait(false);
         }
     }
+
+    /// <summary>
+    /// Takes new parameters while it listens, keeping its port open (Q121). A new path is taken on the same server, and
+    /// the old one is let go once the requests it has open are answered. A new host, port, scheme or certificate
+    /// needs a Listen made afresh.
+    /// </summary>
+    public bool ParametersChanged(HttpListenParameters old, HttpListenParameters next)
+    {
+        ArgumentNullException.ThrowIfNull(old);
+        ArgumentNullException.ThrowIfNull(next);
+        if (!HttpAddress.TryParse(next.Url, out var address) || next.Certificate != old.Certificate || next.Key != old.Key)
+            return false;
+        lock (_changing)
+        {
+            if (_listening is not { } listening)
+            {
+                // Not listening yet, or any more: it starts with the new parameters, if it starts at all.
+                _parameters = next;
+                return true;
+            }
+            if (address.Secure != listening.Address.Secure || address.Host != listening.Address.Host || address.Port != listening.Address.Port)
+                return false;
+            _parameters = next;
+            if (address.Path == listening.Address.Path)
+                return true;
+
+            var certificate = address.Secure ? Certificates.Load(next.Certificate!, next.Key) : null;
+            var route = HttpServer.AddAsync(listening.Endpoint, certificate, address.Path, http => AcceptAsync(http, listening.Context, listening.Stopping), listening.Stopping)
+                .GetAwaiter().GetResult();
+            var replaced = listening.Route;
+            _listening = listening with { Address = address, Route = route };
+            _ = replaced.DisposeAsync().AsTask();
+            return true;
+        }
+    }
+
+    // Where it's listening, and what for: kept so new parameters can move it to another path.
+    private sealed record Listening(HttpAddress Address, IPEndPoint Endpoint, HttpServer.Route Route, ModuleContext Context, CancellationToken Stopping);
 
     // Reads a request and emits it, then waits until its lease has closed. Kestrel finishes the response when this
     // returns, so nothing touches the request after that.
@@ -80,6 +131,7 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
     {
         var request = http.Request;
         var url = request.GetDisplayUrl();
+        var parameters = _parameters;
         var lease = new HttpRequestLease(http, url, parameters.DefaultStatus, parameters.DefaultReply);
         try
         {
@@ -318,27 +370,28 @@ internal sealed class HttpServer
                         ? $"Another Listen already takes plain http:// requests on {endpoint}, so this one can't take https:// there."
                         : $"Another Listen already takes https:// requests on {endpoint} with a different certificate, or none.");
                 }
-            }
-            else
-            {
-                server = new HttpServer(endpoint, certificate);
-                try
-                {
-                    await server._host.StartAsync(cancellationToken).ConfigureAwait(false);
-                }
-                catch
-                {
-                    await server._host.DisposeAsync().ConfigureAwait(false);
-                    certificate?.Dispose();
-                    throw;
-                }
-                s_servers[endpoint] = server;
+                if (server._routes.Any(r => string.Equals(r.Path, path, StringComparison.OrdinalIgnoreCase)))
+                    throw new InvalidOperationException($"Another Listen already takes requests to {path} on {endpoint}.");
+                var added = new Route(server, path, handler);
+                server._routes = [.. server._routes.Append(added).OrderByDescending(r => r.Path.Length)];
+                return added;
             }
 
-            if (server._routes.Any(r => string.Equals(r.Path, path, StringComparison.OrdinalIgnoreCase)))
-                throw new InvalidOperationException($"Another Listen already takes requests to {path} on {endpoint}.");
+            // A new server knows its first path before it starts, so nothing that arrives at once finds nothing there.
+            server = new HttpServer(endpoint, certificate);
             var route = new Route(server, path, handler);
-            server._routes = [.. server._routes.Append(route).OrderByDescending(r => r.Path.Length)];
+            server._routes = [route];
+            try
+            {
+                await server._host.StartAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch
+            {
+                await server._host.DisposeAsync().ConfigureAwait(false);
+                certificate?.Dispose();
+                throw;
+            }
+            s_servers[endpoint] = server;
             return route;
         }
         finally

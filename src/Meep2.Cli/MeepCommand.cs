@@ -1,4 +1,5 @@
 using System.Reflection;
+using Meep2.Daemon;
 using Meep2.Meeplang.Hosting;
 using Meep2.Meeplang.Loading;
 using Meep2.Modules;
@@ -13,9 +14,10 @@ public static class MeepCommand
 {
     private const string Usage = """
         Usage:
-          meep run [--dev] [--otlp <url>] [--sample <share>] [--detach] <file.meep>
+          meep run [--dev] [--watch] [--otlp <url>] [--sample <share>] [--detach] <file.meep>
                                                 Run a pipeline until it halts, or until Ctrl+C.
                                                 --dev loads unsigned plugins from this machine.
+                                                --watch changes the running pipeline when the file changes.
                                                 --otlp sends spans and metrics to an OpenTelemetry collector.
                                                 --sample records that share of traces: 0.1 unless it says (1 is all).
                                                 --detach runs it in the background, with its output in a log.
@@ -28,9 +30,22 @@ public static class MeepCommand
           meep daemon stop                      Stop the daemon
           meep daemon token <name> <capabilities>
                                                 Make a token for a client that may only observe, inject or control
-          meep start [--dev] <file.meep>        Start a pipeline in the daemon
+          meep start [--dev] [--watch] <file.meep>
+                                                Start a pipeline in the daemon
           meep list                             List the daemon's pipelines, and those that ended recently
           meep stop <pipeline>                  Stop one of them, letting its messages finish
+          meep reload <pipeline> [--force]      Change a running pipeline to match its file, plugins included.
+                                                --force goes ahead though it undoes edits not in the file.
+          meep source <pipeline>                Show the text a running pipeline runs from
+          meep edit <pipeline> <module> <edit> [--message <text>] [--branch <name>] [--no-save]
+                                                Edit a running pipeline, and commit its file to pending, signed
+                                                with your SSH key, or write the file if it isn't in Git. The edit
+                                                is one of: set <name>=<value>, set <value>,
+                                                set @<modifier>[=<value>], unset [<name> | @<modifier>],
+                                                rename [<name>], add <module line>, insert <module line>,
+                                                remove or remove-branch. In place of a module, defaults and
+                                                const take set <name>=<value> and unset <name>, and plugin
+                                                takes add <address> and remove <name>.
           meep stats <pipeline> [--watch]       Show each module's counts, once or every second
           meep tap <pipeline> <module> [--where <condition>] [--sample <share>]
                                                 Show the messages passing a module, until Ctrl+C
@@ -89,7 +104,7 @@ public static class MeepCommand
                 if (run.Detach)
                     return await Detaching.StartAsync(run, plugins.Home, output, error, cancellationToken).ConfigureAwait(false);
                 using var telemetry = Telemetry.Start(run.Otlp, run.Sample);
-                return await RunFileAsync(run.Files[0], Options(run.DeveloperMode), output, error, cancellationToken).ConfigureAwait(false);
+                return await RunFileAsync(run.Files[0], Options(run.DeveloperMode), run.Watch, output, error, cancellationToken).ConfigureAwait(false);
             }
             case ["daemon", "token", var name, .. var capabilities] when capabilities.Length > 0:
                 return await DaemonCommands.TokenAsync(name, string.Join(',', capabilities), Options(), output, error).ConfigureAwait(false);
@@ -108,7 +123,7 @@ public static class MeepCommand
                 }
                 return await DaemonCommands.RunAsync(daemon, Options(daemon.DeveloperMode), output, error, cancellationToken).ConfigureAwait(false);
             }
-            case ["daemon", "stop"] or ["start", ..] or ["list"] or ["stop", _] or ["stats", ..] or ["tap", ..] or ["inject", ..]:
+            case ["daemon", "stop"] or ["start", ..] or ["list"] or ["stop", _] or ["stats", ..] or ["tap", ..] or ["inject", ..] or ["reload", ..] or ["source", _] or ["edit", ..]:
             {
                 var code = await DaemonCommands.ClientAsync(args, Options(), output, error, cancellationToken).ConfigureAwait(false);
                 if (code >= 0)
@@ -144,8 +159,9 @@ public static class MeepCommand
         ?? "?";
 
     // Runs the fixed bootstrap pipeline: Read the file, Parse it, Install its plugins, Build the pipeline, Host it.
-    private static async Task<int> RunFileAsync(string file, PluginOptions plugins, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    private static async Task<int> RunFileAsync(string file, PluginOptions plugins, bool watch, TextWriter output, TextWriter error, CancellationToken cancellationToken)
     {
+        PipelineWatcher? watcher = null;
         var exitCode = 0;
         void Log(string text)
         {
@@ -195,10 +211,27 @@ public static class MeepCommand
             builder.Add(() => new Parse()),
             builder.Add(() => new Install(registry, new PluginInstaller(plugins))),
             builder.Add(() => new Build(registry, hosted)),
-            builder.Add(() => new Host(error, running: _ => Detaching.Running())));
+            builder.Add(() => new Host(error, running: built =>
+            {
+                Detaching.Running();
+                if (watch && watcher is null && built.Live is { } live)
+                {
+                    // --watch: the running pipeline follows its file (goal 4).
+                    var path = Path.GetFullPath(file);
+                    watcher = new PipelineWatcher(path, built.Pipeline.Name, token => Reloading.ReloadAsync(live, path, registry, plugins, token), Log);
+                    Log($"Watching {path} for changes.");
+                }
+            })));
 
-        await using var pipeline = builder.Build();
-        await pipeline.RunAsync(cancellationToken).ConfigureAwait(false);
-        return exitCode;
+        try
+        {
+            await using var pipeline = builder.Build();
+            await pipeline.RunAsync(cancellationToken).ConfigureAwait(false);
+            return exitCode;
+        }
+        finally
+        {
+            watcher?.Dispose();
+        }
     }
 }

@@ -21,7 +21,7 @@ public sealed record DaemonOptions
     /// Pipeline files to start once the daemon is listening, from its command line and its settings file (Q112). The
     /// daemon doesn't remember what it ran before, so these are the only ones it starts by itself.
     /// </summary>
-    public IReadOnlyList<string> Start { get; init; } = [];
+    public IReadOnlyList<DaemonStart> Start { get; init; } = [];
 
     /// <summary>The control socket.</summary>
     public string Socket => SocketPath ?? DefaultSocket(Plugins.Home);

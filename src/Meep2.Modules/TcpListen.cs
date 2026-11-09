@@ -31,8 +31,24 @@ namespace Meep2.Modules;
 [Emits(typeof(TcpMessage))]
 [Emits(typeof(TcpConnected), When = nameof(TcpListenParameters.Connections))]
 [Emits(typeof(TcpDisconnected), When = nameof(TcpListenParameters.Connections))]
-public sealed class TcpListen(TcpListenParameters parameters) : ASource, IChosenByParameters<TcpListenParameters>
+public sealed class TcpListen(TcpListenParameters parameters) : ASource, IChosenByParameters<TcpListenParameters>, IReconfigurable<TcpListenParameters>
 {
+    private volatile TcpListenParameters _parameters = parameters;
+
+    /// <summary>
+    /// Takes new parameters while it listens, for the connections that come after (Q121). A new address needs a Listen
+    /// made afresh.
+    /// </summary>
+    public bool ParametersChanged(TcpListenParameters old, TcpListenParameters next)
+    {
+        ArgumentNullException.ThrowIfNull(old);
+        ArgumentNullException.ThrowIfNull(next);
+        if (next.Url != old.Url)
+            return false;
+        _parameters = next;
+        return true;
+    }
+
     /// <summary>Takes tcp:// addresses with a port, and one way of telling where a message ends.</summary>
     public static string? WhyNot(TcpListenParameters parameters, Message message)
     {
@@ -47,9 +63,9 @@ public sealed class TcpListen(TcpListenParameters parameters) : ASource, IChosen
     /// <inheritdoc/>
     protected override async Task RunAsync(ModuleContext context, CancellationToken cancellationToken)
     {
-        if (!Endpoints.TryTcp(parameters.Url, out var host, out var port))
-            throw new InvalidOperationException($"Listen.TCP needs a tcp:// address with a port, not {parameters.Url}");
-        var framing = Framing.For(parameters);
+        var start = _parameters;
+        if (!Endpoints.TryTcp(start.Url, out var host, out var port))
+            throw new InvalidOperationException($"Listen.TCP needs a tcp:// address with a port, not {start.Url}");
         var listener = new TcpListener(await Endpoints.ResolveAsync(host, cancellationToken).ConfigureAwait(false), port);
         listener.Start();
         var connections = new List<Task>();
@@ -67,7 +83,8 @@ public sealed class TcpListen(TcpListenParameters parameters) : ASource, IChosen
                     break;
                 }
                 connections.RemoveAll(task => task.IsCompleted);
-                connections.Add(Task.Run(() => ServeAsync(client, framing, context, cancellationToken), CancellationToken.None));
+                var current = _parameters;
+                connections.Add(Task.Run(() => ServeAsync(client, current, Framing.For(current), context, cancellationToken), CancellationToken.None));
             }
             await Task.WhenAll(connections).ConfigureAwait(false);
         }
@@ -78,7 +95,7 @@ public sealed class TcpListen(TcpListenParameters parameters) : ASource, IChosen
     }
 
     // Emits each message from one connection, then waits until the connection's lease has closed.
-    private async Task ServeAsync(TcpClient client, Framing framing, ModuleContext context, CancellationToken cancellationToken)
+    private static async Task ServeAsync(TcpClient client, TcpListenParameters parameters, Framing framing, ModuleContext context, CancellationToken cancellationToken)
     {
         var lease = new TcpConnectionLease(client, framing.Ending);
         var emitted = false;

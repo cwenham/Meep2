@@ -21,6 +21,9 @@ internal sealed record HostSettings
     /// <summary>--detach: run in the background (meep run only).</summary>
     public bool Detach { get; set; }
 
+    /// <summary>--watch: change the running pipeline whenever its file changes (goal 4).</summary>
+    public bool Watch { get; set; }
+
     /// <summary>--config: the daemon's settings file (meep daemon only).</summary>
     public string? Config { get; set; }
 
@@ -32,6 +35,8 @@ internal sealed record HostSettings
     {
         if (DeveloperMode)
             yield return "--dev";
+        if (Watch)
+            yield return "--watch";
         if (Otlp is not null)
         {
             yield return "--otlp";
@@ -64,6 +69,9 @@ internal sealed record HostSettings
                     break;
                 case "--detach":
                     settings.Detach = true;
+                    break;
+                case "--watch":
+                    settings.Watch = true;
                     break;
                 case "--otlp" when next is not null && Uri.TryCreate(next, UriKind.Absolute, out _):
                     settings.Otlp = next;

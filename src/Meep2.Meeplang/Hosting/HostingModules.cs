@@ -42,8 +42,14 @@ public sealed record BuiltPipeline(Pipeline Pipeline, IReadOnlyList<Diagnostic> 
     /// <summary>Builds the same pipeline again, to restart it (Q112). Null if it can't be.</summary>
     public Func<Pipeline>? Rebuild { get; init; }
 
+    /// <summary>
+    /// The pipeline as one that can be changed while it runs (goal 4), with the text it runs from now. Null for a
+    /// pipeline built some other way.
+    /// </summary>
+    public Editing.LivePipeline? Live { get; init; }
+
     /// <summary>This, with a newly built pipeline in place of the one that ran.</summary>
-    internal BuiltPipeline Rebuilt() => new(Rebuild!(), Warnings) { Holds = Holds, Registry = Registry, Rebuild = Rebuild };
+    internal BuiltPipeline Rebuilt() => new(Rebuild!(), Warnings) { Holds = Holds, Registry = Registry, Rebuild = Rebuild, Live = Live };
 }
 
 /// <summary>A pipeline that failed, which <see cref="Host"/> is about to restart, as its error policy says (Q112).</summary>
@@ -118,31 +124,32 @@ public sealed class Build(ModuleRegistry registry, PipelineOptions? options = nu
     /// <inheritdoc/>
     protected override ValueTask HandleAsync(ParsedPipeline message, ModuleContext context, CancellationToken cancellationToken)
     {
-        LoadResult result;
+        Editing.LivePipeline? live;
+        IReadOnlyList<Diagnostic> diagnostics;
+        var used = message.Registry ?? registry;
         try
         {
-            result = new PipelineLoader(message.Registry ?? registry).Load(message.Syntax, options);
+            (live, diagnostics) = Editing.LivePipeline.Load(message.Syntax, used, options, message.Holds);
         }
         catch
         {
             Release(message.Holds);
             throw;
         }
-        if (result.Pipeline is { } pipeline)
+        if (live is not null)
         {
-            var used = message.Registry ?? registry;
-            context.Emit(new BuiltPipeline(pipeline, [.. message.Warnings, .. result.Diagnostics.Where(d => !d.IsError)])
+            context.Emit(new BuiltPipeline(live.Pipeline, [.. message.Warnings, .. diagnostics.Where(d => !d.IsError)])
             {
                 Holds = message.Holds,
                 Registry = used,
-                Rebuild = () => new PipelineLoader(used).Load(message.Syntax, options).Pipeline
-                    ?? throw new InvalidOperationException($"{pipeline.Name} didn't load again, so it can't be restarted."),
+                Rebuild = live.Rebuild,
+                Live = live,
             });
         }
         else
         {
             Release(message.Holds);
-            context.Emit(MeeplangErrorMessage.From([.. message.Warnings, .. result.Diagnostics]));
+            context.Emit(MeeplangErrorMessage.From([.. message.Warnings, .. diagnostics]));
         }
         return ValueTask.CompletedTask;
     }
@@ -206,7 +213,8 @@ public sealed class Host(TextWriter? diagnostics = null, Action<BuiltPipeline>? 
         }
         finally
         {
-            Build.Release(message.Holds);
+            // A pipeline changed while it ran may hold other plugins than it started with.
+            Build.Release(message.Live?.Holds ?? message.Holds);
         }
     }
 

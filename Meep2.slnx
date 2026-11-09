@@ -5,6 +5,7 @@
   <Folder Name="/src/">
     <Project Path="src/Meep2.Cli/Meep2.Cli.csproj" />
     <Project Path="src/Meep2.Daemon/Meep2.Daemon.csproj" />
+    <Project Path="src/Meep2.Git/Meep2.Git.csproj" />
     <Project Path="src/Meep2.Meeplang/Meep2.Meeplang.csproj" />
     <Project Path="src/Meep2.Modules/Meep2.Modules.csproj" />
     <Project Path="src/Meep2.Plugins/Meep2.Plugins.csproj" />

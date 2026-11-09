@@ -53,7 +53,26 @@ public sealed class DaemonClient : IDisposable
 
     /// <summary>Asks the daemon to load a pipeline file and start it. Returns once it's running.</summary>
     public Task<PipelineSummary> StartAsync(string path, bool developerMode = false, CancellationToken cancellationToken = default) =>
-        SendAsync(HttpMethod.Post, "pipelines", JsonContent.Create(new StartRequest(Path.GetFullPath(path), developerMode), DaemonJson.Default.StartRequest), DaemonJson.Default.PipelineSummary, cancellationToken);
+        StartAsync(path, developerMode, watch: false, cancellationToken);
+
+    /// <summary>Asks the daemon to start a pipeline file, and if <paramref name="watch"/> is set, to reload it whenever the file changes.</summary>
+    public Task<PipelineSummary> StartAsync(string path, bool developerMode, bool watch, CancellationToken cancellationToken = default) =>
+        SendAsync(HttpMethod.Post, "pipelines", JsonContent.Create(new StartRequest(Path.GetFullPath(path), developerMode, watch), DaemonJson.Default.StartRequest), DaemonJson.Default.PipelineSummary, cancellationToken);
+
+    /// <summary>The text a running pipeline runs from.</summary>
+    public Task<SourceText> SourceAsync(string name, CancellationToken cancellationToken = default) =>
+        SendAsync(HttpMethod.Get, $"pipelines/{Uri.EscapeDataString(name)}/source", null, DaemonJson.Default.SourceText, cancellationToken);
+
+    /// <summary>
+    /// Reads a running pipeline's file again and changes the pipeline to match, plugins included. It's refused if that
+    /// would undo edits that aren't in the file yet, unless <paramref name="force"/> is set (Q120).
+    /// </summary>
+    public Task<ChangeResult> ReloadAsync(string name, bool force = false, CancellationToken cancellationToken = default) =>
+        SendAsync(HttpMethod.Post, $"pipelines/{Uri.EscapeDataString(name)}/reload{(force ? "?force=true" : "")}", null, DaemonJson.Default.ChangeResult, cancellationToken);
+
+    /// <summary>Edits a running pipeline's text, changes the pipeline to match, and commits the text (Q32).</summary>
+    public Task<ChangeResult> EditAsync(string name, EditRequest edits, CancellationToken cancellationToken = default) =>
+        SendAsync(HttpMethod.Post, $"pipelines/{Uri.EscapeDataString(name)}/edits", JsonContent.Create(edits, DaemonJson.Default.EditRequest), DaemonJson.Default.ChangeResult, cancellationToken);
 
     /// <summary>The pipelines running.</summary>
     public Task<IReadOnlyList<PipelineSummary>> ListAsync(CancellationToken cancellationToken = default) =>
