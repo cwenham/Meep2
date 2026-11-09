@@ -12,6 +12,10 @@ public sealed record Tick(long Count) : Message
     public string? Payload { get; init; }
 }
 
+/// <summary>Plain text, such as a message sent into a running pipeline as a test (Q72).</summary>
+/// <param name="Text">The text.</param>
+public sealed record TextMessage(string Text) : Message, IHasText;
+
 /// <summary>The contents of a text file, as <see cref="Read"/> emits it.</summary>
 /// <param name="Path">The full path of the file.</param>
 /// <param name="Text">What the file contains.</param>

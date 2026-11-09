@@ -42,4 +42,14 @@ public sealed record PipelineOptions
     /// Meeplang's <c>expires</c> default.
     /// </summary>
     public TimeSpan? Expires { get; init; }
+
+    /// <summary>
+    /// How long a host that lists its pipelines, such as the daemon, keeps listing this one after it has finished,
+    /// with its final counts and why it stopped (Q111). Zero drops it at once. Meeplang's <c>keep-finished</c> default.
+    /// </summary>
+    public TimeSpan KeepFinished
+    {
+        get;
+        init => field = value >= TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(KeepFinished), value, "It can't be negative.");
+    } = TimeSpan.FromHours(24);
 }

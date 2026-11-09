@@ -195,8 +195,12 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
                         options = options with { ErrorPolicy = parts.ApplyTo(options.ErrorPolicy) };
                     }
                     break;
+                case "keep-finished":
+                    if (Lifetime(setting.Value, "keep-finished = 24h", allowZero: true) is { } keep)
+                        options = options with { KeepFinished = keep == Timeout.InfiniteTimeSpan ? TimeSpan.Zero : keep };
+                    break;
                 default:
-                    diagnostics.Error($"There's no default called {setting.Name}." + Suggestions.For(setting.Name, ["buffer", "expires", "on-error"]), setting.NameSpan);
+                    diagnostics.Error($"There's no default called {setting.Name}." + Suggestions.For(setting.Name, ["buffer", "expires", "on-error", "keep-finished"]), setting.NameSpan);
                     break;
             }
         }
@@ -222,16 +226,18 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
         }
     }
 
-    // A duration for expiry, or none, which clears expiry (Timeout.InfiniteTimeSpan).
-    private TimeSpan? Lifetime(ExpressionSyntax value, string example)
+    // A duration, or none (Timeout.InfiniteTimeSpan): for expiry, none clears it; for keep-finished, it's zero.
+    private TimeSpan? Lifetime(ExpressionSyntax value, string example, bool allowZero = false)
     {
         if (value is NameSyntax { Name: "none" })
             return Timeout.InfiniteTimeSpan;
         if (!TryConstant(value, out var result))
             return null;
-        if (result is TimeSpan lifetime && lifetime > TimeSpan.Zero)
+        if (result is TimeSpan lifetime && (lifetime > TimeSpan.Zero || allowZero && lifetime == TimeSpan.Zero))
             return lifetime;
-        diagnostics.Error($"Expiry needs a duration longer than zero, as in {example}, or none.", value.Span);
+        diagnostics.Error(allowZero
+            ? $"This needs a duration, as in {example}, or none."
+            : $"Expiry needs a duration longer than zero, as in {example}, or none.", value.Span);
         return null;
     }
 

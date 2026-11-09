@@ -13,8 +13,29 @@ public static class MeepCommand
 {
     private const string Usage = """
         Usage:
-          meep run [--dev] <file.meep>          Run a pipeline until it halts, or until Ctrl+C.
+          meep run [--dev] [--otlp <url>] [--sample <share>] [--detach] <file.meep>
+                                                Run a pipeline until it halts, or until Ctrl+C.
                                                 --dev loads unsigned plugins from this machine.
+                                                --otlp sends spans and metrics to an OpenTelemetry collector.
+                                                --sample records that share of traces: 0.1 unless it says (1 is all).
+                                                --detach runs it in the background, with its output in a log.
+          meep daemon [--dev] [--otlp <url>] [--sample <share>] [--config <file>] [<file.meep> ...]
+                                                Run the daemon, which hosts pipelines, until Ctrl+C. It starts
+                                                the files given, and those its settings file lists.
+          meep daemon install [options] [<file.meep> ...]
+                                                Run the daemon as a service that starts when you log in
+          meep daemon uninstall                 Stop and remove the service
+          meep daemon stop                      Stop the daemon
+          meep daemon token <name> <capabilities>
+                                                Make a token for a client that may only observe, inject or control
+          meep start [--dev] <file.meep>        Start a pipeline in the daemon
+          meep list                             List the daemon's pipelines, and those that ended recently
+          meep stop <pipeline>                  Stop one of them, letting its messages finish
+          meep stats <pipeline> [--watch]       Show each module's counts, once or every second
+          meep tap <pipeline> <module> [--where <condition>] [--sample <share>]
+                                                Show the messages passing a module, until Ctrl+C
+          meep inject <pipeline> <module> <text> [--json]
+                                                Send a test message into a module
           meep keys trust <name> <type> <key>   Trust plugins signed with someone's SSH key,
           meep keys trust <name> <file.pub>       as their .pub file has it,
           meep keys trust github:<user>           or as their GitHub account has it
@@ -58,12 +79,44 @@ public static class MeepCommand
             case ["--version"] or ["version"]:
                 await output.WriteLineAsync($"meep {Version} on .NET {Environment.Version}").ConfigureAwait(false);
                 return 0;
-            case ["run", var file]:
-                return await RunFileAsync(file, Options(), output, error, cancellationToken).ConfigureAwait(false);
-            case ["run", "--dev", var file]:
-                return await RunFileAsync(file, Options(developerMode: true), output, error, cancellationToken).ConfigureAwait(false);
-            case ["run", var file, "--dev"]:
-                return await RunFileAsync(file, Options(developerMode: true), output, error, cancellationToken).ConfigureAwait(false);
+            case ["run", .. var rest]:
+            {
+                if (HostSettings.Parse(rest, error) is not { Files: [_], Config: null } run)
+                {
+                    await error.WriteLineAsync("meep run takes one pipeline file, with --dev, --otlp <url>, --sample <share> or --detach.").ConfigureAwait(false);
+                    return 2;
+                }
+                if (run.Detach)
+                    return await Detaching.StartAsync(run, plugins.Home, output, error, cancellationToken).ConfigureAwait(false);
+                using var telemetry = Telemetry.Start(run.Otlp, run.Sample);
+                return await RunFileAsync(run.Files[0], Options(run.DeveloperMode), output, error, cancellationToken).ConfigureAwait(false);
+            }
+            case ["daemon", "token", var name, .. var capabilities] when capabilities.Length > 0:
+                return await DaemonCommands.TokenAsync(name, string.Join(',', capabilities), Options(), output, error).ConfigureAwait(false);
+            case ["daemon", "install", .. var rest]:
+                return HostSettings.Parse(rest, error) is { Detach: false } install
+                    ? await DaemonCommands.InstallAsync(install, Options(), output, error, cancellationToken).ConfigureAwait(false)
+                    : 2;
+            case ["daemon", "uninstall"]:
+                return await DaemonCommands.UninstallAsync(Options(), output, error, cancellationToken).ConfigureAwait(false);
+            case ["daemon", .. var rest] when rest is not ["stop"]:
+            {
+                if (HostSettings.Parse(rest, error) is not { Detach: false } daemon)
+                {
+                    await error.WriteLineAsync("meep daemon takes pipeline files to start, with --dev, --otlp <url>, --sample <share> or --config <file>. To run it in the background, use meep daemon install.").ConfigureAwait(false);
+                    return 2;
+                }
+                return await DaemonCommands.RunAsync(daemon, Options(daemon.DeveloperMode), output, error, cancellationToken).ConfigureAwait(false);
+            }
+            case ["daemon", "stop"] or ["start", ..] or ["list"] or ["stop", _] or ["stats", ..] or ["tap", ..] or ["inject", ..]:
+            {
+                var code = await DaemonCommands.ClientAsync(args, Options(), output, error, cancellationToken).ConfigureAwait(false);
+                if (code >= 0)
+                    return code;
+                await error.WriteLineAsync($"meep doesn't understand: {string.Join(' ', args)}").ConfigureAwait(false);
+                await error.WriteLineAsync(Usage).ConfigureAwait(false);
+                return 2;
+            }
             case ["keys", "trust", .. var key] when key.Length > 0:
                 return await KeysCommands.TrustAsync(key, Options(), output, error, cancellationToken).ConfigureAwait(false);
             case ["keys", "trust"]:
@@ -142,7 +195,7 @@ public static class MeepCommand
             builder.Add(() => new Parse()),
             builder.Add(() => new Install(registry, new PluginInstaller(plugins))),
             builder.Add(() => new Build(registry, hosted)),
-            builder.Add(() => new Host(error)));
+            builder.Add(() => new Host(error, running: _ => Detaching.Running())));
 
         await using var pipeline = builder.Build();
         await pipeline.RunAsync(cancellationToken).ConfigureAwait(false);

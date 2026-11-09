@@ -318,7 +318,7 @@ internal sealed class ExpressionBinder(CompileScope scope, Type? messageType, Pa
     private Expression Binary(BinarySyntax binary)
     {
         var left = Bind(binary.Left);
-        var right = Bind(binary.Right);
+        var right = binary.Operator is "and" or "or" ? Narrowed(binary).Bind(binary.Right) : Bind(binary.Right);
         return binary.Operator switch
         {
             "and" => Expression.AndAlso(ToBool(left, binary.Left.Span), ToBool(right, binary.Right.Span)),
@@ -445,6 +445,31 @@ internal sealed class ExpressionBinder(CompileScope scope, Type? messageType, Pa
             throw new BindException($"Can't compare {Describe(left.Type)} with {Describe(right.Type)} using {op}.", span);
         }
     }
+
+    // The binder for the right of an and or an or. Once the left has tested msg's type, the right only runs for
+    // messages of that type, so it's compiled for that type: msg is Tick and msg.Count > 2 fits any message (Q113).
+    // After or, it's the type the left ruled out: msg is not Tick or msg.Count > 2.
+    private ExpressionBinder Narrowed(BinarySyntax binary)
+    {
+        if (messageType is null || TestedType(binary.Left, whenTrue: binary.Operator == "and") is not { } tested)
+            return this;
+        // Keep the type already known when it's more specific, as for msg is Message.
+        return tested.IsAssignableFrom(messageType) ? this : new ExpressionBinder(scope, tested, message, bigNumbers);
+    }
+
+    // The type msg must have for a condition to come out as whenTrue says, if a test of msg's type decides it.
+    private Type? TestedType(ExpressionSyntax condition, bool whenTrue) => condition switch
+    {
+        IsSyntax { Operand: NameSyntax { Name: "msg" } } test when test.Negated != whenTrue => scope.MessageType(test.TypeName),
+        // For a and b to be true, both are; for a or b to be false, both are. Either side's test then holds.
+        BinarySyntax { Operator: "and" } both when whenTrue => Narrower(TestedType(both.Left, true), TestedType(both.Right, true)),
+        BinarySyntax { Operator: "or" } both when !whenTrue => Narrower(TestedType(both.Left, false), TestedType(both.Right, false)),
+        UnarySyntax { Operator: "not" } not => TestedType(not.Operand, !whenTrue),
+        _ => null,
+    };
+
+    private static Type? Narrower(Type? a, Type? b) =>
+        a is null ? b : b is null ? a : a.IsAssignableFrom(b) ? b : a;
 
     private Expression Is(IsSyntax test)
     {

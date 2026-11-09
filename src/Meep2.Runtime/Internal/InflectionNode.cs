@@ -58,6 +58,8 @@ internal sealed class InflectionNode : Node
     /// <summary>Whether the error policy has stopped this module and its branch.</summary>
     public bool IsStopped => _stopped;
 
+    public override long Queued => _buffer.Reader.Count;
+
     /// <summary>Whether any of the module's inflections can handle this message's type.</summary>
     public bool Accepts(Message message) => RouteFor(message.GetType()).Length > 0;
 
@@ -228,6 +230,9 @@ internal sealed class InflectionNode : Node
                 // Handled inline rather than in a helper method, so awaiting doesn't allocate for each message.
                 var cancellationToken = TokenFor(message, abort);
                 var outcome = MessageOutcome.Completed;
+                Exception? failure = null;
+                var span = Telemetry.Tracing ? Telemetry.StartHandling(this, slot.Spec.Info, message) : null;
+                var started = Telemetry.Duration.Enabled ? Stopwatch.GetTimestamp() : 0;
                 _context.Begin(message, slot.Spec.Info);
                 try
                 {
@@ -251,6 +256,7 @@ internal sealed class InflectionNode : Node
                 }
                 catch (Exception exception)
                 {
+                    failure = exception;
                     CountFailed();
                     _context.EmitFailure(message, exception);
                     await RestartAsync(slot).ConfigureAwait(false);
@@ -260,6 +266,10 @@ internal sealed class InflectionNode : Node
                 {
                     _context.End();
                     ResetExpiry(cancellationToken);
+                    if (started != 0)
+                        Telemetry.Duration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds, new TagList { { "meep.pipeline", Pipeline.Name }, { "meep.module", Label } });
+                    if (span is not null)
+                        Telemetry.EndHandling(this, span, outcome, failure);
                     Pipeline.Release(message, outcome);
                 }
             }

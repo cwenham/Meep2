@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Meep2.Runtime.Internal;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
@@ -28,6 +29,9 @@ public sealed class Pipeline : IAsyncDisposable
 
     // Stops a message going round forever in a loop of modules that all pass it on without taking it in.
     private const int MaxForwardDepth = 256;
+
+    // The pipelines running in this process, for OpenTelemetry's metrics.
+    private static readonly ConcurrentDictionary<Pipeline, byte> s_running = new();
 
     private readonly Node[] _nodes;
     private readonly InflectionNode[] _inflections;
@@ -85,7 +89,22 @@ public sealed class Pipeline : IAsyncDisposable
         _nodes = nodes;
         _inflections = [.. nodes.OfType<InflectionNode>()];
         _sources = [.. nodes.OfType<SourceNode>()];
+        Modules = [.. nodes.Select(node => node.Info)];
     }
+
+    /// <summary>The pipelines running in this process now.</summary>
+    internal static ICollection<Pipeline> AllRunning => s_running.Keys;
+
+    internal IReadOnlyList<Node> Nodes => _nodes;
+
+    /// <summary>The pipeline's modules, in the order they were added.</summary>
+    public IReadOnlyList<ModuleInfo> Modules { get; }
+
+    /// <summary>Whether the pipeline has started and hasn't finished.</summary>
+    public bool IsRunning => Volatile.Read(ref _state) == Running;
+
+    /// <summary>Completes when the pipeline has finished running and its modules are disposed.</summary>
+    public Task Completion => _finished.Task;
 
     /// <summary>The pipeline's name.</summary>
     public string Name { get; }
@@ -108,11 +127,64 @@ public sealed class Pipeline : IAsyncDisposable
     public string? StoppedBecause => Volatile.Read(ref _stoppedBecause);
 
     /// <summary>Counts for one module since the pipeline started.</summary>
-    public ModuleStats GetStats(ModuleInfo module)
+    public ModuleStats GetStats(ModuleInfo module) => NodeOf(module).GetStats();
+
+    /// <summary>
+    /// Opens a debug tap on a module: a copy of each message it emits or passes on, until the tap is disposed or the
+    /// pipeline finishes (Q64). Taps never hold the pipeline up: see <see cref="Runtime.DebugTap"/>.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The pipeline has finished.</exception>
+    public DebugTap Tap(ModuleInfo module, DebugTapOptions? options = null)
+    {
+        var node = NodeOf(module);
+        if (Volatile.Read(ref _state) == Finished)
+            throw new InvalidOperationException($"{Name} has finished, so there's nothing to tap.");
+        var tap = new DebugTap(node, options ?? new DebugTapOptions());
+        node.AddTap(tap);
+        if (Volatile.Read(ref _state) == Finished)
+            tap.Complete(); // it finished while the tap was being added
+        return tap;
+    }
+
+    /// <summary>
+    /// Sends a new message into a running pipeline, as a test (Q72). It goes to a module as if it came from upstream,
+    /// or, for a source, on downstream as if the source had emitted it. It's recorded as emitted by <see cref="Injector"/>.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">The pipeline isn't running.</exception>
+    /// <exception cref="ArgumentException">The message has been emitted before.</exception>
+    public void Inject(ModuleInfo module, Message message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        var node = NodeOf(module);
+        if (!IsRunning || Volatile.Read(ref _stopping) != 0)
+            throw new InvalidOperationException($"{Name} isn't running, so it can't take a message.");
+        if (message.IsStamped)
+            throw new ArgumentException("Only a new message can be injected, not one that has been emitted before.", nameof(message));
+
+        List<TrackingScope>? created = null;
+        Stamper.StampInjected(message, this, ref created);
+        if (Telemetry.Tracing)
+            Telemetry.Injected(this, message);
+        if (node is InflectionNode target)
+        {
+            DeliverTo(target, message, depth: 0);
+        }
+        else
+        {
+            node.Tapped(message);
+            Deliver(node.Downstream, message);
+        }
+        ScopeSet.ReleaseAll(created);
+    }
+
+    /// <summary>What injected messages record as emitting them.</summary>
+    public static ModuleInfo Injector { get; } = new(0, "Inject", "Inject");
+
+    private Node NodeOf(ModuleInfo module)
     {
         ArgumentNullException.ThrowIfNull(module);
         return _nodesByModule.TryGetValue(module, out var node)
-            ? node.GetStats()
+            ? node
             : throw new ArgumentException($"{module} isn't part of this pipeline.", nameof(module));
     }
 
@@ -180,6 +252,11 @@ public sealed class Pipeline : IAsyncDisposable
         {
             foreach (var node in _nodes)
                 node.CreateModule();
+            s_running.TryAdd(this, 0);
+
+            // The pipeline's traces start with its own sources, not inside the span of whatever started it, such as
+            // the Host module. The modules' tasks, started below, inherit this.
+            System.Diagnostics.Activity.Current = null;
 
             // Held while starting up, so the pipeline can't halt before every source is running.
             _inFlight.Add();
@@ -204,6 +281,9 @@ public sealed class Pipeline : IAsyncDisposable
         finally
         {
             Volatile.Write(ref _state, Finished);
+            s_running.TryRemove(this, out _);
+            foreach (var node in _nodes)
+                node.CloseTaps();
             foreach (var node in _nodes)
                 await node.DisposeModuleAsync().ConfigureAwait(false);
             _abort.Dispose();
@@ -241,6 +321,9 @@ public sealed class Pipeline : IAsyncDisposable
         from.CountEmitted();
         if (from is SourceNode && message is not ErrorMessage)
             _sourceWindow?.Add(message.Id);
+        if (Telemetry.Tracing)
+            Telemetry.Emitted(from, emitter, message);
+        from.Tapped(message);
         Deliver(from.Downstream, message);
         ScopeSet.ReleaseAll(created);
     }
@@ -263,6 +346,9 @@ public sealed class Pipeline : IAsyncDisposable
         from.CountEmitted();
         if (from is SourceNode && message is not ErrorMessage)
             _sourceWindow?.Add(message.Id);
+        if (Telemetry.Tracing)
+            Telemetry.Emitted(from, emitter, message);
+        from.Tapped(message);
         Deliver(from.Downstream, message);
         ScopeSet.ReleaseAll(created);
 
@@ -284,6 +370,9 @@ public sealed class Pipeline : IAsyncDisposable
         from.CountEmitted();
         if (from is SourceNode && message is not ErrorMessage)
             _sourceWindow?.Add(message.Id);
+        if (Telemetry.Tracing)
+            Telemetry.Emitted(from, emitter, message);
+        from.Tapped(message);
         Deliver(from.Downstream, message);
 
         // Settle any new error first, so an error that went nowhere is counted in the outcome.
@@ -339,7 +428,10 @@ public sealed class Pipeline : IAsyncDisposable
             {
                 target.Enqueue(message);
                 if (target.IsPassthrough)
+                {
+                    target.Tapped(message);
                     Forward(target, message, depth);
+                }
             }
         }
         else if (isError || target.Options.Bypass)

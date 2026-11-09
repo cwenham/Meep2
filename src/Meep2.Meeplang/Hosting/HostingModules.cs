@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using Meep2.Meeplang.Loading;
 using Meep2.Meeplang.Parsing;
 using Meep2.Meeplang.Syntax;
@@ -34,6 +35,31 @@ public sealed record BuiltPipeline(Pipeline Pipeline, IReadOnlyList<Diagnostic> 
 {
     /// <summary>What keeps the pipeline's plugins loaded, let go of once the pipeline has finished.</summary>
     public IReadOnlyList<IDisposable> Holds { get; init; } = [];
+
+    /// <summary>The verbs and message types the pipeline was built with, its plugins' included, for conditions on its messages.</summary>
+    public ModuleRegistry? Registry { get; init; }
+
+    /// <summary>Builds the same pipeline again, to restart it (Q112). Null if it can't be.</summary>
+    public Func<Pipeline>? Rebuild { get; init; }
+
+    /// <summary>This, with a newly built pipeline in place of the one that ran.</summary>
+    internal BuiltPipeline Rebuilt() => new(Rebuild!(), Warnings) { Holds = Holds, Registry = Registry, Rebuild = Rebuild };
+}
+
+/// <summary>A pipeline that failed, which <see cref="Host"/> is about to restart, as its error policy says (Q112).</summary>
+/// <param name="Name">The pipeline's name.</param>
+/// <param name="Reason">Why it stopped, as in "it threw: …" or the error policy's reason.</param>
+/// <param name="Delay">How long until it starts again.</param>
+/// <param name="Restart">Which restart this is, counting from 1.</param>
+/// <param name="Policy">The policy restarting it.</param>
+public sealed record PipelineRestarting(string Name, string Reason, TimeSpan Delay, int Restart, PipelineRestart Policy)
+{
+    /// <inheritdoc/>
+    public override string ToString()
+    {
+        var window = Policy.Within is { } within ? $" in {Durations.Format(within)}" : "";
+        return $"{Name} was stopped, because {Reason}. Restarting it in {Durations.Format(Delay)} (restart {Restart} of at most {Policy.Times}{window}).";
+    }
 }
 
 /// <summary>Problems that stopped a pipeline file loading.</summary>
@@ -104,7 +130,14 @@ public sealed class Build(ModuleRegistry registry, PipelineOptions? options = nu
         }
         if (result.Pipeline is { } pipeline)
         {
-            context.Emit(new BuiltPipeline(pipeline, [.. message.Warnings, .. result.Diagnostics.Where(d => !d.IsError)]) { Holds = message.Holds });
+            var used = message.Registry ?? registry;
+            context.Emit(new BuiltPipeline(pipeline, [.. message.Warnings, .. result.Diagnostics.Where(d => !d.IsError)])
+            {
+                Holds = message.Holds,
+                Registry = used,
+                Rebuild = () => new PipelineLoader(used).Load(message.Syntax, options).Pipeline
+                    ?? throw new InvalidOperationException($"{pipeline.Name} didn't load again, so it can't be restarted."),
+            });
         }
         else
         {
@@ -117,30 +150,80 @@ public sealed class Build(ModuleRegistry registry, PipelineOptions? options = nu
 
 /// <summary>
 /// Runs each <see cref="BuiltPipeline"/> it receives until that pipeline halts, or stops it when this module's own
-/// pipeline is asked to stop: the host, as a module. A pipeline its error policy stopped becomes a
-/// <see cref="PipelineStoppedMessage"/>.
+/// pipeline is asked to stop: the host, as a module. A pipeline that its error policy stopped, or that failed, is
+/// started again if its policy says to (<see cref="ErrorPolicy.RestartPipeline"/>), and otherwise becomes a
+/// <see cref="PipelineStoppedMessage"/>, or for a failure, this module's own error.
 /// </summary>
-/// <param name="diagnostics">Where to write warnings, if anywhere.</param>
-public sealed class Host(TextWriter? diagnostics = null) : AInflection<BuiltPipeline>
+/// <param name="diagnostics">Where warnings and restarts are written, such as standard error, if anywhere.</param>
+/// <param name="running">Told about each pipeline once it's running, as the daemon is, so it can watch and stop it. A restarted pipeline is a new one.</param>
+/// <param name="restarting">Told when a pipeline is about to be restarted.</param>
+public sealed class Host(TextWriter? diagnostics = null, Action<BuiltPipeline>? running = null, Action<PipelineRestarting>? restarting = null)
+    : AInflection<BuiltPipeline>
 {
     /// <inheritdoc/>
     protected override async ValueTask HandleAsync(BuiltPipeline message, ModuleContext context, CancellationToken cancellationToken)
     {
         try
         {
-            await using var pipeline = message.Pipeline;
             if (diagnostics is not null)
             {
                 foreach (var warning in message.Warnings)
                     await diagnostics.WriteLineAsync(warning.ToString()).ConfigureAwait(false);
             }
-            await pipeline.RunAsync(context.Stopping).ConfigureAwait(false);
-            if (pipeline.StoppedBecause is { } reason)
-                context.Emit(new PipelineStoppedMessage { Error = $"{pipeline.Name} was stopped, because {reason}.", Reason = reason });
+            var current = message;
+            var restarts = new List<DateTimeOffset>();
+            while (true)
+            {
+                var (reason, failure) = await RunOnceAsync(current, context).ConfigureAwait(false);
+                if (reason is null)
+                    return; // it finished, or was asked to stop
+
+                var pipeline = current.Pipeline;
+                var policy = pipeline.Options.ErrorPolicy.RestartPipeline;
+                if (context.Stopping.IsCancellationRequested || policy is null || current.Rebuild is null || !policy.Allows(restarts, DateTimeOffset.UtcNow))
+                {
+                    failure?.Throw();
+                    var tried = restarts.Count == 0 ? "" : restarts.Count == 1 ? " It had been restarted once." : $" It had been restarted {restarts.Count} times.";
+                    context.Emit(new PipelineStoppedMessage { Error = $"{pipeline.Name} was stopped, because {reason}.{tried}", Reason = reason });
+                    return;
+                }
+
+                restarts.Add(DateTimeOffset.UtcNow);
+                var restart = new PipelineRestarting(pipeline.Name, reason, policy.Delay, restarts.Count, policy);
+                restarting?.Invoke(restart);
+                if (diagnostics is not null)
+                    await diagnostics.WriteLineAsync(restart.ToString()).ConfigureAwait(false);
+                try
+                {
+                    await Task.Delay(policy.Delay, context.Stopping).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    return; // asked to stop while waiting
+                }
+                current = current.Rebuilt();
+            }
         }
         finally
         {
             Build.Release(message.Holds);
         }
+    }
+
+    // Runs a pipeline until it halts. Returns why it stopped, if its error policy stopped it or it failed.
+    private async Task<(string? Reason, ExceptionDispatchInfo? Failure)> RunOnceAsync(BuiltPipeline built, ModuleContext context)
+    {
+        await using var pipeline = built.Pipeline;
+        try
+        {
+            var run = pipeline.RunAsync(context.Stopping);
+            running?.Invoke(built);
+            await run.ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!context.Stopping.IsCancellationRequested)
+        {
+            return ($"it failed: {exception.Message}", ExceptionDispatchInfo.Capture(exception));
+        }
+        return (pipeline.StoppedBecause, null);
     }
 }

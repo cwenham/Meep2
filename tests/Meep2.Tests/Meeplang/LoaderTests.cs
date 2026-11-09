@@ -118,6 +118,35 @@ public class LoaderTests
     }
 
     [Test]
+    public async Task A_type_test_narrows_the_rest_of_an_and()
+    {
+        // Q113: after msg is ErrorMessage, msg is an ErrorMessage, so the condition fits a Tick too and keeps it out,
+        // where before the Tick skipped the Where and went on to Sink.
+        var ticks = await TestRun.Start("""
+            Interval 10ms count=2
+                Where msg is ErrorMessage and msg.Error.Contains("boom")
+                    Sink
+            """);
+        var errors = await TestRun.Start("""
+            Interval 10ms count=2
+                Boom
+                    Where msg is ErrorMessage and msg.Error == "boom" or msg is Tick and msg.Count > 5
+                        Sink
+            """);
+        var typo = await TestRun.Start("""
+            Interval 10ms count=1
+                Where msg is ErrorMessage and msg.Eror == "boom"
+                    Sink
+            """, run: false);
+
+        await Assert.That(ticks.Diagnostics).IsEqualTo("");
+        await Assert.That(ticks.At("Sink").Count).IsEqualTo(0);
+        await Assert.That(errors.At("Sink").Count).IsEqualTo(2);
+        await Assert.That(errors.At("Sink").All(m => m is ErrorMessage)).IsTrue();
+        await Assert.That(typo.Diagnostics).Contains("ErrorMessage has no 'Eror'. Did you mean 'Error'?");
+    }
+
+    [Test]
     public async Task Templates_use_constants_and_message_members()
     {
         var run = await TestRun.Start("""

@@ -45,6 +45,14 @@ public sealed record ErrorPolicy
     /// <summary>How a source that throws is restarted (Q79). Null never restarts it. Meeplang's <c>restart after 100ms up to 3 times</c> or <c>restart never</c>.</summary>
     public SourceRestart? RestartSources { get; init; } = new(TimeSpan.FromMilliseconds(100), 3);
 
+    /// <summary>
+    /// How whatever hosts the pipeline, such as <c>meep run</c> or the daemon, starts it again after the error policy
+    /// stops it or it fails (Q112). Null, the default, leaves it stopped. Meeplang's
+    /// <c>restart-pipeline after 1m up to 5 times in 1h</c> or <c>restart-pipeline never</c>. Only the pipeline's own
+    /// policy uses this.
+    /// </summary>
+    public PipelineRestart? RestartPipeline { get; init; }
+
     /// <summary>How many of the most recent messages from sources <see cref="StopPipelineAtPercent"/> counts.</summary>
     public const int StopPipelineWindow = 100;
 
@@ -95,4 +103,39 @@ public sealed record SourceRestart
 
     /// <summary>How many times the source can fail in a row before the runtime gives up on it.</summary>
     public int FailuresInARow { get; }
+}
+
+/// <summary>How a pipeline that failed is started again (Q112).</summary>
+public sealed record PipelineRestart
+{
+    /// <summary>Makes the setting.</summary>
+    /// <param name="delay">How long to wait before starting the pipeline again.</param>
+    /// <param name="times">How many times it can be restarted, at least 1, before the host gives up on it.</param>
+    /// <param name="within">
+    /// The stretch of time <paramref name="times"/> counts within, or null to count every restart since the host
+    /// started it.
+    /// </param>
+    public PipelineRestart(TimeSpan delay, int times, TimeSpan? within = null)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(delay, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfLessThan(times, 1);
+        if (within is { } window)
+            ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(window, TimeSpan.Zero, nameof(within));
+        Delay = delay;
+        Times = times;
+        Within = within;
+    }
+
+    /// <summary>How long to wait before starting the pipeline again.</summary>
+    public TimeSpan Delay { get; }
+
+    /// <summary>How many times it can be restarted before the host gives up on it.</summary>
+    public int Times { get; }
+
+    /// <summary>The stretch of time <see cref="Times"/> counts within, or null to count every restart.</summary>
+    public TimeSpan? Within { get; }
+
+    /// <summary>Whether another restart is allowed, given when the earlier ones were.</summary>
+    public bool Allows(IReadOnlyCollection<DateTimeOffset> earlier, DateTimeOffset now) =>
+        (Within is { } window ? earlier.Count(at => now - at < window) : earlier.Count) < Times;
 }

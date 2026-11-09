@@ -58,4 +58,16 @@ internal static class Stamper
         message.Tracking = tracking;
         message.EmittedBy = emitter;
     }
+
+    /// <summary>Finishes a message sent in from outside, as a test: it keeps its own expiry, and an error is tracked.</summary>
+    public static void StampInjected(Message message, Pipeline pipeline, ref List<TrackingScope>? created)
+    {
+        if (message is ErrorMessage error)
+        {
+            var scope = new ErrorScope(error, pipeline);
+            (created ??= []).Add(scope);
+            message.Tracking = scope;
+        }
+        message.EmittedBy = Pipeline.Injector;
+    }
 }

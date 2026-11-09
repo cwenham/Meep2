@@ -43,7 +43,10 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
             // Passing the message on unchanged. A passthrough module's messages have already gone on.
             _passedOn = true;
             if (!node.IsPassthrough)
+            {
+                node.Tapped(message);
                 node.Pipeline.Deliver(node.Downstream, message);
+            }
             return;
         }
         node.Pipeline.Emit(node, Module, message, defaultParent: current);

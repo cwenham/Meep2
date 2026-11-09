@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The daemon: runs pipelines in the background and answers a control API on a local socket, for the meep command,
+    a separate UI, and modules (goal 8, Q40, Q63, Q64). A JIT host, like the meep command, so it can load plugins.
+  -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Meep2.SDK\Meep2.SDK.csproj" />
+    <ProjectReference Include="..\Meep2.Runtime\Meep2.Runtime.csproj" />
+    <ProjectReference Include="..\Meep2.Meeplang\Meep2.Meeplang.csproj" />
+    <ProjectReference Include="..\Meep2.Modules\Meep2.Modules.csproj" />
+    <ProjectReference Include="..\Meep2.Plugins\Meep2.Plugins.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Meep2.Tests" />
+    <InternalsVisibleTo Include="Meep2.Benchmarks" />
+  </ItemGroup>
+</Project>

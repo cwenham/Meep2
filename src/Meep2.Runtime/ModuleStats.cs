@@ -13,6 +13,7 @@ namespace Meep2.Runtime;
 /// <param name="Restarts">Times the runtime replaced the module with a fresh one after it threw.</param>
 /// <param name="Expired">Messages that expired before the module could take them, or while it was handling them.</param>
 /// <param name="Refused">Messages that none of the module's inflections takes. Each one became an error (Q54).</param>
+/// <param name="Queued">Messages waiting in the module's buffer now.</param>
 public readonly record struct ModuleStats(
     long Received,
     long Handled,
@@ -22,4 +23,5 @@ public readonly record struct ModuleStats(
     long Failed,
     long Restarts,
     long Expired,
-    long Refused);
+    long Refused,
+    long Queued);

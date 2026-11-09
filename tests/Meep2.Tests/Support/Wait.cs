@@ -17,6 +17,18 @@ public static class Wait
         }
     }
 
+    /// <summary>Waits until an asynchronous condition holds, failing after <see cref="Limit"/>.</summary>
+    public static async Task Until(Func<Task<bool>> condition)
+    {
+        var deadline = DateTime.UtcNow + Limit;
+        while (!await condition())
+        {
+            if (DateTime.UtcNow > deadline)
+                throw new TimeoutException("The condition never came true.");
+            await Task.Delay(20);
+        }
+    }
+
     /// <summary>Waits for a task, failing after <see cref="Limit"/>.</summary>
     public static Task For(Task task) => task.WaitAsync(Limit);
 

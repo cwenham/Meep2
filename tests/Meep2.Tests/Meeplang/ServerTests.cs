@@ -240,6 +240,13 @@ public class ServerTests
                 Respond "B"
             """);
 
+        // The two Listens register their paths one after the other, so wait until both are there: until then,
+        // /a/b/c either finds nothing or goes to /a/.
+        await Wait.Until(async () =>
+        {
+            using var response = await GetAsync($"http://127.0.0.1:{port}/a/b/c");
+            return await response.Content.ReadAsStringAsync() == "B";
+        });
         using var a = await GetAsync($"http://127.0.0.1:{port}/a/x");
         using var b = await GetAsync($"http://127.0.0.1:{port}/a/b/c");
         using var bare = await GetAsync($"http://127.0.0.1:{port}/a/b");

@@ -13,6 +13,7 @@
     <ProjectReference Include="..\..\src\Meep2.Modules\Meep2.Modules.csproj" />
     <ProjectReference Include="..\..\src\Meep2.Cli\Meep2.Cli.csproj" />
     <ProjectReference Include="..\..\src\Meep2.Plugins\Meep2.Plugins.csproj" />
+    <ProjectReference Include="..\..\src\Meep2.Daemon\Meep2.Daemon.csproj" />
     <!-- Built, but not referenced: the tests install it as a plugin. -->
     <ProjectReference Include="..\Meep2.TestPlugin\Meep2.TestPlugin.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>

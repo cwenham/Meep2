@@ -29,12 +29,20 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
     private long _restarts;
     private long _expired;
     private long _refused;
+    private readonly Lock _tapping = new();
+    private volatile DebugTap[]? _taps;
 
     public Pipeline Pipeline { get; } = pipeline;
+
+    /// <summary>The message the module is handling now and the span tracing it, if tracing is on (OpenTelemetry).</summary>
+    public (Message Message, System.Diagnostics.Activity Span)? Handling { get; set; }
 
     public NodeSpec Spec { get; } = spec;
 
     public ModuleInfo Info => Spec.Info;
+
+    /// <summary>The module as people see it, as in "Fetch #2", kept so metrics don't make it again for each message.</summary>
+    public string Label { get; } = spec.Info.ToString();
 
     public NodeOptions Options => Spec.Options;
 
@@ -59,7 +67,52 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
         Interlocked.Read(ref _failed),
         Interlocked.Read(ref _restarts),
         Interlocked.Read(ref _expired),
-        Interlocked.Read(ref _refused));
+        Interlocked.Read(ref _refused),
+        Queued);
+
+    /// <summary>How many messages are waiting for the module now.</summary>
+    public virtual long Queued => 0;
+
+    /// <summary>
+    /// Shows a message the module emitted or passed on to any taps on it. With none, this is one check of a field,
+    /// so a pipeline nobody is watching doesn't slow down.
+    /// </summary>
+    public void Tapped(Message message)
+    {
+        if (_taps is { } taps)
+        {
+            foreach (var tap in taps)
+                tap.Offer(message);
+        }
+    }
+
+    public void AddTap(DebugTap tap)
+    {
+        lock (_tapping)
+            _taps = [.. _taps ?? [], tap];
+    }
+
+    public void RemoveTap(DebugTap tap)
+    {
+        lock (_tapping)
+        {
+            var rest = (_taps ?? []).Where(t => t != tap).ToArray();
+            _taps = rest.Length == 0 ? null : rest;
+        }
+    }
+
+    /// <summary>Ends every tap on the module, as when the pipeline finishes.</summary>
+    public void CloseTaps()
+    {
+        DebugTap[]? taps;
+        lock (_tapping)
+        {
+            taps = _taps;
+            _taps = null;
+        }
+        foreach (var tap in taps ?? [])
+            tap.Complete();
+    }
 
     public void CountReceived() => Interlocked.Increment(ref _received);
 

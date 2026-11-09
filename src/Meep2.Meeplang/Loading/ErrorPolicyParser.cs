@@ -1,4 +1,5 @@
 using System.Globalization;
+using Meep2.Meeplang.Compilation;
 using Meep2.Meeplang.Parsing;
 using Meep2.Meeplang.Syntax;
 using Meep2.Runtime;
@@ -25,12 +26,17 @@ internal sealed class ErrorPolicyParts
 
     public SourceRestart? Restart { get; set; }
 
+    public bool SetsRestartPipeline { get; set; }
+
+    public PipelineRestart? RestartPipeline { get; set; }
+
     public ErrorPolicy ApplyTo(ErrorPolicy basis) => basis with
     {
         LogUnhandled = Log ?? basis.LogUnhandled,
         StopBranch = SetsStopBranch ? StopBranch : basis.StopBranch,
         StopPipelineAtPercent = SetsStopPipeline ? StopPipelineAtPercent : basis.StopPipelineAtPercent,
         RestartSources = SetsRestart ? Restart : basis.RestartSources,
+        RestartPipeline = SetsRestartPipeline ? RestartPipeline : basis.RestartPipeline,
     };
 }
 
@@ -39,12 +45,13 @@ internal sealed class ErrorPolicyParts
 /// <c>log</c> or <c>ignore</c>;
 /// <c>stop-branch after 5 in 1s</c> or <c>stop-branch never</c>;
 /// <c>stop-pipeline at 10%</c> or <c>stop-pipeline never</c>;
-/// <c>restart after 100ms up to 3 times</c> or <c>restart never</c>.
+/// <c>restart after 100ms up to 3 times</c> or <c>restart never</c>;
+/// <c>restart-pipeline after 1m up to 5 times in 1h</c> or <c>restart-pipeline never</c>.
 /// </summary>
 internal static class ErrorPolicyParser
 {
     private const string Grammar =
-        "An error policy is made of parts separated by commas: log or ignore, stop-branch after 5 in 1s, stop-pipeline at 10%, and restart after 100ms up to 3 times. Each of the last three can be never instead.";
+        "An error policy is made of parts separated by commas: log or ignore, stop-branch after 5 in 1s, stop-pipeline at 10%, restart after 100ms up to 3 times, and restart-pipeline after 1m up to 5 times in 1h. Each of the last four can be never instead.";
 
     /// <summary>Reads a policy written at <paramref name="start"/>. Problems are reported there; returns null if there were any.</summary>
     /// <param name="forPipeline">Whether this is the pipeline's policy. Only the pipeline's can have stop-pipeline.</param>
@@ -128,8 +135,30 @@ internal static class ErrorPolicyParser
                 }
                 return Wrong("restart needs a delay and a number of failures in a row, as in restart after 100ms up to 3 times, or never.", span, diagnostics);
 
+            case ["restart-pipeline", ..]:
+                if (!forPipeline)
+                    return Wrong("restart-pipeline is for the whole pipeline, so it goes in the defaults block's on-error, not on a module.", span, diagnostics);
+                if (parts.SetsRestartPipeline)
+                    return Twice("restart-pipeline", span, diagnostics);
+                parts.SetsRestartPipeline = true;
+                if (words is ["restart-pipeline", "never"])
+                    return true;
+                if (words is ["restart-pipeline", "after", var pause, "up", "to", var count3, "times" or "time", .. var rest]
+                    && TryDuration(pause, out var delay3)
+                    && int.TryParse(count3, NumberStyles.None, CultureInfo.InvariantCulture, out var times3) && times3 >= 1)
+                {
+                    TimeSpan? counted = null;
+                    if (rest is ["in", var window] && TryDuration(window, out var stretch) && stretch > TimeSpan.Zero)
+                        counted = stretch;
+                    else if (rest.Length > 0)
+                        return Wrong("restart-pipeline can end with a stretch of time to count restarts in, as in restart-pipeline after 1m up to 5 times in 1h.", span, diagnostics);
+                    parts.RestartPipeline = new PipelineRestart(delay3, times3, counted);
+                    return true;
+                }
+                return Wrong("restart-pipeline needs a delay and a number of restarts, as in restart-pipeline after 1m up to 5 times, which can end with in 1h to count them within an hour. Or it can be never.", span, diagnostics);
+
             default:
-                return Wrong($"'{part}' isn't part of an error policy. {Grammar}", span, diagnostics);
+                return Wrong($"'{part}' isn't part of an error policy.{Suggestions.For(words[0], ["log", "ignore", "stop-branch", "stop-pipeline", "restart", "restart-pipeline"])} {Grammar}", span, diagnostics);
         }
     }
 
