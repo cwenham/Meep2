@@ -16,18 +16,33 @@ namespace Meep2.Daemon;
 /// </summary>
 public static class Reloading
 {
-    /// <summary>Reads the file, installs its plugins and changes the running pipeline to match.</summary>
+    /// <summary>Reads the pipeline again from its address, installs its plugins and changes the running pipeline to match.</summary>
     /// <param name="live">The running pipeline.</param>
-    /// <param name="path">Its file.</param>
+    /// <param name="path">Its address: a file, a URL or a Git file (goal 7).</param>
     /// <param name="registry">The verbs it has without its plugins.</param>
     /// <param name="plugins">Where its plugins come from.</param>
     public static Task<LiveChange> ReloadAsync(LivePipeline live, string path, ModuleRegistry registry, PluginOptions plugins, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(path);
-        return InstallAndChangeAsync(live, path, builder =>
+        return ReloadAsync(live, PipelineAddress.Parse(path), registry, plugins, cancellationToken);
+    }
+
+    /// <summary>Reads the pipeline again from its address, installs its plugins and changes the running pipeline to match.</summary>
+    public static Task<LiveChange> ReloadAsync(LivePipeline live, PipelineAddress address, ModuleRegistry registry, PluginOptions plugins, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(address);
+        if (address.Origin is PipelineOrigin.Stdin or PipelineOrigin.Text)
+        {
+            var nothing = new Diagnostic(DiagnosticSeverity.Error, $"{live.Pipeline.Name} came from {(address.Origin == PipelineOrigin.Stdin ? "standard input" : "text sent to the daemon")}, so there's nothing to read it from again.", new SourceSpan(1, 1, 0), address.Location);
+            return Task.FromResult(new LiveChange(false, null, [], [nothing]));
+        }
+        return InstallAndChangeAsync(live, address.Location, builder =>
         {
             var parse = builder.Add(() => new Parse());
-            builder.Connect(builder.AddSource(() => new Read(new ReadParameters { Path = path })), parse);
+            var read = address.IsFile
+                ? builder.AddSource(() => new Read(new ReadParameters { Path = address.Location }))
+                : builder.AddSource(() => new ReadPipeline(address, plugins));
+            builder.Connect(read, parse);
             return parse;
         }, registry, plugins, cancellationToken);
     }

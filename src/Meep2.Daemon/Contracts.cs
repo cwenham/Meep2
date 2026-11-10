@@ -6,11 +6,21 @@ namespace Meep2.Daemon;
 /// <summary>What the daemon says about itself, and what the asking client may do.</summary>
 public sealed record DaemonInfo(string Version, int ProcessId, string Socket, IReadOnlyList<string> Capabilities, IReadOnlyList<string> Pipelines);
 
-/// <summary>Asks the daemon to start a pipeline file.</summary>
-/// <param name="Path">The file's full path, as the daemon sees it.</param>
+/// <summary>Asks the daemon to start a pipeline.</summary>
+/// <param name="Path">
+/// Its address: a file's full path as the daemon sees it, an https:// URL, or <c>git+https://…#file.meep@ref</c>
+/// (goal 7). Ignored when <see cref="Text"/> is given.
+/// </param>
 /// <param name="DeveloperMode">Loads unsigned plugins from this machine, as <c>meep run --dev</c> does.</param>
 /// <param name="Watch">Reloads the pipeline whenever the file changes (goal 4).</param>
-public sealed record StartRequest(string Path, bool DeveloperMode = false, bool Watch = false);
+public sealed record StartRequest(string Path, bool DeveloperMode = false, bool Watch = false)
+{
+    /// <summary>The pipeline's text itself, sent over the socket rather than read from an address, as <c>meep start -</c> sends standard input.</summary>
+    public string? Text { get; init; }
+
+    /// <summary>The name for a pipeline sent as <see cref="Text"/>; it has no file to be named after.</summary>
+    public string? Name { get; init; }
+}
 
 /// <summary>One edit to a running pipeline's text, as the API takes it (goal 4).</summary>
 /// <param name="Module">The module: its name, its number, or a verb only one module has. Empty for edits to the defaults block, constants and plugins.</param>

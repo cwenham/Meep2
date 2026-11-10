@@ -57,7 +57,15 @@ public sealed class DaemonClient : IDisposable
 
     /// <summary>Asks the daemon to start a pipeline file, and if <paramref name="watch"/> is set, to reload it whenever the file changes.</summary>
     public Task<PipelineSummary> StartAsync(string path, bool developerMode, bool watch, CancellationToken cancellationToken = default) =>
-        SendAsync(HttpMethod.Post, "pipelines", JsonContent.Create(new StartRequest(Path.GetFullPath(path), developerMode, watch), DaemonJson.Default.StartRequest), DaemonJson.Default.PipelineSummary, cancellationToken);
+        SendAsync(HttpMethod.Post, "pipelines", JsonContent.Create(new StartRequest(AddressFor(path), developerMode, watch), DaemonJson.Default.StartRequest), DaemonJson.Default.PipelineSummary, cancellationToken);
+
+    /// <summary>Sends a pipeline's text for the daemon to start, as <c>meep start -</c> does with standard input (goal 7).</summary>
+    public Task<PipelineSummary> StartTextAsync(string name, string text, bool developerMode = false, CancellationToken cancellationToken = default) =>
+        SendAsync(HttpMethod.Post, "pipelines", JsonContent.Create(new StartRequest("", developerMode) { Text = text, Name = name }, DaemonJson.Default.StartRequest), DaemonJson.Default.PipelineSummary, cancellationToken);
+
+    // A file's full path, since the daemon's working folder isn't this one; other addresses as they are.
+    private static string AddressFor(string path) =>
+        PipelineAddress.Parse(path) is { IsFile: true } file ? file.Location : path;
 
     /// <summary>The text a running pipeline runs from.</summary>
     public Task<SourceText> SourceAsync(string name, CancellationToken cancellationToken = default) =>

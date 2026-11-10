@@ -43,6 +43,8 @@ public sealed class Pipeline : IAsyncDisposable
     private volatile IReadOnlyList<ModuleInfo> _modules = [];
     private readonly SemaphoreSlim _changing = new(1, 1);
     private readonly InFlightCounter _inFlight = new();
+    private long _kept;
+    private int _flushedAtEnd;
     private readonly CancellationTokenSource _stopSources = new();
     private readonly CancellationTokenSource _abort = new();
     private readonly TaskCompletionSource _halted = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -79,16 +81,27 @@ public sealed class Pipeline : IAsyncDisposable
         var byInfo = new Dictionary<ModuleInfo, Node>();
         for (var i = 0; i < nodes.Length; i++)
             byInfo[specs[i].Info] = nodes[i];
+
+        // A module's inputs are numbered by the order of the modules feeding it, as the connections list them.
+        var inputs = new Dictionary<Node, Dictionary<Node, int>>();
         var downstream = new Dictionary<Node, List<InflectionNode>>();
         foreach (var (from, to) in connections)
         {
             var upstream = byInfo[from];
+            var target = byInfo[to];
             if (!downstream.TryGetValue(upstream, out var targets))
                 downstream[upstream] = targets = [];
-            targets.Add((InflectionNode)byInfo[to]);
+            targets.Add((InflectionNode)target);
+            if (!inputs.TryGetValue(target, out var numbers))
+                inputs[target] = numbers = [];
+            numbers.TryAdd(upstream, numbers.Count + 1);
         }
         foreach (var node in nodes)
-            node.Downstream = downstream.TryGetValue(node, out var targets) ? [.. targets] : [];
+        {
+            node.Links = downstream.TryGetValue(node, out var targets)
+                ? new Fanout([.. targets], [.. targets.Select(target => inputs[target][node])])
+                : Fanout.None;
+        }
     }
 
     // Makes these the pipeline's modules. Kept modules can still be found by their old identities, which messages
@@ -192,12 +205,12 @@ public sealed class Pipeline : IAsyncDisposable
             Telemetry.Injected(this, message);
         if (node is InflectionNode target)
         {
-            DeliverTo(target, message, depth: 0);
+            DeliverTo(target, message, depth: 0, input: 0);
         }
         else
         {
             node.Tapped(message);
-            Deliver(node.Downstream, message);
+            Deliver(node, message);
         }
         ScopeSet.ReleaseAll(created);
     }
@@ -302,10 +315,14 @@ public sealed class Pipeline : IAsyncDisposable
         // New modules are ready before anything feeds them, then everything is connected as the change says.
         foreach (var node in created.OfType<InflectionNode>())
             _ = node.Start();
-        var removedLinks = removed.ToDictionary(node => node, node => node.Downstream);
+        var removedLinks = removed.ToDictionary(node => node, node => node.Links);
         Wire(nodes, specs, connections);
         foreach (var (node, links) in removedLinks)
-            node.Downstream = [.. links.Where(target => !kept.Contains(target) || nodes.Contains(target))]; // they finish where they were going
+        {
+            // They finish where they were going.
+            var still = Enumerable.Range(0, links.Targets.Length).Where(i => !kept.Contains(links.Targets[i]) || nodes.Contains(links.Targets[i])).ToList();
+            node.Links = new Fanout([.. still.Select(i => links.Targets[i])], [.. still.Select(i => links.Inputs[i])]);
+        }
         Options = options;
         Install(nodes, specs, options, updates.Select(u => (u.Old, u.Node)));
 
@@ -480,7 +497,10 @@ public sealed class Pipeline : IAsyncDisposable
         foreach (var source in _sources)
             source.Abandon();
         foreach (var node in _inflections)
+        {
+            node.AbandonKept();
             node.Complete();
+        }
     }
 
     private void OnHalted()
@@ -503,7 +523,7 @@ public sealed class Pipeline : IAsyncDisposable
         if (Telemetry.Tracing)
             Telemetry.Emitted(from, emitter, message);
         from.Tapped(message);
-        Deliver(from.Downstream, message);
+        Deliver(from, message);
         ScopeSet.ReleaseAll(created);
     }
 
@@ -532,7 +552,7 @@ public sealed class Pipeline : IAsyncDisposable
         if (Telemetry.Tracing)
             Telemetry.Emitted(from, emitter, message);
         from.Tapped(message);
-        Deliver(from.Downstream, message);
+        Deliver(from, message);
         ScopeSet.ReleaseAll(created);
 
         // The module that made the lease held it until now, so it couldn't close before it was emitted. One that
@@ -562,7 +582,7 @@ public sealed class Pipeline : IAsyncDisposable
         if (Telemetry.Tracing)
             Telemetry.Emitted(from, emitter, message);
         from.Tapped(message);
-        Deliver(from.Downstream, message);
+        Deliver(from, message);
 
         // Settle any new error first, so an error that went nowhere is counted in the outcome.
         ScopeSet.ReleaseAll(created);
@@ -570,14 +590,15 @@ public sealed class Pipeline : IAsyncDisposable
         return outcome.Task;
     }
 
-    /// <summary>Sends a message to each target, or past it when the target doesn't take it.</summary>
-    internal void Deliver(InflectionNode[] targets, Message message)
+    /// <summary>Sends a message to each module <paramref name="from"/> feeds, or past one when it doesn't take it.</summary>
+    internal void Deliver(Node from, Message message)
     {
-        foreach (var target in targets)
-            DeliverTo(target, message, depth: 0);
+        var links = from.Links;
+        for (var i = 0; i < links.Targets.Length; i++)
+            DeliverTo(links.Targets[i], message, depth: 0, links.Inputs[i]);
     }
 
-    private void DeliverTo(InflectionNode target, Message message, int depth)
+    private void DeliverTo(InflectionNode target, Message message, int depth, int input)
     {
         if (depth > MaxForwardDepth)
         {
@@ -589,6 +610,14 @@ public sealed class Pipeline : IAsyncDisposable
             // The error policy stopped this module's branch. An error dropped here is reported as unhandled.
             target.CountDropped();
             ScopeSet.Flag(message.Tracking, MessageOutcome.Dropped);
+            return;
+        }
+        if (target.Router is { } router)
+        {
+            // Distribute: the message goes on down one copy of the branch below, chosen here, on this thread.
+            target.CountReceived();
+            target.Tapped(message);
+            Route(target, router, message, depth);
             return;
         }
 
@@ -615,7 +644,7 @@ public sealed class Pipeline : IAsyncDisposable
             }
             else
             {
-                target.Enqueue(message);
+                target.Enqueue(message, input);
                 if (target.IsPassthrough)
                 {
                     target.Tapped(message);
@@ -643,9 +672,52 @@ public sealed class Pipeline : IAsyncDisposable
 
     private void Forward(InflectionNode from, Message message, int depth)
     {
-        foreach (var next in from.Downstream)
-            DeliverTo(next, message, depth + 1);
+        var links = from.Links;
+        for (var i = 0; i < links.Targets.Length; i++)
+            DeliverTo(links.Targets[i], message, depth + 1, links.Inputs[i]);
     }
+
+    // The copies a router feeds are its downstream modules in order, each copy's in a run: copy n is the n-th run.
+    private void Route(InflectionNode from, IRouteMessages router, Message message, int depth)
+    {
+        var links = from.Links;
+        var lanes = router.Lanes;
+        if (lanes < 1 || links.Targets.Length % lanes != 0)
+        {
+            Forward(from, message, depth);
+            return;
+        }
+        int lane;
+        try
+        {
+            lane = router.LaneOf(message);
+        }
+        catch (Exception exception) when (exception is not OutOfMemoryException)
+        {
+            lane = message.Id.GetHashCode();
+        }
+        lane = (int)((uint)lane % (uint)lanes);
+        var size = links.Targets.Length / lanes;
+        for (var i = lane * size; i < (lane + 1) * size; i++)
+            DeliverTo(links.Targets[i], message, depth + 1, links.Inputs[i]);
+    }
+
+    /// <summary>Keeps a message a module has finished handling, with its leases open (<see cref="ModuleContext.Keep"/>).</summary>
+    internal void Keep(Message message)
+    {
+        ScopeSet.AddRef(message.Tracking);
+        Interlocked.Increment(ref _kept);
+    }
+
+    /// <summary>Stops keeping a message, which finishes unless something made from it is still in flight.</summary>
+    internal void LetGo(Message message, MessageOutcome outcome)
+    {
+        ScopeSet.Release(message.Tracking, outcome);
+        Interlocked.Decrement(ref _kept);
+    }
+
+    /// <summary>Holds the pipeline open, unless it has halted. Returns whether it did; release with <see cref="ReleaseHold"/>.</summary>
+    internal bool TryHold() => _inFlight.TryAdd();
 
     /// <summary>Counts a message into a buffer or handler.</summary>
     internal void AddRef(Message message)
@@ -661,11 +733,35 @@ public sealed class Pipeline : IAsyncDisposable
         ReleaseHold();
     }
 
-    /// <summary>Releases one count, such as a source's or the startup hold, and halts at zero.</summary>
+    /// <summary>
+    /// Releases one count, such as a source's or the startup hold, and halts at zero. Before halting, modules that keep
+    /// messages are flushed once, so a part-filled batch still goes out; what they still keep after that is let go.
+    /// </summary>
     internal void ReleaseHold()
     {
-        if (_inFlight.Release())
-            OnHalted();
+        if (!_inFlight.Release())
+            return;
+        if (Volatile.Read(ref _kept) > 0 && Interlocked.Exchange(ref _flushedAtEnd, 1) == 0 && FlushKept())
+            return;
+        if (!_inFlight.TryHalt())
+            return; // something started meanwhile
+        foreach (var node in _inflections)
+            node.AbandonKept();
+        OnHalted();
+    }
+
+    // Flushes every module that keeps messages, holding the pipeline open until each has. False if none keeps any.
+    private bool FlushKept()
+    {
+        var flushing = false;
+        foreach (var node in _inflections)
+        {
+            if (node.KeptCount == 0 || !_inFlight.TryAdd())
+                continue;
+            flushing = true;
+            _ = node.FlushAsync(finishing: true).ContinueWith(_ => ReleaseHold(), TaskScheduler.Default);
+        }
+        return flushing;
     }
 
     /// <summary>

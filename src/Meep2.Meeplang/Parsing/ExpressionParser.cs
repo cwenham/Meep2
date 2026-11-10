@@ -17,7 +17,7 @@ internal sealed class ExpressionParser(List<Token> tokens, int position, Diagnos
     private const int NotPower = 3;
     private const int UnaryMinusPower = 7;
 
-    private static readonly HashSet<string> s_reservedWords = ["and", "or", "not", "is", "as"];
+    private static readonly HashSet<string> s_reservedWords = ["and", "or", "not", "is", "as", "by"];
 
     public int Position => position;
 
@@ -279,7 +279,7 @@ internal static class TemplateParser
                 var end = FindHoleEnd(content, i + 1);
                 if (end < 0)
                 {
-                    diagnostics.Error("This { isn't closed with a }. Write {{ for a brace.", new SourceSpan(token.Line, contentColumn + i, 1));
+                    diagnostics.Error("This { isn't closed with a }. Write {{ for a brace.", new SourceSpan(token.Line, contentColumn + i, 1, diagnostics.SpanFile));
                     return null;
                 }
                 if (text.Length > 0)
@@ -303,7 +303,7 @@ internal static class TemplateParser
                     i++;
                     continue;
                 }
-                diagnostics.Error("A } on its own isn't allowed in a string. Write }} for a brace.", new SourceSpan(token.Line, contentColumn + i, 1));
+                diagnostics.Error("A } on its own isn't allowed in a string. Write }} for a brace.", new SourceSpan(token.Line, contentColumn + i, 1, diagnostics.SpanFile));
                 ok = false;
                 continue;
             }
@@ -384,7 +384,7 @@ internal static class TemplateParser
         var expressionText = content[start..expressionEnd];
         if (string.IsNullOrWhiteSpace(expressionText))
         {
-            diagnostics.Error("This {} has nothing in it. Put an expression inside, as in {msg.Name}.", new SourceSpan(line, contentColumn + start - 1, end - start + 2));
+            diagnostics.Error("This {} has nothing in it. Put an expression inside, as in {msg.Name}.", new SourceSpan(line, contentColumn + start - 1, end - start + 2, diagnostics.SpanFile));
             return null;
         }
 

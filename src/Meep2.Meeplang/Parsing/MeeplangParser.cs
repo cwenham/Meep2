@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Meep2.Meeplang.Syntax;
 
 namespace Meep2.Meeplang.Parsing;
@@ -18,11 +20,107 @@ namespace Meep2.Meeplang.Parsing;
 /// </remarks>
 public static class MeeplangParser
 {
-    /// <summary>Parses a whole file. Problems are reported in <see cref="PipelineSyntax.Diagnostics"/>, not thrown.</summary>
-    public static PipelineSyntax Parse(SourceFile source)
+    /// <summary>
+    /// Parses a whole file, and the files its <c>#include</c> lines bring in, read from disk. Problems are reported in
+    /// <see cref="PipelineSyntax.Diagnostics"/>, not thrown.
+    /// </summary>
+    public static PipelineSyntax Parse(SourceFile source) => Parse(source, new DiskIncludes(ReadFromDisk));
+
+    /// <summary>
+    /// Parses a whole file, and the files its <c>#include</c> lines bring in, read by <paramref name="read"/>: a full
+    /// path in, the file's text out, or null if there's no such file.
+    /// </summary>
+    public static PipelineSyntax Parse(SourceFile source, Func<string, string?> read)
+    {
+        ArgumentNullException.ThrowIfNull(read);
+        return Parse(source, new DiskIncludes(path => read(path) is { } text ? Encoding.UTF8.GetBytes(text) : null));
+    }
+
+    /// <summary>
+    /// Parses a whole file, and the files its <c>#include</c> lines bring in, found and read by
+    /// <paramref name="includes"/>, as for a pipeline loaded from a URL or Git, whose includes come from there too.
+    /// </summary>
+    public static PipelineSyntax Parse(SourceFile source, IIncludeReader includes)
     {
         ArgumentNullException.ThrowIfNull(source);
-        return new LineParser(source).Parse();
+        ArgumentNullException.ThrowIfNull(includes);
+        var syntax = new LineParser(source).Parse();
+        Include(syntax, syntax, includes, [includes.Resolve(source.Path, source.Path)]);
+        return syntax;
+    }
+
+    /// <summary>The full path an <c>#include</c> line names, from the folder of the file it's in. <c>~</c> is your home folder.</summary>
+    public static string IncludePath(string included, string from)
+    {
+        ArgumentNullException.ThrowIfNull(included);
+        ArgumentNullException.ThrowIfNull(from);
+        if (included == "~" || included.StartsWith("~/", StringComparison.Ordinal))
+            included = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), included.Length > 2 ? included[2..] : "");
+        return Path.GetFullPath(included, Path.GetDirectoryName(Full(from)) ?? Directory.GetCurrentDirectory());
+    }
+
+    // Parses what a file includes, and what they include, into the pipeline's list, refusing an include that loops.
+    private static void Include(PipelineSyntax root, PipelineSyntax from, IIncludeReader includes, HashSet<string> including)
+    {
+        foreach (var include in from.Includes)
+        {
+            string path;
+            string? text;
+            try
+            {
+                path = includes.Resolve(include.Path, from.Source.Path);
+                if (including.Contains(path))
+                {
+                    root.AddDiagnostic(new Diagnostic(DiagnosticSeverity.Error, $"{include.Path} is already being included, so including it here would go round in a loop.", include.Span, from.Source.Path));
+                    continue;
+                }
+                if (root.Included.Any(i => i.Source.Path == path))
+                    continue; // included once already, by another file
+                var bytes = includes.Read(path, pinned: include.Sha256 is not null);
+                if (bytes is not null && include.Sha256 is { } pin && Convert.ToHexStringLower(SHA256.HashData(bytes)) is var sha && sha != pin)
+                    throw new IncludeException($"it has the SHA-256 {sha}, not the {pin} the #include line pins, so it has changed.");
+                text = bytes is null ? null : Text(bytes);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or IncludeException)
+            {
+                root.AddDiagnostic(new Diagnostic(DiagnosticSeverity.Error, $"Couldn't include {include.Path}: {exception.Message}", include.Span, from.Source.Path));
+                continue;
+            }
+            if (text is null)
+            {
+                root.AddDiagnostic(new Diagnostic(DiagnosticSeverity.Error, $"There's no file {path} to include.", include.Span, from.Source.Path));
+                continue;
+            }
+            var included = new LineParser(new SourceFile(path, text), isInclude: true).Parse();
+            root.AddIncluded(included);
+            Include(root, included, includes, [.. including, path]);
+        }
+    }
+
+    // Includes on this machine's disk, relative to the including file's folder.
+    private sealed class DiskIncludes(Func<string, byte[]?> read) : IIncludeReader
+    {
+        public string Resolve(string included, string from) => included == from ? Full(from) : IncludePath(included, from);
+
+        public byte[]? Read(string path, bool pinned) => read(path);
+    }
+
+    private static byte[]? ReadFromDisk(string path) => File.Exists(path) ? File.ReadAllBytes(path) : null;
+
+    // A file's text from its bytes, as UTF-8, without the mark some editors put at the start.
+    private static string Text(byte[] bytes) =>
+        bytes.AsSpan().StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF]) ? Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3) : Encoding.UTF8.GetString(bytes);
+
+    private static string Full(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException)
+        {
+            return path;
+        }
     }
 
     /// <summary>Parses a single expression, for tests and tools.</summary>
@@ -39,11 +137,36 @@ public static class MeeplangParser
     }
 }
 
-internal sealed class LineParser(SourceFile source)
+/// <summary>
+/// Finds and reads the files <c>#include</c> lines name, for a pipeline that isn't on this machine's disk, such as one
+/// loaded from a URL or Git, so its includes come from there too, and are checked the same way.
+/// </summary>
+public interface IIncludeReader
+{
+    /// <summary>The included file's address, from the line as written and the address of the file that includes it.</summary>
+    string Resolve(string included, string from);
+
+    /// <summary>The file's bytes, or null if there's no such file.</summary>
+    /// <param name="address">The file, as <see cref="Resolve"/> found it.</param>
+    /// <param name="pinned">
+    /// Whether the <c>#include</c> line pins the file with its SHA-256, which the parser checks. A pinned file is
+    /// trusted as the file that includes it is, so it needs no signature of its own (Q136).
+    /// </param>
+    /// <exception cref="IncludeException">The file can't be used, such as one that isn't signed by a key you trust.</exception>
+    byte[]? Read(string address, bool pinned);
+}
+
+/// <summary>An included file can't be used. The message says why.</summary>
+public sealed class IncludeException(string message, Exception? innerException = null) : Exception(message, innerException);
+
+internal sealed class LineParser(SourceFile source, bool isInclude = false)
 {
     private const int TabWidth = 4;
 
-    private readonly Diagnostics _diagnostics = new(source.Path);
+    // An included file's spans name it, so its templates still point at it once copied into a pipeline.
+    private readonly Diagnostics _diagnostics = new(source.Path) { SpanFile = isInclude ? source.Path : null };
+    private readonly List<TemplateBlock> _templates = [];
+    private readonly List<IncludeDirective> _includes = [];
     private readonly List<ArgumentSyntax> _defaults = [];
     private readonly List<ConstantSyntax> _constants = [];
     private readonly List<PluginDirective> _plugins = [];
@@ -63,7 +186,9 @@ internal sealed class LineParser(SourceFile source)
             ParseLine(lines[i].TrimEnd('\r'), i + 1);
 
         CheckFeeders(_modules);
-        return new PipelineSyntax(source, _defaults, _constants, _plugins, _modules, _diagnostics.Items);
+        foreach (var template in _templates)
+            CheckFeeders(template.Body);
+        return new PipelineSyntax(source, _defaults, _constants, _plugins, _modules, _diagnostics.Items, _templates, _includes);
     }
 
     private void ParseLine(string text, int lineNumber)
@@ -78,8 +203,8 @@ internal sealed class LineParser(SourceFile source)
 
         // on-error's value has a grammar of its own (log, stop-branch after 5 in 1s, …), so under defaults it's
         // kept as written. Problems lexing it as Meeplang only count if the line turns out to be something else.
-        var setting = RawSetting(text, contentStart, lineNumber);
-        var lexing = setting is null ? _diagnostics : new Diagnostics(source.Path);
+        var setting = RawSetting(text, contentStart, lineNumber, _diagnostics.SpanFile);
+        var lexing = setting is null ? _diagnostics : new Diagnostics(source.Path) { SpanFile = _diagnostics.SpanFile };
         var tokens = Lexer.Lex(text[contentStart..], lineNumber, contentStart + 1, lexing);
         if (tokens[0].Kind == TokenKind.End)
             return; // a blank line or a comment
@@ -104,9 +229,8 @@ internal sealed class LineParser(SourceFile source)
         {
             switch (first.Text)
             {
-                case "pipeline" or "template":
-                    _diagnostics.Error($"'{first.Text}' blocks aren't supported yet. For now a file holds one pipeline.", first.Span);
-                    _lastOpener = null;
+                case "template":
+                    ParseTemplateHeader(tokens, owner);
                     return;
             }
         }
@@ -130,7 +254,7 @@ internal sealed class LineParser(SourceFile source)
 
     // The value of an on-error line, as written: everything after the = up to any comment. Null for other lines,
     // and when the value is in quotes, which parses as an ordinary string.
-    private static LiteralSyntax? RawSetting(string text, int contentStart, int lineNumber)
+    private static LiteralSyntax? RawSetting(string text, int contentStart, int lineNumber, string? file)
     {
         const string Name = "on-error";
         var content = text.AsSpan(contentStart);
@@ -150,7 +274,7 @@ internal sealed class LineParser(SourceFile source)
         value = value.Trim();
         if (value.Length == 0 || value[0] is '"' or '\'')
             return null;
-        return new LiteralSyntax(value, new SourceSpan(lineNumber, valueStart + lead + 1, value.Length));
+        return new LiteralSyntax(value, new SourceSpan(lineNumber, valueStart + lead + 1, value.Length, file));
     }
 
     private static (int Indent, int ContentStart) MeasureIndent(string text)
@@ -209,11 +333,19 @@ internal sealed class LineParser(SourceFile source)
         _lastOpener = null;
         var words = DirectiveWords(text, start, lineNumber);
         var name = words[0];
+        if (name.Text == "#include")
+        {
+            ParseInclude(words, indent);
+            return;
+        }
         if (name.Text != "#plugin")
         {
-            _diagnostics.Error(
-                name.Text == "#include" ? "#include isn't supported yet: it arrives with templates." : $"There's no {name.Text} directive. Meeplang has #plugin, and #include is to come.",
-                name.Span);
+            _diagnostics.Error($"There's no {name.Text} directive. Meeplang has #plugin and #include.", name.Span);
+            return;
+        }
+        if (isInclude)
+        {
+            _diagnostics.Error("An included file holds templates and constants; #plugin goes in the pipeline's own file.", name.Span);
             return;
         }
         if (indent > 0)
@@ -348,23 +480,142 @@ internal sealed class LineParser(SourceFile source)
                 var end = text.IndexOf(quote, i + 1);
                 if (end < 0)
                 {
-                    _diagnostics.Error($"This string isn't closed with a {quote}.", new SourceSpan(lineNumber, i + 1, text.Length - i));
+                    _diagnostics.Error($"This string isn't closed with a {quote}.", new SourceSpan(lineNumber, i + 1, text.Length - i, _diagnostics.SpanFile));
                     end = text.Length - 1;
                 }
-                words.Add((text[(i + 1)..end], new SourceSpan(lineNumber, wordStart + 1, end + 1 - wordStart), true));
+                words.Add((text[(i + 1)..end], new SourceSpan(lineNumber, wordStart + 1, end + 1 - wordStart, _diagnostics.SpanFile), true));
                 i = end + 1;
                 continue;
             }
             while (i < text.Length && !char.IsWhiteSpace(text[i]))
                 i++;
-            words.Add((text[wordStart..i], new SourceSpan(lineNumber, wordStart + 1, i - wordStart), false));
+            words.Add((text[wordStart..i], new SourceSpan(lineNumber, wordStart + 1, i - wordStart, _diagnostics.SpanFile), false));
         }
         return words;
+    }
+
+    // #include "file.meep": at the margin, before the modules, like #plugin.
+    private void ParseInclude(List<(string Text, SourceSpan Span, bool Quoted)> words, int indent)
+    {
+        var name = words[0];
+        if (indent > 0)
+        {
+            _diagnostics.Error("#include goes at the left margin.", name.Span);
+            return;
+        }
+        while (_levels.Count > 1)
+            _levels.RemoveAt(_levels.Count - 1);
+        if (_seenModule)
+        {
+            _diagnostics.Error("#include goes before the templates and modules.", name.Span);
+            return;
+        }
+        if (words is not ([_, { Quoted: true }] or [_, { Quoted: true }, { Quoted: false }]))
+        {
+            _diagnostics.Error("Write an include as #include \"file.meep\", with the file in quotes, and sha256: and its SHA-256 after it to pin it.", name.Span);
+            return;
+        }
+        var file = words[1];
+        string? sha = null;
+        if (words.Count == 3)
+        {
+            var pin = words[2];
+            sha = pin.Text.StartsWith("sha256:", StringComparison.Ordinal) ? pin.Text["sha256:".Length..].ToLowerInvariant() : null;
+            if (sha is not { Length: 64 } || !sha.All(char.IsAsciiHexDigit))
+            {
+                _diagnostics.Error("A pin is written as sha256: and the file's SHA-256, 64 hexadecimal digits, as in #include \"shared.meep\" sha256:3f9a….", pin.Span);
+                return;
+            }
+        }
+        _includes.Add(new IncludeDirective(file.Text, SourceSpan.Between(name.Span, words[^1].Span), sha));
+    }
+
+    // template Name or template Name(Parameter, Parameter = default): the modules indented under it are its body.
+    private void ParseTemplateHeader(List<Token> tokens, object? owner)
+    {
+        _lastOpener = null;
+        var first = tokens[0];
+        if (owner is not null)
+        {
+            _diagnostics.Error("'template' goes at the left margin.", first.Span);
+            return;
+        }
+        var name = tokens[1];
+        if (name.Kind != TokenKind.Identifier)
+        {
+            _diagnostics.Error("Write a template as: template Name(Parameter, Parameter = default)", first.Span);
+            return;
+        }
+        var parameters = new List<TemplateParameter>();
+        var position = 2;
+        if (tokens[position].Is("("))
+        {
+            position++;
+            while (!tokens[position].Is(")"))
+            {
+                var parameter = tokens[position];
+                if (parameter.Kind != TokenKind.Identifier)
+                {
+                    _diagnostics.Error($"Expected a parameter's name, not {parameter}.", parameter.Span);
+                    return;
+                }
+                if (parameter.Text is "msg" or "fam")
+                {
+                    _diagnostics.Error($"{parameter.Text} is reserved, so it can't be a parameter's name.", parameter.Span);
+                    return;
+                }
+                if (parameters.Any(p => p.Name == parameter.Text))
+                {
+                    _diagnostics.Error($"{name.Text} already has a parameter called {parameter.Text}.", parameter.Span);
+                    return;
+                }
+                position++;
+                ExpressionSyntax? fallback = null;
+                if (tokens[position].Is("="))
+                {
+                    var parser = new ExpressionParser(tokens, position + 1, _diagnostics);
+                    fallback = parser.Parse();
+                    if (fallback is null)
+                        return;
+                    position = parser.Position;
+                }
+                else if (parameters.Count > 0 && parameters[^1].Default is not null)
+                {
+                    _diagnostics.Error($"{parameter.Text} needs a default, since the parameter before it has one.", parameter.Span);
+                    return;
+                }
+                parameters.Add(new TemplateParameter(parameter.Text, fallback, parameter.Span));
+                if (tokens[position].Is(","))
+                    position++;
+                else if (!tokens[position].Is(")"))
+                {
+                    _diagnostics.Error($"Expected ',' or ')' after the parameter {parameter.Text}, not {tokens[position]}.", tokens[position].Span);
+                    return;
+                }
+            }
+            position++;
+        }
+        if (!ExpectEnd(tokens[position]))
+            return;
+        if (_templates.Any(t => t.Name == name.Text))
+        {
+            _diagnostics.Error($"There's already a template called {name.Text}.", name.Span);
+            return;
+        }
+        var template = new TemplateBlock(name.Text, name.Span, parameters, source.Path);
+        _templates.Add(template);
+        _seenModule = true;
+        _lastOpener = template;
     }
 
     private void ParseDefaultsHeader(Token first, object? owner)
     {
         _lastOpener = null;
+        if (isInclude)
+        {
+            _diagnostics.Error("An included file holds templates and constants; 'defaults' goes in the pipeline's own file.", first.Span);
+            return;
+        }
         if (owner is not null)
         {
             _diagnostics.Error("'defaults' goes at the left margin.", first.Span);
@@ -408,6 +659,11 @@ internal sealed class LineParser(SourceFile source)
     {
         _lastOpener = null;
         var name = tokens[0];
+        if (name.IsWord("by"))
+        {
+            _diagnostics.Error("Write by on the module's line, without =, as in Zip by msg.Key.", name.Span);
+            return;
+        }
         var parser = new ExpressionParser(tokens, 2, _diagnostics);
         var value = parser.Parse();
         if (value is null || !ExpectEnd(parser.Current))
@@ -509,6 +765,21 @@ internal sealed class LineParser(SourceFile source)
                 }
                 module.AddModifier(new ModifierSyntax(name.Text, value, SourceSpan.Between(token.Span, value?.Span ?? name.Span)));
             }
+            else if (token.IsWord("by"))
+            {
+                // A key, as in Zip by msg.OrderId (Q130): the by parameter, written as a keyword.
+                if (tokens[position + 1].Is("="))
+                {
+                    _diagnostics.Error("Write by without =, as in by msg.Key.", token.Span);
+                    return;
+                }
+                var parser = new ExpressionParser(tokens, position + 1, _diagnostics);
+                var value = parser.Parse();
+                if (value is null)
+                    return;
+                module.AddArgument(new ArgumentSyntax("by", value, token.Span));
+                position = parser.Position;
+            }
             else if (token.Kind == TokenKind.Identifier && tokens[position + 1].Is("="))
             {
                 var parser = new ExpressionParser(tokens, position + 2, _diagnostics);
@@ -520,18 +791,24 @@ internal sealed class LineParser(SourceFile source)
             }
             else
             {
-                _diagnostics.Error($"Unexpected {token}. After a module's value, write name=value, as Name, or @modifier.", token.Span);
+                _diagnostics.Error($"Unexpected {token}. After a module's value, write name=value, by key, as Name, or @modifier.", token.Span);
                 return;
             }
         }
 
         switch (owner)
         {
+            case null when isInclude:
+                _diagnostics.Error("An included file holds templates and constants, not a pipeline's modules. Put these under a template.", verb.Span);
+                return;
             case null:
                 _modules.Add(module);
                 break;
             case ModuleSyntax parent:
                 parent.AddChild(module);
+                break;
+            case TemplateBlock template:
+                template.AddModule(module);
                 break;
             default:
                 _diagnostics.Error("Only settings, written as name = value, go under 'defaults'.", verb.Span);
@@ -548,6 +825,7 @@ internal sealed class LineParser(SourceFile source)
         return token.Kind == TokenKind.End
             || token.Is("@")
             || token.IsWord("as")
+            || token.IsWord("by")
             || (token.Kind == TokenKind.Identifier && tokens[position + 1].Is("="));
     }
 

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using Meep2.Daemon;
 using Microsoft.Win32.SafeHandles;
 
 namespace Meep2.Cli;
@@ -27,13 +28,19 @@ internal static class Detaching
             await error.WriteLineAsync("--detach isn't supported on Windows yet. Run the pipeline in the daemon instead: meep daemon, then meep start <file.meep>").ConfigureAwait(false);
             return 2;
         }
-        var file = Path.GetFullPath(settings.Files[0]);
-        if (!File.Exists(file))
+        var address = PipelineAddress.Parse(settings.Files[0]);
+        if (address.Origin == PipelineOrigin.Stdin)
         {
-            await error.WriteLineAsync($"There's no file {file}.").ConfigureAwait(false);
+            await error.WriteLineAsync("A pipeline from standard input can't run in the background, since nothing would be left to read it from.").ConfigureAwait(false);
+            return 2;
+        }
+        if (address.IsFile && !File.Exists(address.Location))
+        {
+            await error.WriteLineAsync($"There's no file {address.Location}.").ConfigureAwait(false);
             return 1;
         }
-        var name = Path.GetFileNameWithoutExtension(file);
+        var file = address.IsFile ? address.Location : address.ToString();
+        var name = address.Name;
         var logs = Path.Combine(home, "logs");
         Directory.CreateDirectory(logs);
         var log = Path.Combine(logs, name + ".log");

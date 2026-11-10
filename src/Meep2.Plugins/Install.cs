@@ -25,13 +25,38 @@ public sealed class Install(ModuleRegistry registry, PluginInstaller installer, 
     /// <inheritdoc/>
     protected override async ValueTask HandleAsync(ParsedPipeline message, ModuleContext context, CancellationToken cancellationToken)
     {
-        var syntax = message.Syntax;
-        if (syntax.Plugins.Count == 0)
+        if (message.Syntax.Plugins.Count == 0)
         {
             context.Emit(message);
             return;
         }
+        var installed = await InstallAllAsync(message.Syntax, registry, installer, _catalog, saveLock: true, cancellationToken).ConfigureAwait(false);
+        if (installed.Problems.Count > 0)
+        {
+            Build.Release(installed.Holds);
+            context.Emit(MeeplangErrorMessage.From([.. installed.Warnings, .. installed.Problems]));
+            return;
+        }
+        context.Emit(message with { Registry = installed.Registry, Holds = [.. message.Holds, .. installed.Holds], Warnings = [.. message.Warnings, .. installed.Warnings] });
+    }
 
+    /// <summary>
+    /// Installs and loads the plugins a pipeline's <c>#plugin</c> lines name, giving it its own verbs: the core ones
+    /// plus its plugins'. The language server uses it too, offline, to check plugins' verbs as you type (Q138).
+    /// </summary>
+    /// <param name="syntax">The pipeline.</param>
+    /// <param name="registry">The verbs every pipeline has.</param>
+    /// <param name="installer">Installs and checks plugins.</param>
+    /// <param name="catalog">Loads plugins and shares them between pipelines.</param>
+    /// <param name="saveLock">Whether to write the pipeline's lock file, which editing doesn't.</param>
+    /// <param name="cancellationToken">Stops downloads.</param>
+    public static async Task<InstalledPlugins> InstallAllAsync(
+        PipelineSyntax syntax, ModuleRegistry registry, PluginInstaller installer, PluginCatalog catalog, bool saveLock, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(syntax);
+        ArgumentNullException.ThrowIfNull(registry);
+        ArgumentNullException.ThrowIfNull(installer);
+        ArgumentNullException.ThrowIfNull(catalog);
         var path = syntax.Source.Path;
         var file = File.Exists(path) ? Path.GetFullPath(path) : null;
         var baseFolder = file is null ? null : Path.GetDirectoryName(file);
@@ -53,7 +78,7 @@ public sealed class Install(ModuleRegistry registry, PluginInstaller installer, 
                 }
                 if (installed.Warning is { } warning)
                     warnings.Add(new Diagnostic(DiagnosticSeverity.Warning, warning, directive.Span, path));
-                hold = _catalog.Acquire(installed);
+                hold = catalog.Acquire(installed);
                 if (hold.Plugin.RebuiltWithoutNewVersion() is { } stale)
                     warnings.Add(new Diagnostic(DiagnosticSeverity.Warning, stale, directive.Span, path));
                 var name = directive.Alias ?? NameOf(hold.Plugin);
@@ -72,22 +97,18 @@ public sealed class Install(ModuleRegistry registry, PluginInstaller installer, 
             }
         }
 
-        try
+        if (saveLock)
         {
-            lockFile?.Save();
+            try
+            {
+                lockFile?.Save();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                warnings.Add(new Diagnostic(DiagnosticSeverity.Warning, $"Couldn't write the lock file {lockFile!.Path}: {exception.Message}", syntax.Plugins[0].Span, path));
+            }
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            warnings.Add(new Diagnostic(DiagnosticSeverity.Warning, $"Couldn't write the lock file {lockFile!.Path}: {exception.Message}", syntax.Plugins[0].Span, path));
-        }
-
-        if (problems.Count > 0)
-        {
-            Build.Release(holds);
-            context.Emit(MeeplangErrorMessage.From([.. warnings, .. problems]));
-            return;
-        }
-        context.Emit(message with { Registry = own, Holds = [.. message.Holds, .. holds], Warnings = [.. message.Warnings, .. warnings] });
+        return new InstalledPlugins(own, holds, warnings, problems);
     }
 
     // A plugin's name, unless its line gives one: the last part of its assembly's, so Meep.Transit is Transit.
@@ -104,3 +125,10 @@ public sealed class Install(ModuleRegistry registry, PluginInstaller installer, 
         _ => $"Couldn't install {directive}: {exception.Message}",
     };
 }
+
+/// <summary>What installing a pipeline's plugins gave.</summary>
+/// <param name="Registry">The pipeline's own verbs: the core ones plus its plugins'.</param>
+/// <param name="Holds">The plugins it holds loaded, released when it's done with them.</param>
+/// <param name="Warnings">What to warn about.</param>
+/// <param name="Problems">Plugins that couldn't be installed or loaded, at their lines.</param>
+public sealed record InstalledPlugins(ModuleRegistry Registry, IReadOnlyList<IDisposable> Holds, IReadOnlyList<Diagnostic> Warnings, IReadOnlyList<Diagnostic> Problems);

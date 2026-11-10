@@ -7,8 +7,8 @@ public class CliTests
 {
     private static async Task<(int ExitCode, string Output, string Error)> Meep(params string[] args)
     {
-        var output = new StringWriter();
-        var error = new StringWriter();
+        var output = new SharedText();
+        var error = new SharedText();
         var code = await Wait.For(MeepCommand.RunAsync(args, output, error, CancellationToken.None));
         return (code, output.ToString(), error.ToString());
     }
@@ -122,6 +122,6 @@ public class CliTests
         await Assert.That(versionCode).IsEqualTo(0);
         await Assert.That(version).StartsWith("meep ");
         await Assert.That(noArgumentsCode).IsEqualTo(2);
-        await Assert.That(usage).Contains("meep run [--dev] [--watch] [--otlp <url>] [--sample <share>] [--detach] <file.meep>");
+        await Assert.That(usage).Contains("meep run [--dev] [--watch] [--otlp <url>] [--sample <share>] [--detach] <pipeline>");
     }
 }

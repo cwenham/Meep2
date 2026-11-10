@@ -156,6 +156,13 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
         }
     }
 
+    // Offline, a plugin that isn't in the cache isn't downloaded (Q138).
+    private void NotOffline(PluginDirective directive)
+    {
+        if (options.Offline)
+            throw new PluginException($"{directive} isn't in Meep's cache, and plugins aren't downloaded while editing. Run the pipeline once to install it.");
+    }
+
     private async Task<InstalledPlugin> InstallGitHubAsync(PluginDirective directive, CancellationToken cancellationToken)
     {
         var (owner, repo) = directive.Name.Split('/') is [var o, var r] ? (o, r) : throw new PluginException($"github.com/{directive.Name} isn't owner/repo.");
@@ -166,6 +173,7 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
         // A cached copy is used if its files are still the ones that were downloaded; otherwise it's downloaded again.
         if (Manifest.Read(folder) is { } manifest && manifest.Sha256 == directive.Sha256 && Unchanged(folder, manifest.Files))
             return Pinned(directive, folder, MainAssembly(folder, repo, directive));
+        NotOffline(directive);
 
         var staging = Staging();
         try
@@ -211,6 +219,7 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
             var ownFiles = existing.PluginFiles.ToHashSet(StringComparer.Ordinal);
             return Checked(directive, folder, MainAssembly(folder, directive.Name, directive), ownFiles.Contains) with { Packages = existing.Packages };
         }
+        NotOffline(directive);
 
         var logger = NullLogger.Instance;
         using var cache = new SourceCacheContext { NoCache = true, DirectDownload = true };

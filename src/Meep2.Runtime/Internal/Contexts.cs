@@ -12,6 +12,12 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
     private Message? _current;
     private ModuleInfo? _emitter;
     private bool _passedOn;
+    private int _input;
+    private bool _flushing;
+    private bool _finishing;
+
+    // Messages the module keeps after handling them (Keep), until it emits one made from them or lets them go.
+    private readonly HashSet<Message> _kept = new(ReferenceEqualityComparer.Instance);
 
     // Leases this module made while handling the message, which it holds until it has finished with it (Q123), so
     // a lease that goes out on several messages can't close between them.
@@ -25,17 +31,112 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
     /// <summary>Whether the module emitted the message it was given, passing it on unchanged.</summary>
     public bool PassedOn => _passedOn;
 
-    public void Begin(Message message, ModuleInfo emitter)
+    public override int Input => _input;
+
+    public override bool Finishing => _flushing && _finishing;
+
+    public override int BufferSize => node.Capacity;
+
+    public int KeptCount
+    {
+        get
+        {
+            lock (_kept)
+                return _kept.Count;
+        }
+    }
+
+    public void Begin(Message message, ModuleInfo emitter, int input)
     {
         _current = message;
         _emitter = emitter;
         _passedOn = false;
+        _input = input;
+    }
+
+    /// <summary>The module is flushing what it keeps: it can emit with no message being handled.</summary>
+    /// <param name="finishing">Whether nothing else is left for the pipeline to do.</param>
+    public void BeginFlush(bool finishing)
+    {
+        _flushing = true;
+        _finishing = finishing;
+        _input = 0;
+    }
+
+    public void EndFlush()
+    {
+        _flushing = false;
+        _finishing = false;
+        ReleaseMadeLeases();
+    }
+
+    public override void Keep(Message message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (!message.IsStamped)
+            throw new ArgumentException("Only a message the module has received can be kept.", nameof(message));
+        lock (_kept)
+        {
+            if (!_kept.Add(message))
+                return;
+        }
+        node.Pipeline.Keep(message);
+    }
+
+    public override void LetGo(Message message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        bool removed;
+        lock (_kept)
+            removed = _kept.Count > 0 && _kept.Remove(message);
+        if (removed)
+            node.Pipeline.LetGo(message, MessageOutcome.Completed);
+    }
+
+    public override void FlushAfter(TimeSpan delay) => node.FlushAfter(delay);
+
+    /// <summary>Lets go of everything kept, as the pipeline halts with nothing left to make of it.</summary>
+    public void AbandonKept()
+    {
+        Message[] kept;
+        lock (_kept)
+        {
+            kept = [.. _kept];
+            _kept.Clear();
+        }
+        foreach (var message in kept)
+            node.Pipeline.LetGo(message, MessageOutcome.Abandoned);
+    }
+
+    // A message made from kept messages carries them on, so the module stops keeping them once it's emitted.
+    private void LetGoOfParents(Message message)
+    {
+        if (message.Parents.Count == 0)
+            return;
+        List<Message>? released = null;
+        lock (_kept)
+        {
+            if (_kept.Count == 0)
+                return;
+            foreach (var parent in message.Parents)
+            {
+                if (_kept.Remove(parent))
+                    (released ??= []).Add(parent);
+            }
+        }
+        foreach (var parent in released ?? [])
+            node.Pipeline.LetGo(parent, MessageOutcome.Completed);
     }
 
     public void End()
     {
         _current = null;
         _emitter = null;
+        ReleaseMadeLeases();
+    }
+
+    private void ReleaseMadeLeases()
+    {
         if (_made is { Count: > 0 } made)
         {
             foreach (var lease in made)
@@ -47,35 +148,43 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
     public override void Emit(Message message)
     {
         ArgumentNullException.ThrowIfNull(message);
-        var current = _current ?? throw NotHandling();
-        if (ReferenceEquals(message, current))
+        var current = Current();
+        if (current is not null && ReferenceEquals(message, current))
         {
             // Passing the message on unchanged. A passthrough module's messages have already gone on.
             _passedOn = true;
             if (!node.IsPassthrough)
             {
                 node.Tapped(message);
-                node.Pipeline.Deliver(node.Downstream, message);
+                node.Pipeline.Deliver(node, message);
             }
             return;
         }
         node.Pipeline.Emit(node, Module, message, defaultParent: current);
+        LetGoOfParents(message);
+        LetGo(message); // a message it kept, passed on as it is
     }
 
     public override void Emit(Message message, Lease lease)
     {
         ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(lease);
-        var current = _current ?? throw NotHandling();
+        var current = Current();
         node.Pipeline.EmitLeased(node, Module, message, lease, defaultParent: current, holdUntilDone: _made ??= []);
+        LetGoOfParents(message);
     }
 
     public override Task<MessageOutcome> EmitTracked(Message message)
     {
         ArgumentNullException.ThrowIfNull(message);
-        var current = _current ?? throw NotHandling();
-        return node.Pipeline.EmitTracked(node, Module, message, defaultParent: current);
+        var current = Current();
+        var outcome = node.Pipeline.EmitTracked(node, Module, message, defaultParent: current);
+        LetGoOfParents(message);
+        return outcome;
     }
+
+    // The message being handled; null while flushing, when there isn't one.
+    private Message? Current() => _current ?? (_flushing ? null : throw NotHandling());
 
     /// <summary>Emits an error in place of the message the module failed on.</summary>
     public void EmitFailure(Message message, Exception exception)
@@ -85,7 +194,7 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
     }
 
     private InvalidOperationException NotHandling() =>
-        new($"{node.Info} tried to emit while it wasn't handling a message. Modules can only emit from HandleAsync.");
+        new($"{node.Info} tried to emit while it wasn't handling a message. Modules can only emit from HandleAsync and FlushAsync.");
 }
 
 /// <summary>The context for a source. Sources can emit from any thread until they finish.</summary>

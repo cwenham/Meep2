@@ -543,8 +543,8 @@ public class PluginTests
 
     private static async Task<(int Code, string Output, string Error)> Cli(PluginOptions options, params string[] args)
     {
-        var output = new StringWriter();
-        var error = new StringWriter();
+        var output = new SharedText();
+        var error = new SharedText();
         var code = await Wait.For(MeepCommand.RunAsync(args, output, error, options, CancellationToken.None));
         return (code, output.ToString(), error.ToString());
     }

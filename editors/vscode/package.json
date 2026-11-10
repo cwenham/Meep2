@@ -1,0 +1,69 @@
+{
+  "name": "meeplang",
+  "displayName": "Meeplang",
+  "description": "Meeplang for Meep pipelines: colouring, and the mistakes meep run would find, as you type.",
+  "version": "0.1.0",
+  "publisher": "cwenham",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cwenham/Meep2",
+    "directory": "editors/vscode"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "meeplang",
+        "aliases": [
+          "Meeplang",
+          "meeplang"
+        ],
+        "extensions": [
+          ".meep"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "meeplang",
+        "scopeName": "source.meeplang",
+        "path": "./syntaxes/meeplang.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "Meeplang",
+      "properties": {
+        "meeplang.meepPath": {
+          "type": "string",
+          "default": "meep",
+          "description": "The meep command, which runs the language server with meep lsp. A full path if it isn't on your PATH."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "test": "node out/grammar.test.js",
+    "test:editor": "node out/test/runEditorTest.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "9.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.10",
+    "@types/vscode": "1.90.0",
+    "@vscode/test-electron": "2.5.2",
+    "typescript": "5.5.3",
+    "vscode-oniguruma": "2.0.1",
+    "vscode-textmate": "9.2.0"
+  }
+}

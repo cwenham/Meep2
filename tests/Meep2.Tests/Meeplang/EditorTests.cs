@@ -248,8 +248,37 @@ public class EditorTests
 
         await Assert.That(() => Edit(Two, new SourceEdit("WriteLine", EditKind.Unset))).Throws<EditException>().WithMessageContaining("There's more than one WriteLine: WriteLine #2, WriteLine #3. Say which by number.");
         await Assert.That(() => Edit(Two, new SourceEdit("Fetch", EditKind.Unset))).Throws<EditException>().WithMessageContaining("There's no module called Fetch.");
-        await Assert.That(() => Edit(Two, new SourceEdit("9", EditKind.Unset))).Throws<EditException>().WithMessageContaining("There's no module 9: the file has 3.");
+        await Assert.That(() => Edit(Two, new SourceEdit("9", EditKind.Unset))).Throws<EditException>().WithMessageContaining("There's no module 9: the pipeline runs 3.");
         await Assert.That(() => Edit(Two, new SourceEdit("2", EditKind.Unset, "nothing"))).Throws<EditException>().WithMessageContaining("WriteLine has no parameter called nothing.");
         await Assert.That(Edit(Two, new SourceEdit("WriteLine #3", EditKind.Set, null, "\"c\""))).Contains("WriteLine \"c\""); // as the messages name it
+    }
+
+    [Test]
+    public async Task Edits_name_modules_as_the_running_pipeline_does_and_change_a_templates_definition()
+    {
+        const string Text = """
+            template Shout(Text)
+                Where msg.Count > 0 as Gate
+                    WriteLine "{Text}!"
+            Interval 1s
+                Shout "a" as A
+                Shout "b" as B
+                Distribute 2
+                    WriteLine "c"
+            """;
+
+        // Running: Interval #1, A #2, WriteLine #3, B #4, WriteLine #5, Distribute #6, WriteLine #7, WriteLine #8.
+        var definition = Edit(Text, new SourceEdit("5", EditKind.Set, null, "\"{Text}?\""));
+        var copy = Edit(Text, new SourceEdit("8", EditKind.Set, null, "\"d\""));
+        var use = Edit(Text, new SourceEdit("A", EditKind.Rename, null, "First"));
+
+        await Assert.That(definition).Contains("        WriteLine \"{Text}?\"");
+        await Assert.That(definition).Contains("    Shout \"b\" as B"); // the uses are as they were
+        await Assert.That(copy).Contains("        WriteLine \"d\"");
+        await Assert.That(use).Contains("    Shout \"a\" as First"); // a name a use gives is on the use's line
+        await Assert.That(Edit(Text.Replace("    Shout \"b\" as B\n", ""), new SourceEdit("Shout", EditKind.Set, null, "\"z\""))).Contains("    Shout \"z\" as A"); // a use, by its template's name
+        await Assert.That(() => Edit(Text, new SourceEdit("Shout", EditKind.Set, null, "\"z\""))).Throws<EditException>().WithMessageContaining("The template Shout is used 2 times, on lines 5 and 6, so an edit can't tell which use to change.");
+        await Assert.That(() => Edit(Text, new SourceEdit("A_Gate", EditKind.Rename, null, "Door"))).Throws<EditException>().WithMessageContaining("There's no module called A_Gate.");
+        await Assert.That(Edit("Interval 1s\n    Zip\n", new SourceEdit("Zip", EditKind.Set, "by", "msg.Count"))).IsEqualTo("Interval 1s\n    Zip by msg.Count\n"); // a key, as a keyword
     }
 }

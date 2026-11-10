@@ -19,9 +19,9 @@ internal enum TokenKind
 /// <summary>A token on one line. <see cref="Column"/> counts from 1, as in the source file.</summary>
 /// <param name="Text">For identifiers and symbols, the text; for double-quoted strings, the content between the quotes as written.</param>
 /// <param name="Value">For numbers, durations and single-quoted strings, the value.</param>
-internal readonly record struct Token(TokenKind Kind, string Text, int Line, int Column, int Length, object? Value = null)
+internal readonly record struct Token(TokenKind Kind, string Text, int Line, int Column, int Length, object? Value = null, string? File = null)
 {
-    public SourceSpan Span => new(Line, Column, Length);
+    public SourceSpan Span => new(Line, Column, Length, File);
 
     public bool Is(string symbol) => Kind == TokenKind.Symbol && Text == symbol;
 
@@ -103,11 +103,11 @@ internal sealed class Lexer
             }
             else
             {
-                _diagnostics.Error($"'{c}' isn't something Meeplang understands here.", new SourceSpan(_line, Column(_position), 1));
+                _diagnostics.Error($"'{c}' isn't something Meeplang understands here.", new SourceSpan(_line, Column(_position), 1, _diagnostics.SpanFile));
                 _position++;
             }
         }
-        _tokens.Add(new Token(TokenKind.End, "", _line, Column(_text.Length), 0));
+        _tokens.Add(new Token(TokenKind.End, "", _line, Column(_text.Length), 0, null, _diagnostics.SpanFile));
     }
 
     private char Peek(int offset) => _position + offset < _text.Length ? _text[_position + offset] : '\0';
@@ -130,7 +130,7 @@ internal sealed class Lexer
             end = scan;
 
         _position = end;
-        _tokens.Add(new Token(TokenKind.Identifier, _text[start..end], _line, Column(start), end - start));
+        _tokens.Add(new Token(TokenKind.Identifier, _text[start..end], _line, Column(start), end - start, null, _diagnostics.SpanFile));
     }
 
     private void SkipIdentifierCharacters()
@@ -213,7 +213,7 @@ internal sealed class Lexer
             };
             if (part is null)
             {
-                DurationError($"'{unit}' isn't a unit Meeplang knows. Use ms, s, m, h or d, as in 250ms or 1h30m.", new SourceSpan(_line, Column(unitStart), unit.Length), start);
+                DurationError($"'{unit}' isn't a unit Meeplang knows. Use ms, s, m, h or d, as in 250ms or 1h30m.", new SourceSpan(_line, Column(unitStart), unit.Length, _diagnostics.SpanFile), start);
                 return;
             }
             total += part.Value;
@@ -268,7 +268,7 @@ internal sealed class Lexer
             }
             if (c == '"')
             {
-                _tokens.Add(new Token(TokenKind.String, _text[contentStart.._position], _line, Column(start), _position + 1 - start));
+                _tokens.Add(new Token(TokenKind.String, _text[contentStart.._position], _line, Column(start), _position + 1 - start, null, _diagnostics.SpanFile));
                 _position++;
                 return;
             }
@@ -326,15 +326,21 @@ internal sealed class Lexer
     }
 
     private void Add(TokenKind kind, string text, int start, object? value) =>
-        _tokens.Add(new Token(kind, text, _line, Column(start), Math.Max(text.Length, 1), value));
+        _tokens.Add(new Token(kind, text, _line, Column(start), Math.Max(text.Length, 1), value, _diagnostics.SpanFile));
 
-    private SourceSpan Span(int start) => new(_line, Column(start), Math.Max(_position - start, 1));
+    private SourceSpan Span(int start) => new(_line, Column(start), Math.Max(_position - start, 1), _diagnostics.SpanFile);
 }
 
 /// <summary>Collects diagnostics for one file.</summary>
 internal sealed class Diagnostics(string? path)
 {
     private readonly List<Diagnostic> _items = [];
+
+    /// <summary>
+    /// The file to record in the spans of tokens lexed with these diagnostics: set for an included file, so its
+    /// templates still point at it once copied into a pipeline.
+    /// </summary>
+    public string? SpanFile { get; init; }
 
     public IReadOnlyList<Diagnostic> Items => _items;
 

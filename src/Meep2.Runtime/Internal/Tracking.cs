@@ -158,7 +158,22 @@ internal sealed class InFlightCounter
 
     public void Add() => Interlocked.Increment(ref _count);
 
-    /// <summary>Releases one count. Returns true exactly once: when the count first reaches zero.</summary>
-    public bool Release() =>
-        Interlocked.Decrement(ref _count) == 0 && Interlocked.CompareExchange(ref _count, HaltedCount, 0) == 0;
+    /// <summary>Adds a count unless the pipeline has halted. Returns whether it did.</summary>
+    public bool TryAdd()
+    {
+        while (true)
+        {
+            var count = Volatile.Read(ref _count);
+            if (count < 0)
+                return false;
+            if (Interlocked.CompareExchange(ref _count, count + 1, count) == count)
+                return true;
+        }
+    }
+
+    /// <summary>Releases one count. Returns true when the count reaches zero, so the pipeline may halt.</summary>
+    public bool Release() => Interlocked.Decrement(ref _count) == 0;
+
+    /// <summary>Halts, if the count is still zero. Returns true exactly once.</summary>
+    public bool TryHalt() => Interlocked.CompareExchange(ref _count, HaltedCount, 0) == 0;
 }

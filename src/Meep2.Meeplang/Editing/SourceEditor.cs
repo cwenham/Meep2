@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Text;
+using Meep2.Meeplang.Loading;
 using Meep2.Meeplang.Parsing;
 using Meep2.Meeplang.Syntax;
 
@@ -110,38 +112,92 @@ public static class SourceEditor
     }
 
     /// <summary>
-    /// A module by its name, its number counting from 1 down the file, its label as messages show it (such as
-    /// <c>Where #3</c>), or a verb (or Verb.Inflection) only one module has.
+    /// The line an edit to a module changes. The module is named as the running pipeline names it (Q129): by its name,
+    /// its number counting from 1 through the modules it runs, its label as messages show it (such as <c>Where #3</c>),
+    /// or a verb (or Verb.Inflection) only one module has. A module copied from a template is edited in the
+    /// template, and a copy Distribute made is edited as its original. A template's use isn't a module that runs, but
+    /// can be named by its template's name, to edit the values it gives.
     /// </summary>
-    /// <exception cref="EditException">There's no such module, or more than one.</exception>
-    public static ModuleSyntax Find(PipelineSyntax syntax, string module)
+    /// <exception cref="EditException">There's no such module, or more than one, or it's in an included file.</exception>
+    public static ModuleSyntax Find(PipelineSyntax syntax, string module) => Target(syntax, module, renaming: false);
+
+    private static ModuleSyntax Target(PipelineSyntax syntax, string module, bool renaming)
     {
         ArgumentNullException.ThrowIfNull(syntax);
         ArgumentNullException.ThrowIfNull(module);
-        var all = AllModules(syntax).ToList();
+        var running = RunningModules(syntax);
+        List<(ModuleSyntax Module, string Label)> found;
         if (int.TryParse(module, out var number))
         {
-            return number >= 1 && number <= all.Count
-                ? all[number - 1].Module
-                : throw new EditException($"There's no module {number}: the file has {all.Count}.");
+            found = number >= 1 && number <= running.Count
+                ? [running[number - 1]]
+                : throw new EditException($"There's no module {number}: the pipeline runs {running.Count}.");
         }
-        // A label as messages and the daemon show it, such as Where #3, names one module.
-        var found = all.Where(m => m.Module.Name == module || m.Label == module).ToList();
-        if (found.Count == 0)
-            found = [.. all.Where(m => m.Module.Name is null && (m.Module.Verb == module || $"{m.Module.Verb}.{m.Module.Inflection}" == module || m.Module.Inflection == module))];
-        return found switch
+        else
         {
-            [var one] => one.Module,
-            [] => throw new EditException($"There's no module called {module}. The modules are {string.Join(", ", all.Select(m => m.Label))}."),
+            // A label as messages and the daemon show it, such as Where #3, names one module.
+            found = [.. running.Where(m => m.Module.Name == module || m.Label == module)];
+            if (found.Count == 0)
+                found = [.. running.Where(m => m.Module.Name is null && (m.Module.Verb == module || $"{m.Module.Verb}.{m.Module.Inflection}" == module || m.Module.Inflection == module))];
+            if (found.Count == 0 && TemplateUses(syntax, module) is { Count: > 0 } uses)
+            {
+                return uses.Count == 1
+                    ? uses[0]
+                    : throw new EditException($"The template {module} is used {uses.Count} times, on lines {Listed(uses.Select(u => u.VerbSpan.Line.ToString(CultureInfo.InvariantCulture)))}, so an edit can't tell which use to change. Change the file itself.");
+            }
+        }
+
+        // Copies of one line, from a template used more than once or a branch Distribute copied, are that line.
+        var lines = found.GroupBy(m => m.Module.Written).ToList();
+        var (copy, label) = lines switch
+        {
+            [var one] => one.First(),
+            [] => throw new EditException($"There's no module called {module}. The modules are {string.Join(", ", running.Select(m => m.Label))}."),
             _ => throw new EditException($"There's more than one {module}: {string.Join(", ", found.Select(m => m.Label))}. Say which by number."),
         };
+
+        // A name given by a template's use is written on the use's line.
+        var target = renaming && copy.ExpandedFrom is { NameSpan: { } useName } use && copy.NameSpan == useName ? use : copy.Written;
+        if (target.VerbSpan.File is { } file)
+            throw new EditException($"{label} is copied from the template {copy.ExpandedFrom?.Verb} in {file}, and edits only change the pipeline's own file so far. Change {file} itself.");
+        if (renaming && target.Name != copy.Name)
+            throw new EditException($"{label} is named {target.Name} in the template {copy.ExpandedFrom?.Verb}, and its use's name is put before that. Rename it in the template, or rename the use.");
+        return target;
     }
+
+    // The modules the pipeline runs, in its order, with the labels it gives them.
+    private static List<(ModuleSyntax Module, string Label)> RunningModules(PipelineSyntax syntax)
+    {
+        var all = new List<(ModuleSyntax, string)>();
+        void Walk(IReadOnlyList<ModuleSyntax> modules)
+        {
+            foreach (var module in modules)
+            {
+                all.Add((module, module.Name ?? $"{module.Verb} #{all.Count + 1}"));
+                Walk(module.Children);
+            }
+        }
+        Walk(Load.Running(syntax));
+        return all;
+    }
+
+    private static string Listed(IEnumerable<string> items)
+    {
+        var all = items.ToList();
+        return all.Count == 1 ? all[0] : string.Join(", ", all.Take(all.Count - 1)) + " and " + all[^1];
+    }
+
+    // The lines in the pipeline that use the template called name.
+    private static List<ModuleSyntax> TemplateUses(PipelineSyntax syntax, string name) =>
+        syntax.Templates.Concat(syntax.Included.SelectMany(i => i.Templates)).Any(t => t.Name == name)
+            ? [.. AllModules(syntax).Select(m => m.Module).Where(m => m.Verb == name && m.Plugin is null && m.Inflection is null)]
+            : [];
 
     private static string Apply(PipelineSyntax syntax, SourceEdit edit)
     {
         if (edit.Kind >= EditKind.SetDefault)
             return ApplyToFile(syntax, edit);
-        var module = Find(syntax, edit.Module);
+        var module = Target(syntax, edit.Module, renaming: edit.Kind == EditKind.Rename);
         var text = new Text(syntax.Source.Text);
         var line = Line.Of(syntax, module);
         switch (edit.Kind)
@@ -194,6 +250,12 @@ public static class SourceEditor
         if (module.Arguments.FirstOrDefault(a => a.Name == name) is { } argument)
         {
             text.Replace(argument.Value.Span.Line, argument.Value.Span.Column, End(argument.Value.Span), value);
+            return;
+        }
+        // A key is written on the module's line, as by key (Q130).
+        if (string.Equals(name, "by", StringComparison.OrdinalIgnoreCase))
+        {
+            text.Insert(line.Number, line.ParametersEnd, $" by {value}");
             return;
         }
         // A module whose parameters are on lines of their own gets another such line; otherwise it goes on its line.

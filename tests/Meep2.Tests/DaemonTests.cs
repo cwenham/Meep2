@@ -214,8 +214,8 @@ public class DaemonTests
         var options = new PluginOptions { Home = home.Path };
         var file = home.Write("ticker.meep", Ticker);
         using var stopDaemon = new CancellationTokenSource();
-        var daemonOutput = new StringWriter();
-        var daemonLog = new StringWriter();
+        var daemonOutput = new SharedText();
+        var daemonLog = new SharedText();
         var daemon = MeepCommand.RunAsync(["daemon"], TextWriter.Synchronized(daemonOutput), TextWriter.Synchronized(daemonLog), options, stopDaemon.Token);
         await Wait.Until(() => File.Exists(Path.Combine(home.Path, "daemon", "meep.sock")) || daemon.IsCompleted);
 
@@ -254,9 +254,9 @@ public class DaemonTests
             Interval 10ms count=3
                 WriteLine "{msg.Count}"
             """);
-        var output = new StringWriter();
+        var output = new SharedText();
 
-        var code = await Wait.For(MeepCommand.RunAsync(["run", "--otlp", collector.Url, "--sample", "1", file], output, new StringWriter(), folder.Path, CancellationToken.None));
+        var code = await Wait.For(MeepCommand.RunAsync(["run", "--otlp", collector.Url, "--sample", "1", file], output, new SharedText(), folder.Path, CancellationToken.None));
 
         await Assert.That(code).IsEqualTo(0);
         await Wait.Until(() => received.Contains("/v1/traces") && received.Contains("/v1/metrics"));
@@ -264,8 +264,8 @@ public class DaemonTests
 
     private static async Task<(int Code, string Output, string Error)> Cli(PluginOptions options, params string[] args)
     {
-        var output = new StringWriter();
-        var error = new StringWriter();
+        var output = new SharedText();
+        var error = new SharedText();
         var code = await Wait.For(MeepCommand.RunAsync(args, output, error, options, CancellationToken.None));
         return (code, output.ToString(), error.ToString());
     }
@@ -304,9 +304,9 @@ public sealed class DaemonLab : IAsyncDisposable
 
     public DaemonClient Client { get; }
 
-    public StringWriter Output { get; } = new();
+    public StringWriter Output { get; } = new SharedText();
 
-    public StringWriter Log { get; } = new();
+    public StringWriter Log { get; } = new SharedText();
 
     public string SocketFolder => _socket.Path;
 

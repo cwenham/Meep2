@@ -240,8 +240,8 @@ public class WriteBackTests
     {
         using var folder = new TemporaryFolder();
         var file = folder.Write("ticker.meep", Ticker);
-        var output = new StringWriter();
-        var error = new StringWriter();
+        var output = new SharedText();
+        var error = new SharedText();
         using var stop = new CancellationTokenSource();
 
         var run = MeepCommand.RunAsync(["run", "--watch", file], TextWriter.Synchronized(output), TextWriter.Synchronized(error), folder.Path, stop.Token);
@@ -262,7 +262,7 @@ public class WriteBackTests
         var options = new PluginOptions { Home = home.Path };
         var file = home.Write("ticker.meep", Ticker);
         using var stopDaemon = new CancellationTokenSource();
-        var daemon = MeepCommand.RunAsync(["daemon", file], TextWriter.Synchronized(new StringWriter()), TextWriter.Synchronized(new StringWriter()), options, stopDaemon.Token);
+        var daemon = MeepCommand.RunAsync(["daemon", file], TextWriter.Synchronized(new SharedText()), TextWriter.Synchronized(new SharedText()), options, stopDaemon.Token);
         await Wait.Until(async () => (await Cli(options, "list")).Output.Contains("running", StringComparison.Ordinal));
 
         var edit = await Cli(options, "edit", "ticker", "Interval", "set", "@expires=5s", "--no-save");
@@ -305,8 +305,8 @@ public class WriteBackTests
 
     private static async Task<(int Code, string Output, string Error)> Cli(PluginOptions options, params string[] args)
     {
-        var output = new StringWriter();
-        var error = new StringWriter();
+        var output = new SharedText();
+        var error = new SharedText();
         var code = await Wait.For(MeepCommand.RunAsync(args, output, error, options, CancellationToken.None));
         return (code, output.ToString(), error.ToString());
     }

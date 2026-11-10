@@ -1,0 +1,110 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Meeplang",
+  "scopeName": "source.meeplang",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#directive" },
+    { "include": "#header" },
+    { "include": "#module" },
+    { "include": "#feeder" },
+    { "include": "#expression" }
+  ],
+  "repository": {
+    "comment": { "name": "comment.line.double-slash.meeplang", "match": "//.*$" },
+    "directive": {
+      "match": "^(#(?:plugin|include))\\b(.*?)(?=\\s*//|$)",
+      "captures": {
+        "1": { "name": "keyword.control.directive.meeplang" },
+        "2": {
+          "patterns": [
+            { "include": "#string" },
+            { "include": "#raw-string" },
+            { "match": "\\bas\\b", "name": "keyword.other.as.meeplang" },
+            { "match": "sha256:[0-9a-fA-F…]+", "name": "constant.other.sha.meeplang" }
+          ]
+        }
+      }
+    },
+    "header": {
+      "patterns": [
+        { "match": "^(defaults)\\s*$", "captures": { "1": { "name": "keyword.other.defaults.meeplang" } } },
+        {
+          "match": "^(const)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.other.const.meeplang" },
+            "2": { "name": "variable.other.constant.meeplang" }
+          }
+        },
+        {
+          "match": "^(template)\\s+([A-Za-z_]\\w*)",
+          "captures": {
+            "1": { "name": "keyword.other.template.meeplang" },
+            "2": { "name": "entity.name.function.template.meeplang" }
+          }
+        }
+      ]
+    },
+    "feeder": { "match": "^\\s*(\\+)(?=\\s)", "captures": { "1": { "name": "keyword.operator.feeder.meeplang" } } },
+    "module": {
+      "match": "^\\s*(?:(\\+)\\s+)?([A-Z]\\w*(?:\\.[A-Z]\\w*){0,2})(?=\\s|$)",
+      "captures": {
+        "1": { "name": "keyword.operator.feeder.meeplang" },
+        "2": { "name": "entity.name.type.module.meeplang" }
+      }
+    },
+    "expression": {
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#string" },
+        { "include": "#raw-string" },
+        { "match": "@[A-Za-z][\\w-]*", "name": "storage.modifier.meeplang" },
+        {
+          "match": "\\b(as)\\s+([A-Za-z_]\\w*)",
+          "captures": { "1": { "name": "keyword.other.as.meeplang" }, "2": { "name": "variable.other.name.meeplang" } }
+        },
+        { "match": "(?<![.\\w])by\\b(?!\\s*=)", "name": "keyword.other.by.meeplang" },
+        {
+          "match": "\\b(is(?:\\s+not)?)\\s+([A-Za-z_][\\w.]*)",
+          "captures": {
+            "1": { "name": "keyword.operator.is.meeplang" },
+            "2": { "name": "entity.name.type.message.meeplang" }
+          }
+        },
+        { "match": "\\b(and|or|not)\\b", "name": "keyword.operator.logical.meeplang" },
+        { "match": "\\b(true|false|null|none|never)\\b", "name": "constant.language.meeplang" },
+        { "match": "\\b(msg|fam)\\b", "name": "variable.language.meeplang" },
+        { "match": "\\b\\d+(?:\\.\\d+)?(?:ms|s|m|h|d)\\b", "name": "constant.numeric.duration.meeplang" },
+        { "match": "\\b\\d+(?:\\.\\d+)?%?", "name": "constant.numeric.meeplang" },
+        { "match": "\\b([A-Za-z_][\\w-]*)\\s*(?==)", "captures": { "1": { "name": "variable.parameter.meeplang" } } },
+        { "match": "==|!=|<=|>=|<|>|\\+|-|\\*|/|%|=", "name": "keyword.operator.meeplang" }
+      ]
+    },
+    "string": {
+      "name": "string.quoted.double.meeplang",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        { "match": "\\\\.", "name": "constant.character.escape.meeplang" },
+        { "match": "\\{\\{|\\}\\}", "name": "constant.character.escape.meeplang" },
+        {
+          "name": "meta.template.expression.meeplang",
+          "begin": "\\{",
+          "end": "(?::([^}]*))?\\}",
+          "beginCaptures": { "0": { "name": "punctuation.section.template.begin.meeplang" } },
+          "endCaptures": {
+            "0": { "name": "punctuation.section.template.end.meeplang" },
+            "1": { "name": "constant.other.format.meeplang" }
+          },
+          "patterns": [ { "include": "#expression" } ]
+        }
+      ]
+    },
+    "raw-string": {
+      "name": "string.quoted.single.meeplang",
+      "begin": "'",
+      "end": "'(?!')",
+      "patterns": [ { "match": "''", "name": "constant.character.escape.meeplang" } ]
+    }
+  }
+}

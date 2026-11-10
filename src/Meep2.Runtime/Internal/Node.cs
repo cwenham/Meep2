@@ -27,6 +27,12 @@ internal sealed record InflectionSpec(ModuleInfo Info, Func<AModule> Create, Fun
 /// <param name="IsSource">Whether it's a source.</param>
 internal sealed record NodeSpec(ModuleInfo Info, InflectionSpec[] Inflections, NodeOptions Options, bool IsSource);
 
+/// <summary>The modules one feeds, and for each, which of its inputs that is, counting from 1.</summary>
+internal sealed record Fanout(InflectionNode[] Targets, int[] Inputs)
+{
+    public static readonly Fanout None = new([], []);
+}
+
 /// <summary>One module's place in a running pipeline: its instances, its downstream modules and its counts.</summary>
 internal abstract class Node(Pipeline pipeline, NodeSpec spec)
 {
@@ -73,8 +79,17 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
     /// <summary>The error policy for this module: its own, or the pipeline's.</summary>
     public ErrorPolicy Policy => Options.ErrorPolicy ?? Pipeline.Options.ErrorPolicy;
 
+    private volatile Fanout _links = Fanout.None;
+
     /// <summary>The modules this one feeds.</summary>
-    public InflectionNode[] Downstream { get; set; } = [];
+    public InflectionNode[] Downstream => _links.Targets;
+
+    /// <summary>The modules this one feeds, with which of each one's inputs it is. Replaced whole, so a reader sees one or the other.</summary>
+    public Fanout Links
+    {
+        get => _links;
+        set => _links = value;
+    }
 
     /// <summary>Makes the module's instances. Called when the pipeline starts.</summary>
     public abstract void CreateModule();

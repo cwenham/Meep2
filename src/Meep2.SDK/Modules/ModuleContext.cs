@@ -53,6 +53,50 @@ public abstract class ModuleContext
         Emit(new ErrorMessage { Error = error, Exception = exception });
 
     /// <summary>
+    /// Which of the module's inputs the message being handled came in on, counting from 1 in the order the lines
+    /// feeding the module are written (round 3, section 2). A module fed by one line always sees 1; a message sent in
+    /// as a test, 0. Zip uses it to tell left from right.
+    /// </summary>
+    public virtual int Input => 1;
+
+    /// <summary>
+    /// Keeps a message after the module has finished handling it, as Batch and Zip do while they wait for the
+    /// messages that go with it. It stays in flight, with its leases open, until the module emits a message made from
+    /// it (one with it among its <see cref="Message.Parents"/>) or lets it go with <see cref="LetGo"/>.
+    /// </summary>
+    /// <remarks>
+    /// When nothing else is left for the pipeline to do, as when its sources have finished or it's stopping, the
+    /// runtime asks each module that keeps messages to flush them (<see cref="AInflection.FlushAsync"/>). Messages
+    /// still kept after that are let go as the pipeline halts.
+    /// </remarks>
+    public virtual void Keep(Message message) =>
+        throw new NotSupportedException("Only a module that handles messages can keep them.");
+
+    /// <summary>Stops keeping a message, which then finishes, unless a message made from it is still in flight.</summary>
+    public virtual void LetGo(Message message) =>
+        throw new NotSupportedException("Only a module that handles messages can keep them.");
+
+    /// <summary>
+    /// Asks the runtime to flush the module after a while (<see cref="AInflection.FlushAsync"/>), between messages,
+    /// as a batch that's due to go out after a second does. A later request replaces an earlier one.
+    /// </summary>
+    public virtual void FlushAfter(TimeSpan delay) =>
+        throw new NotSupportedException("Only a module that handles messages can be flushed.");
+
+    /// <summary>
+    /// While flushing, whether it's because nothing else is left for the pipeline to do, as when its sources have
+    /// finished or it's stopping: the last chance to emit the messages the module keeps. False for a flush the module
+    /// asked for with <see cref="FlushAfter"/>, and while handling a message.
+    /// </summary>
+    public virtual bool Finishing => false;
+
+    /// <summary>
+    /// How many messages the module's buffer holds, as set by <c>buffer</c> under <c>defaults</c>. A module that keeps messages can take
+    /// it as its limit on how many to keep, as Zip does (Q131).
+    /// </summary>
+    public virtual int BufferSize => 1024;
+
+    /// <summary>
     /// Says the module has answered an error for whoever was waiting, such as by sending a reply to the request it
     /// came from. Taking the error then doesn't count as handling it: unless a module after this one handles it, the
     /// error policy logs it, but doesn't count it towards stopping the pipeline (Q100). So a server that answers bad

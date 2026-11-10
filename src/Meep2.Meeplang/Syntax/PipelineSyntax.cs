@@ -3,20 +3,27 @@ namespace Meep2.Meeplang.Syntax;
 /// <summary>A parsed Meeplang file.</summary>
 public sealed class PipelineSyntax
 {
+    private readonly List<Diagnostic> _diagnostics;
+    private readonly List<PipelineSyntax> _included = [];
+
     internal PipelineSyntax(
         SourceFile source,
         IReadOnlyList<ArgumentSyntax> defaults,
         IReadOnlyList<ConstantSyntax> constants,
         IReadOnlyList<PluginDirective> plugins,
         IReadOnlyList<ModuleSyntax> modules,
-        IReadOnlyList<Diagnostic> diagnostics)
+        IReadOnlyList<Diagnostic> diagnostics,
+        IReadOnlyList<TemplateBlock>? templates = null,
+        IReadOnlyList<IncludeDirective>? includes = null)
     {
         Source = source;
         Defaults = defaults;
         Constants = constants;
         Plugins = plugins;
         Modules = modules;
-        Diagnostics = diagnostics;
+        _diagnostics = [.. diagnostics];
+        Templates = templates ?? [];
+        Includes = includes ?? [];
     }
 
     /// <summary>The file this came from.</summary>
@@ -34,11 +41,40 @@ public sealed class PipelineSyntax
     /// <summary>The modules written at the left margin, in order, including <c>+</c> lines.</summary>
     public IReadOnlyList<ModuleSyntax> Modules { get; }
 
-    /// <summary>Problems found while parsing.</summary>
-    public IReadOnlyList<Diagnostic> Diagnostics { get; }
+    /// <summary>The <c>template</c> blocks, in order.</summary>
+    public IReadOnlyList<TemplateBlock> Templates { get; }
+
+    /// <summary>The <c>#include</c> lines, in order.</summary>
+    public IReadOnlyList<IncludeDirective> Includes { get; }
+
+    /// <summary>The files <c>#include</c> brought in, and those they brought in, parsed, in the order they were met.</summary>
+    public IReadOnlyList<PipelineSyntax> Included => _included;
+
+    /// <summary>Problems found while parsing, the included files' among them.</summary>
+    public IReadOnlyList<Diagnostic> Diagnostics => _diagnostics;
 
     /// <summary>Whether parsing found any errors.</summary>
-    public bool HasErrors => Diagnostics.Any(d => d.IsError);
+    public bool HasErrors => _diagnostics.Any(d => d.IsError);
+
+    internal void AddIncluded(PipelineSyntax included)
+    {
+        _included.Add(included);
+        _diagnostics.AddRange(included._diagnostics);
+    }
+
+    internal void AddDiagnostic(Diagnostic diagnostic) => _diagnostics.Add(diagnostic);
+
+    /// <summary>
+    /// This file with other modules in place of its own: the modules once templates are copied in, which is what's
+    /// built and matched.
+    /// </summary>
+    internal PipelineSyntax WithModules(IReadOnlyList<ModuleSyntax> modules)
+    {
+        var copy = new PipelineSyntax(Source, Defaults, Constants, Plugins, modules, [], Templates, Includes);
+        copy._diagnostics.AddRange(_diagnostics);
+        copy._included.AddRange(_included);
+        return copy;
+    }
 
     /// <summary>The source text a span covers.</summary>
     public string TextOf(SourceSpan span)
@@ -113,6 +149,46 @@ public sealed class ModuleSyntax
 
     internal void AddChild(ModuleSyntax child) => _children.Add(child);
 
+    /// <summary>The template use this module was copied from, if a template made it.</summary>
+    public ModuleSyntax? ExpandedFrom { get; internal set; }
+
+    /// <summary>The module this is a copy of, if Distribute copied its branch (Q53). Copies share their original's name.</summary>
+    public ModuleSyntax? CopyOf { get; internal set; }
+
+    /// <summary>
+    /// The module as written in its file, if this is a copy: made when templates were copied in, or when Distribute
+    /// copied its branch. Edits to a copy change this line (Q129).
+    /// </summary>
+    public ModuleSyntax? Original { get; private set; }
+
+    /// <summary>The module as written in its file: <see cref="Original"/>, or this one if it isn't a copy.</summary>
+    public ModuleSyntax Written => Original ?? this;
+
+    /// <summary>
+    /// A copy of this module, with its expressions rewritten and other modules under it, as when a template is copied
+    /// into a pipeline.
+    /// </summary>
+    internal ModuleSyntax Copy(Func<ExpressionSyntax, ExpressionSyntax> rewrite, IEnumerable<ModuleSyntax> children, bool? isFeeder = null)
+    {
+        var copy = new ModuleSyntax(isFeeder ?? IsFeeder, Verb, VerbSpan)
+        {
+            Plugin = Plugin,
+            Inflection = Inflection,
+            Positional = Positional is null ? null : rewrite(Positional),
+            Name = Name,
+            NameSpan = NameSpan,
+            ExpandedFrom = ExpandedFrom,
+            CopyOf = CopyOf,
+            Original = Written,
+        };
+        foreach (var argument in _arguments)
+            copy._arguments.Add(argument with { Value = rewrite(argument.Value) });
+        foreach (var modifier in _modifiers)
+            copy._modifiers.Add(modifier with { Value = modifier.Value is null ? null : rewrite(modifier.Value) });
+        copy._children.AddRange(children);
+        return copy;
+    }
+
     /// <inheritdoc/>
     public override string ToString() => $"{(IsFeeder ? "+ " : "")}{(Plugin is null ? "" : Plugin + ".")}{Verb}{(Name is null ? "" : $" as {Name}")} (line {VerbSpan.Line})";
 }
@@ -174,3 +250,52 @@ public sealed record PluginDirective(PluginOrigin Origin, string Name, string? V
         _ => Name,
     };
 }
+
+/// <summary>
+/// A <c>template Name(Parameter, Parameter = default)</c> block: modules that a module line naming the template is
+/// replaced by, before the pipeline is built, with its parameters' values in place of their names.
+/// </summary>
+public sealed class TemplateBlock
+{
+    private readonly List<ModuleSyntax> _body = [];
+
+    internal TemplateBlock(string name, SourceSpan nameSpan, IReadOnlyList<TemplateParameter> parameters, string path)
+    {
+        Name = name;
+        NameSpan = nameSpan;
+        Parameters = parameters;
+        Path = path;
+    }
+
+    /// <summary>The template's name, which module lines use as if it were a verb.</summary>
+    public string Name { get; }
+
+    /// <summary>Where the name is.</summary>
+    public SourceSpan NameSpan { get; }
+
+    /// <summary>Its parameters, in order. The first takes a use's main value.</summary>
+    public IReadOnlyList<TemplateParameter> Parameters { get; }
+
+    /// <summary>The modules indented under it.</summary>
+    public IReadOnlyList<ModuleSyntax> Body => _body;
+
+    /// <summary>The file it's written in.</summary>
+    public string Path { get; }
+
+    internal void AddModule(ModuleSyntax module) => _body.Add(module);
+}
+
+/// <summary>A template's parameter.</summary>
+/// <param name="Name">Its name, which the template's expressions use.</param>
+/// <param name="Default">Its value when a use doesn't give one, or null if every use must.</param>
+/// <param name="Span">Where it's named.</param>
+public sealed record TemplateParameter(string Name, ExpressionSyntax? Default, SourceSpan Span);
+
+/// <summary>An <c>#include "file.meep"</c> line, which brings in another file's templates and constants.</summary>
+/// <param name="Path">The file, as written: relative paths are from the including file's folder.</param>
+/// <param name="Span">Where the line is.</param>
+/// <param name="Sha256">
+/// The SHA-256 the file must have, from <c>sha256:…</c> after it: a pin (Q136). A file trusted by a signature or a
+/// pin then pins what it includes too, so one pin covers a pipeline and everything it includes.
+/// </param>
+public sealed record IncludeDirective(string Path, SourceSpan Span, string? Sha256 = null);

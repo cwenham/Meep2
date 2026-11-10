@@ -23,13 +23,17 @@ public sealed class HostedPipeline
     private PipelineWatcher? _watcher;
     private readonly List<(string Edit, string? Commit)> _unsaved = [];
 
-    internal HostedPipeline(string name, string path, ModuleRegistry registry, PluginOptions plugins)
+    internal HostedPipeline(string name, PipelineAddress address, ModuleRegistry registry, PluginOptions plugins)
     {
         Name = name;
-        Path = path;
+        Address = address;
+        Path = address.ToString();
         BaseRegistry = registry;
         Plugins = plugins;
     }
+
+    /// <summary>Where it came from: a file, a URL, Git, standard input or text sent to the daemon (goal 7).</summary>
+    public PipelineAddress Address { get; }
 
     /// <summary>The pipeline as one that can be changed while it runs, once it's built (goal 4).</summary>
     public LivePipeline? Live
@@ -206,7 +210,7 @@ public sealed class HostedPipeline
         {
             if (!force && WouldUndoEdits() is { } warning)
                 throw new DaemonException(409, warning);
-            var change = await Reloading.ReloadAsync(live, Path, BaseRegistry, Plugins, cancellationToken).ConfigureAwait(false);
+            var change = await Reloading.ReloadAsync(live, Address, BaseRegistry, Plugins, cancellationToken).ConfigureAwait(false);
             if (change.Applied)
             {
                 Edited = false;
@@ -247,7 +251,7 @@ public sealed class HostedPipeline
         if (unsaved.Count == 0)
             return null;
         var commits = unsaved.Select(u => u.Commit).Distinct().ToList();
-        if (commits.All(commit => commit is not null && Meep2.Git.PendingBranch.IsMerged(Path, commit)))
+        if (Address.IsFile && commits.All(commit => commit is not null && Meep2.Git.PendingBranch.IsMerged(Path, commit)))
         {
             lock (_lock)
                 _unsaved.Clear();
@@ -259,7 +263,8 @@ public sealed class HostedPipeline
     }
 
     /// <summary>Reloads the pipeline whenever its file changes, once the changes settle, telling <paramref name="log"/> what happened.</summary>
-    internal void Watch(Action<string> log) => _watcher = new PipelineWatcher(Path, Name, token => ReloadAsync(force: false, token), log);
+    internal void Watch(Action<string> log) =>
+        _watcher = new PipelineWatcher(Path, Name, token => ReloadAsync(force: false, token), log, () => Live?.Syntax.Included.Select(i => i.Source.Path) ?? []);
 
     /// <summary>A change in a sentence: what was added, removed, reconfigured and replaced.</summary>
     internal static string Summary(PipelineChangeReport report)

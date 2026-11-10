@@ -91,8 +91,8 @@ public sealed class PluginLab : IDisposable
         var path = System.IO.Path.Combine(Path, file ?? $"pipeline-{Guid.NewGuid():N}.meep");
         await File.WriteAllTextAsync(path, text);
 
-        var output = new StringWriter();
-        var warnings = new StringWriter();
+        var output = new SharedText();
+        var warnings = new SharedText();
         var shared = TextWriter.Synchronized(output); // one lock for every WriteLine, so lines from parallel branches don't mix
         var errors = new ConcurrentQueue<string>();
         var registry = new ModuleRegistry()

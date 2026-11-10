@@ -20,13 +20,17 @@ internal sealed class InflectionNode : Node
     private const int Waiting = 1;
     private const int Changing = 2;
 
-    private readonly Channel<Message> _buffer;
+    private readonly Channel<Arrival> _buffer;
     private readonly InflectionContext _context;
     private volatile TypeCheck? _handlesType;
     private readonly Slot[] _slots;
     private readonly ConcurrentDictionary<Type, Slot[]> _routes = new();
     private int _phase = Busy;
-    private volatile Change? _pending;
+
+    // Work to do between two messages: changes to the module, and flushes of what it keeps.
+    private readonly ConcurrentQueue<Job> _jobs = new();
+    private int _jobCount;
+    private Timer? _flushTimer;
     private readonly Queue<long> _failures = new();
 
     // Reasons inflections gave for refusing the message being routed. Only the loop uses it, and it's only turned
@@ -42,7 +46,7 @@ internal sealed class InflectionNode : Node
         if (bufferSize < 1)
             throw new ArgumentOutOfRangeException(nameof(bufferSize), bufferSize, $"{spec.Info} needs room for at least one message.");
 
-        _buffer = Channel.CreateBounded<Message>(
+        _buffer = Channel.CreateBounded<Arrival>(
             new BoundedChannelOptions(bufferSize)
             {
                 FullMode = BoundedChannelFullMode.DropOldest,
@@ -94,7 +98,17 @@ internal sealed class InflectionNode : Node
         IsPassthrough = _slots[0].Module!.IsPassthrough;
         if (_slots.Any(slot => slot.Module!.IsPassthrough != IsPassthrough))
             throw new InvalidOperationException($"{Info}'s inflections don't agree on whether they're passthrough modules, so it can't route between them.");
+        Router = _slots.Length == 1 ? _slots[0].Module as IRouteMessages : null;
     }
+
+    /// <summary>
+    /// The module, if it sends each message down one copy of the branch below it, as Distribute does. Such a module
+    /// doesn't handle messages itself: they're routed as they're delivered to it.
+    /// </summary>
+    public IRouteMessages? Router { get; private set; }
+
+    /// <summary>How many messages the module keeps (<see cref="ModuleContext.Keep"/>).</summary>
+    public int KeptCount => _context.KeptCount;
 
     /// <summary>Starts the loop that handles messages.</summary>
     public Task Start() => Loop = Task.Run(RunLoopAsync);
@@ -121,17 +135,47 @@ internal sealed class InflectionNode : Node
     /// <inheritdoc/>
     public override async Task<bool> UpdateAsync(NodeSpec next, bool reconfigure)
     {
-        var change = new Change(next, reconfigure);
-        _pending = change;
-        while (!change.Done.Task.IsCompleted)
+        var keptAll = false;
+        await RunBetweenMessagesAsync(async () => keptAll = await ApplyAsync(new Change(next, reconfigure)).ConfigureAwait(false)).ConfigureAwait(false);
+        return keptAll;
+    }
+
+    /// <summary>
+    /// Asks the module to emit what it can of the messages it keeps (<see cref="AInflection.FlushAsync"/>), between
+    /// messages, and completes once it has.
+    /// </summary>
+    /// <param name="finishing">Whether it's because nothing else is left for the pipeline to do.</param>
+    public Task FlushAsync(bool finishing) => RunBetweenMessagesAsync(() => FlushModuleAsync(finishing));
+
+    /// <summary>Flushes the module after a while, as it asked (<see cref="ModuleContext.FlushAfter"/>). A later request replaces an earlier one.</summary>
+    public void FlushAfter(TimeSpan delay)
+    {
+        var timer = new Timer(_ =>
         {
-            // Between messages, or with none waiting: apply it here. Otherwise the loop applies it after its message.
+            // A pipeline that has halted has nothing left to flush into.
+            if (Pipeline.TryHold())
+                _ = FlushAsync(finishing: false).ContinueWith(_ => Pipeline.ReleaseHold(), TaskScheduler.Default);
+        }, null, Timeout.Infinite, Timeout.Infinite);
+        Interlocked.Exchange(ref _flushTimer, timer)?.Dispose();
+        timer.Change(delay < TimeSpan.Zero ? TimeSpan.Zero : delay, Timeout.InfiniteTimeSpan);
+    }
+
+    /// <summary>Lets go of every message the module keeps, as the pipeline halts or gives up.</summary>
+    public void AbandonKept() => _context.AbandonKept();
+
+    // Runs work between two messages, or at once if the loop is waiting for messages, and completes once it has run.
+    private async Task RunBetweenMessagesAsync(Func<ValueTask> work)
+    {
+        var job = new Job(work);
+        _jobs.Enqueue(job);
+        Interlocked.Increment(ref _jobCount);
+        while (!job.Done.Task.IsCompleted)
+        {
             if (Interlocked.CompareExchange(ref _phase, Changing, Waiting) == Waiting)
             {
                 try
                 {
-                    if (Interlocked.CompareExchange(ref _pending, null, change) == change)
-                        await ApplyAsync(change).ConfigureAwait(false);
+                    await RunJobsAsync().ConfigureAwait(false);
                 }
                 finally
                 {
@@ -139,22 +183,54 @@ internal sealed class InflectionNode : Node
                 }
                 break;
             }
-            await Task.WhenAny(change.Done.Task, Task.Delay(1)).ConfigureAwait(false);
+            await Task.WhenAny(job.Done.Task, Task.Delay(1)).ConfigureAwait(false);
         }
-        return await change.Done.Task.ConfigureAwait(false);
+        await job.Done.Task.ConfigureAwait(false);
     }
 
-    // Applies a change on whichever thread holds the module: the loop, or UpdateAsync while the loop waits.
-    private async ValueTask TakePendingAsync()
+    // Runs what's waiting, on whichever thread holds the module: the loop, or a caller while the loop waits.
+    private async ValueTask RunJobsAsync()
     {
-        if (Interlocked.Exchange(ref _pending, null) is { } change)
-            await ApplyAsync(change).ConfigureAwait(false);
+        while (_jobs.TryDequeue(out var job))
+        {
+            Interlocked.Decrement(ref _jobCount);
+            try
+            {
+                await job.Work().ConfigureAwait(false);
+                job.Done.TrySetResult();
+            }
+            catch (Exception exception)
+            {
+                job.Done.TrySetException(exception);
+            }
+        }
     }
 
-    private async ValueTask ApplyAsync(Change change)
+    private async ValueTask FlushModuleAsync(bool finishing)
+    {
+        _context.BeginFlush(finishing);
+        try
+        {
+            foreach (var slot in _slots)
+            {
+                if (slot.Module is { } module && !slot.Broken)
+                    await module.FlushAsync(_context, Pipeline.AbortToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !Pipeline.AbortToken.IsCancellationRequested)
+        {
+            CountFailed();
+            Pipeline.ReportFault(Info, $"{Info} couldn't flush the messages it kept", exception);
+        }
+        finally
+        {
+            _context.EndFlush();
+        }
+    }
+
+    private async ValueTask<bool> ApplyAsync(Change change)
     {
         var keptAll = true;
-        try
         {
             var next = change.Spec;
             foreach (var slot in _slots)
@@ -203,18 +279,16 @@ internal sealed class InflectionNode : Node
             _routes.Clear();
             _lastRoute = null;
         }
-        finally
-        {
-            change.Done.TrySetResult(keptAll);
-        }
+        return keptAll;
     }
 
     /// <summary>Puts a message in the buffer, dropping the oldest if it's full.</summary>
-    public void Enqueue(Message message)
+    /// <param name="input">Which of the module's inputs it came in on, counting from 1; 0 for a message sent in as a test.</param>
+    public void Enqueue(Message message, int input)
     {
         CountReceived();
         Pipeline.AddRef(message);
-        if (!_buffer.Writer.TryWrite(message))
+        if (!_buffer.Writer.TryWrite(new Arrival(message, input)))
             Pipeline.Release(message, MessageOutcome.Abandoned); // the pipeline is stopping
     }
 
@@ -229,15 +303,16 @@ internal sealed class InflectionNode : Node
 
     public override async ValueTask DisposeModuleAsync()
     {
+        Interlocked.Exchange(ref _flushTimer, null)?.Dispose();
         foreach (var slot in _slots)
             await DisposeInstanceAsync(slot.Module, $"{Describe(slot.Spec.Info)} couldn't be disposed").ConfigureAwait(false);
         _expiry?.Dispose();
     }
 
-    private void OnDropped(Message message)
+    private void OnDropped(Arrival arrival)
     {
         CountDropped();
-        Pipeline.Release(message, MessageOutcome.Dropped);
+        Pipeline.Release(arrival.Message, MessageOutcome.Dropped);
     }
 
     private AInflection Create(Slot slot)
@@ -309,10 +384,11 @@ internal sealed class InflectionNode : Node
         var abort = Pipeline.AbortToken;
         while (true)
         {
-            while (reader.TryRead(out var message))
+            while (reader.TryRead(out var arrival))
             {
-                if (_pending is not null)
-                    await TakePendingAsync().ConfigureAwait(false);
+                var message = arrival.Message;
+                if (Volatile.Read(ref _jobCount) != 0)
+                    await RunJobsAsync().ConfigureAwait(false);
                 if (Pipeline.IsAborting)
                 {
                     Pipeline.Release(message, MessageOutcome.Abandoned);
@@ -354,7 +430,7 @@ internal sealed class InflectionNode : Node
                 Exception? failure = null;
                 var span = Telemetry.Tracing ? Telemetry.StartHandling(this, slot.Spec.Info, message) : null;
                 var started = Telemetry.Duration.Enabled ? Stopwatch.GetTimestamp() : 0;
-                _context.Begin(message, slot.Spec.Info);
+                _context.Begin(message, slot.Spec.Info, arrival.Input);
                 try
                 {
                     await slot.Module!.Handle(message, _context, cancellationToken).ConfigureAwait(false);
@@ -396,8 +472,8 @@ internal sealed class InflectionNode : Node
             }
 
             // Nothing waiting: apply any change now, then let UpdateAsync apply them itself while the loop waits.
-            if (_pending is not null)
-                await TakePendingAsync().ConfigureAwait(false);
+            if (Volatile.Read(ref _jobCount) != 0)
+                await RunJobsAsync().ConfigureAwait(false);
             Volatile.Write(ref _phase, Waiting);
             var more = await reader.WaitToReadAsync().ConfigureAwait(false);
             while (Interlocked.CompareExchange(ref _phase, Busy, Waiting) != Waiting)
@@ -489,13 +565,17 @@ internal sealed class InflectionNode : Node
 
     private sealed record Route(Type Type, Slot[] Slots);
 
-    /// <summary>A new spec waiting to be applied between messages.</summary>
-    private sealed class Change(NodeSpec spec, bool reconfigure)
+    /// <summary>A new spec to apply between messages.</summary>
+    private sealed record Change(NodeSpec Spec, bool Reconfigure);
+
+    /// <summary>Work to do between messages, and when it's done.</summary>
+    private sealed class Job(Func<ValueTask> work)
     {
-        public NodeSpec Spec { get; } = spec;
+        public Func<ValueTask> Work { get; } = work;
 
-        public bool Reconfigure { get; } = reconfigure;
-
-        public TaskCompletionSource<bool> Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Done { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
+
+    /// <summary>A message in the buffer, with the input it came in on.</summary>
+    private readonly record struct Arrival(Message Message, int Input);
 }

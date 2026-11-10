@@ -57,7 +57,7 @@ public sealed class LivePipeline
         var (modules, diagnostics) = new PipelineLoader(registry).Define(syntax, options);
         if (modules is null)
             return (null, diagnostics);
-        var state = new State(syntax, registry, modules, Fingerprints(syntax, modules), holds ?? []);
+        var state = new State(syntax, registry, modules, Fingerprints(modules.Expanded, modules), holds ?? []);
         return (new LivePipeline(modules.Builder.Build(), state, options), diagnostics);
     }
 
@@ -85,7 +85,7 @@ public sealed class LivePipeline
         var (modules, diagnostics) = new PipelineLoader(state.Registry).Define(state.Syntax, _options);
         if (modules is null)
             throw new InvalidOperationException($"{Pipeline.Name} didn't load again, so it can't be restarted: {string.Join("; ", diagnostics.Where(d => d.IsError))}");
-        _state = state with { Modules = modules, Fingerprints = Fingerprints(state.Syntax, modules) };
+        _state = state with { Modules = modules, Fingerprints = Fingerprints(modules.Expanded, modules) };
         return Pipeline = modules.Builder.Build();
     }
 
@@ -104,14 +104,14 @@ public sealed class LivePipeline
         {
             var state = _state;
             var (modules, diagnostics) = new PipelineLoader(registry ?? state.Registry).Define(next, _options);
-            var matches = ModuleMatcher.Match(state.Syntax, next);
+            var matches = ModuleMatcher.Match(state.Modules.Expanded, modules?.Expanded ?? next);
             if (modules is null)
             {
                 Release(holds);
                 return new LiveChange(false, null, matches, diagnostics);
             }
 
-            var fingerprints = Fingerprints(next, modules);
+            var fingerprints = Fingerprints(modules.Expanded, modules);
             var change = new PipelineChange(modules.Builder);
             foreach (var match in matches)
             {
@@ -156,14 +156,14 @@ public sealed class LivePipeline
     // it, which differ when a plugin is reloaded. A module whose fingerprint changes gets new parameters.
     private static Dictionary<ModuleSyntax, string> Fingerprints(PipelineSyntax syntax, LoadedModules modules)
     {
-        var constants = string.Join(';', syntax.Constants.Select(c => c.Name + "=" + syntax.TextOf(c.Value.Span)));
+        var constants = string.Join(';', syntax.Constants.Concat(syntax.Included.SelectMany(i => i.Constants)).Select(c => c.Name + "=" + ExpressionText.Of(c.Value)));
         return modules.Infos.Keys.ToDictionary(
             module => module,
             module => $"{ModuleMatcher.ParametersOf(syntax, module)}|{constants}|{string.Join(',', modules.Types[module].Select(t => t.AssemblyQualifiedName + "@" + t.Assembly.GetHashCode()))}");
     }
 
     private static string Settings(PipelineSyntax syntax) =>
-        string.Join(';', syntax.Defaults.Select(d => d.Name + "=" + syntax.TextOf(d.Value.Span)));
+        string.Join(';', syntax.Defaults.Select(d => d.Name + "=" + ExpressionText.Of(d.Value)));
 
     private static void Release(IReadOnlyList<IDisposable>? holds)
     {

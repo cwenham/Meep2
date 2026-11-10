@@ -138,8 +138,8 @@ internal static class DaemonCommands
                     await client.StopDaemonAsync(cancellationToken).ConfigureAwait(false);
                     await output.WriteLineAsync("Asked the daemon to stop. It lets its pipelines' messages finish first.").ConfigureAwait(false);
                     return 0;
-                case ["start", .. var rest] when StartFile(rest) is { } file:
-                    return await StartAsync(client, file, rest.Contains("--dev"), rest.Contains("--watch"), output, cancellationToken).ConfigureAwait(false);
+                case ["start", .. var rest] when Named(rest, out var named) is { } start && StartFile(start) is { } file:
+                    return await StartAsync(client, file, named, start.Contains("--dev"), start.Contains("--watch"), output, cancellationToken).ConfigureAwait(false);
                 case ["reload", .. var words] when words.Where(w => w != "--force").ToList() is [var name] && words.All(w => w == "--force" || !w.StartsWith("--", StringComparison.Ordinal)):
                     await WriteChangeAsync($"Reloaded {name}", await client.ReloadAsync(name, words.Contains("--force"), cancellationToken).ConfigureAwait(false), output).ConfigureAwait(false);
                     return 0;
@@ -190,15 +190,32 @@ internal static class DaemonCommands
     }
 
     // meep start's file, among --dev and --watch; null if there's anything else.
+    // --name <name>, taken out of the words.
+    private static string[]? Named(string[] words, out string? name)
+    {
+        name = null;
+        var at = Array.IndexOf(words, "--name");
+        if (at < 0)
+            return words;
+        if (at + 1 >= words.Length)
+            return null;
+        name = words[at + 1];
+        return [.. words[..at], .. words[(at + 2)..]];
+    }
+
     private static string? StartFile(string[] words)
     {
         var files = words.Where(word => !word.StartsWith("--", StringComparison.Ordinal)).ToList();
         return files.Count == 1 && words.All(word => !word.StartsWith("--", StringComparison.Ordinal) || word is "--dev" or "--watch") ? files[0] : null;
     }
 
-    private static async Task<int> StartAsync(DaemonClient client, string file, bool developerMode, bool watch, TextWriter output, CancellationToken cancellationToken)
+    private static async Task<int> StartAsync(DaemonClient client, string file, string? name, bool developerMode, bool watch, TextWriter output, CancellationToken cancellationToken)
     {
-        var started = await client.StartAsync(file, developerMode, watch, cancellationToken).ConfigureAwait(false);
+        // Standard input is sent as text, since the daemon can't read this terminal (goal 7). Other addresses go as
+        // they are, and the daemon reads them itself.
+        var started = file == "-"
+            ? await client.StartTextAsync(name ?? "stdin", await Console.In.ReadToEndAsync(cancellationToken).ConfigureAwait(false), developerMode, cancellationToken).ConfigureAwait(false)
+            : await client.StartAsync(file, developerMode, watch, cancellationToken).ConfigureAwait(false);
         await output.WriteLineAsync($"Started {started.Name}, from {started.Path}.{(watch ? " It reloads whenever the file changes." : "")}").ConfigureAwait(false);
         foreach (var warning in started.Warnings)
             await output.WriteLineAsync(warning).ConfigureAwait(false);

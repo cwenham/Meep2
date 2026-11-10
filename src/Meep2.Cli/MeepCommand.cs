@@ -14,8 +14,12 @@ public static class MeepCommand
 {
     private const string Usage = """
         Usage:
-          meep run [--dev] [--watch] [--otlp <url>] [--sample <share>] [--detach] <file.meep>
-                                                Run a pipeline until it halts, or until Ctrl+C.
+          meep run [--dev] [--watch] [--otlp <url>] [--sample <share>] [--detach] <pipeline>
+                                                Run a pipeline until it halts, or until Ctrl+C. It's a file,
+                                                - for standard input, an https:// URL, or a file in Git, as
+                                                git+https://host/repo.git#file.meep@ref. One from a URL or Git
+                                                needs a signature from a key you trust (meep sign), or a pin:
+                                                #sha256=… on a URL, a commit's full SHA as Git's ref.
                                                 --dev loads unsigned plugins from this machine.
                                                 --watch changes the running pipeline when the file changes.
                                                 --otlp sends spans and metrics to an OpenTelemetry collector.
@@ -30,8 +34,9 @@ public static class MeepCommand
           meep daemon stop                      Stop the daemon
           meep daemon token <name> <capabilities>
                                                 Make a token for a client that may only observe, inject or control
-          meep start [--dev] [--watch] <file.meep>
-                                                Start a pipeline in the daemon
+          meep start [--dev] [--watch] <pipeline>
+                                                Start a pipeline in the daemon, from any address meep run takes;
+                                                - sends standard input, named with --name <name>
           meep list                             List the daemon's pipelines, and those that ended recently
           meep stop <pipeline>                  Stop one of them, letting its messages finish
           meep reload <pipeline> [--force]      Change a running pipeline to match its file, plugins included.
@@ -56,7 +61,11 @@ public static class MeepCommand
           meep keys trust github:<user>           or as their GitHub account has it
           meep keys list                        Show the keys you trust
           meep sign <folder or files> [--key <private key>]
-                                                Sign a plugin's files with your SSH key, using ssh-keygen
+                                                Sign a plugin's files, or .meep pipeline files, with your SSH key,
+                                                using ssh-keygen
+          meep pin <file.meep> ...              Pin the files a pipeline includes on their #include lines, and
+                                                show its own SHA-256, for #sha256= on its URL
+          meep lsp                              Run the language server for editors, over standard input and output
           meep --version                        Show the version
           meep --help                           Show this help
         """;
@@ -143,6 +152,15 @@ public static class MeepCommand
                 return await KeysCommands.SignAsync(rest[..^2], rest[^1], Options(), output, error, cancellationToken).ConfigureAwait(false);
             case ["sign", .. var rest] when rest.Length > 0 && !rest.Contains("--key"):
                 return await KeysCommands.SignAsync(rest, keyPath: null, Options(), output, error, cancellationToken).ConfigureAwait(false);
+            case ["pin", .. var rest] when rest.Length > 0:
+                return await Pinning.PinAsync(rest, output, error).ConfigureAwait(false);
+            case ["lsp"]:
+            {
+                // The language server for editors: LSP over standard input and output.
+                await using var input = Console.OpenStandardInput();
+                await using var stdout = Console.OpenStandardOutput();
+                return await new LanguageServer(input, stdout, Options() with { Offline = true }).RunAsync(cancellationToken).ConfigureAwait(false);
+            }
             case []:
                 await error.WriteLineAsync(Usage).ConfigureAwait(false);
                 return 2;
@@ -205,9 +223,27 @@ public static class MeepCommand
             Notice = Log,
         };
 
+        // A file on this machine is read as it is; anything else, from its address, checked as it must be (goal 7).
+        PipelineAddress address;
+        try
+        {
+            address = PipelineAddress.Parse(file);
+        }
+        catch (FormatException exception)
+        {
+            Log(exception.Message);
+            return 2;
+        }
+        if (watch && !address.IsFile)
+        {
+            Log($"Only a file on this machine can be watched, and {file} isn't one.");
+            return 2;
+        }
         var builder = new PipelineBuilder("bootstrap", bootstrap);
         builder.Chain(
-            builder.AddSource(() => new Read(new ReadParameters { Path = file })),
+            address.IsFile
+                ? builder.AddSource(() => new Read(new ReadParameters { Path = file }))
+                : builder.AddSource(() => new ReadPipeline(address, plugins, Console.In)),
             builder.Add(() => new Parse()),
             builder.Add(() => new Install(registry, new PluginInstaller(plugins))),
             builder.Add(() => new Build(registry, hosted)),
@@ -218,7 +254,7 @@ public static class MeepCommand
                 {
                     // --watch: the running pipeline follows its file (goal 4).
                     var path = Path.GetFullPath(file);
-                    watcher = new PipelineWatcher(path, built.Pipeline.Name, token => Reloading.ReloadAsync(live, path, registry, plugins, token), Log);
+                    watcher = new PipelineWatcher(path, built.Pipeline.Name, token => Reloading.ReloadAsync(live, path, registry, plugins, token), Log, () => live.Syntax.Included.Select(i => i.Source.Path));
                     Log($"Watching {path} for changes.");
                 }
             })));

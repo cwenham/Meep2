@@ -129,9 +129,9 @@ public class HostingTests
     {
         using var folder = new TemporaryFolder();
         var file = folder.Write("flaky.meep", Flaky.Replace("up to 1 time", "up to 2 times", StringComparison.Ordinal));
-        var error = new StringWriter();
+        var error = new SharedText();
 
-        var code = await Wait.For(MeepCommand.RunAsync(["run", file], new StringWriter(), TextWriter.Synchronized(error), folder.Path, CancellationToken.None));
+        var code = await Wait.For(MeepCommand.RunAsync(["run", file], new SharedText(), TextWriter.Synchronized(error), folder.Path, CancellationToken.None));
 
         await Assert.That(code).IsEqualTo(3);
         await Assert.That(error.ToString()).Contains("Restarting it in 50ms (restart 1 of at most 2).");
@@ -313,9 +313,9 @@ public class HostingTests
     {
         using var folder = new ShortTemporaryFolder();
         var file = folder.Write("ticker.meep", Ticker);
-        var error = new StringWriter();
+        var error = new SharedText();
 
-        var code = await Wait.For(MeepCommand.RunAsync(["start", file], new StringWriter(), error, folder.Path, CancellationToken.None));
+        var code = await Wait.For(MeepCommand.RunAsync(["start", file], new SharedText(), error, folder.Path, CancellationToken.None));
 
         await Assert.That(code).IsEqualTo(1);
         await Assert.That(error.ToString()).Contains("No meep daemon is running on");
@@ -330,7 +330,7 @@ public class HostingTests
     [Arguments("1", 1.0)]
     public async Task Sample_takes_a_share_or_a_percentage(string written, double share)
     {
-        var settings = HostSettings.Parse(["--sample", written, "ticker.meep"], new StringWriter());
+        var settings = HostSettings.Parse(["--sample", written, "ticker.meep"], new SharedText());
 
         await Assert.That(settings!.Sample).IsEqualTo(share);
         await Assert.That(settings.Files).IsEquivalentTo(["ticker.meep"]);
@@ -339,9 +339,9 @@ public class HostingTests
     [Test]
     public async Task Meep_run_refuses_a_share_it_cant_use()
     {
-        var error = new StringWriter();
+        var error = new SharedText();
 
-        var code = await MeepCommand.RunAsync(["run", "--sample", "2", "ticker.meep"], new StringWriter(), error, CancellationToken.None);
+        var code = await MeepCommand.RunAsync(["run", "--sample", "2", "ticker.meep"], new SharedText(), error, CancellationToken.None);
 
         await Assert.That(code).IsEqualTo(2);
         await Assert.That(error.ToString()).Contains("--sample needs the share of traces to record");

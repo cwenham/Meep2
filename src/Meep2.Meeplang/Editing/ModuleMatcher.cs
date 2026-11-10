@@ -138,7 +138,10 @@ public static class ModuleMatcher
         return results;
     }
 
-    /// <summary>A module's parameters as written: its verb, main value, named parameters and modifiers, but not its name.</summary>
+    /// <summary>
+    /// A module's parameters: its verb, main value and named parameters, but not its name. They're written from the
+    /// syntax, so a template's copy shows its parameters' values.
+    /// </summary>
     public static string ParametersOf(PipelineSyntax syntax, ModuleSyntax module)
     {
         ArgumentNullException.ThrowIfNull(syntax);
@@ -146,9 +149,9 @@ public static class ModuleMatcher
         var text = new StringBuilder();
         text.Append(module.Plugin).Append('.').Append(module.Verb).Append('.').Append(module.Inflection);
         if (module.Positional is { } positional)
-            text.Append(' ').Append(syntax.TextOf(positional.Span));
+            text.Append(' ').Append(ExpressionText.Of(positional));
         foreach (var argument in module.Arguments)
-            text.Append(' ').Append(argument.Name).Append('=').Append(syntax.TextOf(argument.Value.Span));
+            text.Append(' ').Append(argument.Name).Append('=').Append(ExpressionText.Of(argument.Value));
         return text.ToString();
     }
 
@@ -170,8 +173,8 @@ public static class ModuleMatcher
             {
                 var values = new List<string>();
                 if (module.Positional is { } positional)
-                    values.Add("=" + syntax.TextOf(positional.Span));
-                values.AddRange(module.Arguments.Select(a => a.Name + "=" + syntax.TextOf(a.Value.Span)));
+                    values.Add("=" + ExpressionText.Of(positional));
+                values.AddRange(module.Arguments.Select(a => a.Name + "=" + ExpressionText.Of(a.Value)));
                 var entry = new Entry(module, parent, entries.Count, $"{module.Plugin}.{module.Verb}.{module.Inflection}", ParametersOf(syntax, module), values);
                 entries.Add(entry);
                 Walk(module.Children, entry);

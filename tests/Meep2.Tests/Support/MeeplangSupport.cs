@@ -172,7 +172,7 @@ public sealed class TestRun
 
     private static TestRun Load(string text)
     {
-        var testRun = new TestRun(new LoadResult(null, []), new(), new(), new(), new StringWriter());
+        var testRun = new TestRun(new LoadResult(null, []), new(), new(), new(), new SharedText());
         var result = new PipelineLoader(testRun.Registry()).Load(Script.Parse(text), testRun.Options);
         return new TestRun(result, testRun.Received, testRun.Unhandled, testRun.Notices, testRun.Output);
     }
@@ -182,7 +182,7 @@ public sealed class TestRun
     /// </summary>
     public static Live BeginLive(string text)
     {
-        var testRun = new TestRun(new LoadResult(null, []), new(), new(), new(), new StringWriter());
+        var testRun = new TestRun(new LoadResult(null, []), new(), new(), new(), new SharedText());
         var (live, diagnostics) = Meep2.Meeplang.Editing.LivePipeline.Load(Script.Parse(text), testRun.Registry(), testRun.Options);
         if (live is null)
             throw new InvalidOperationException($"The pipeline didn't load:\n{string.Join("\n", diagnostics)}");

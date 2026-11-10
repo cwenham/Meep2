@@ -68,6 +68,21 @@ public sealed record PipelineRestarting(string Name, string Reason, TimeSpan Del
     }
 }
 
+/// <summary>
+/// A pipeline's text from somewhere other than a file on this machine, such as a URL, Git or standard input, as the
+/// bootstrap's first stage emits it. Its includes are read from the same place (goal 7).
+/// </summary>
+/// <param name="Path">Where it came from, used in diagnostics and as the pipeline's name.</param>
+/// <param name="Text">The pipeline's text.</param>
+public sealed record PipelineText(string Path, string Text) : Message, IHasText, IHasPath
+{
+    /// <summary>Reads its includes from where it came from, or null to read them from this machine's disk.</summary>
+    public IIncludeReader? Includes { get; init; }
+
+    /// <summary>Who's trusted it: the key that signed it, or the pin it matched. Null for a file of your own.</summary>
+    public string? TrustedBecause { get; init; }
+}
+
 /// <summary>Problems that stopped a pipeline file loading.</summary>
 public sealed record MeeplangErrorMessage : ErrorMessage
 {
@@ -99,7 +114,8 @@ public sealed class Parse : AInflection<IHasText>
     protected override ValueTask HandleAsync(IHasText message, ModuleContext context, CancellationToken cancellationToken)
     {
         var path = message is IHasPath file ? file.Path : "pipeline";
-        var syntax = MeeplangParser.Parse(new SourceFile(path, message.Text));
+        var source = new SourceFile(path, message.Text);
+        var syntax = message is PipelineText { Includes: { } includes } ? MeeplangParser.Parse(source, includes) : MeeplangParser.Parse(source);
         context.Emit(syntax.HasErrors ? MeeplangErrorMessage.From(syntax.Diagnostics) : new ParsedPipeline(syntax));
         return ValueTask.CompletedTask;
     }

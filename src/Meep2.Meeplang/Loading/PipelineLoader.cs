@@ -65,9 +65,10 @@ public sealed class PipelineLoader(ModuleRegistry registry)
 
 /// <summary>A loaded pipeline as a builder, with the module each module line became and the classes that make it.</summary>
 /// <param name="Builder">The pipeline, ready to build, or to change a running one into.</param>
-/// <param name="Infos">Each module line's identity in the pipeline.</param>
+/// <param name="Expanded">The file with its templates copied in: the modules that were built.</param>
+/// <param name="Infos">Each module line's identity in the pipeline, by the module lines of <paramref name="Expanded"/>.</param>
 /// <param name="Types">The classes each module line's inflections are made from.</param>
-internal sealed record LoadedModules(PipelineBuilder Builder, IReadOnlyDictionary<ModuleSyntax, ModuleInfo> Infos, IReadOnlyDictionary<ModuleSyntax, IReadOnlyList<Type>> Types);
+internal sealed record LoadedModules(PipelineBuilder Builder, PipelineSyntax Expanded, IReadOnlyDictionary<ModuleSyntax, ModuleInfo> Infos, IReadOnlyDictionary<ModuleSyntax, IReadOnlyList<Type>> Types);
 
 /// <summary>One inflection a module might use, with its parameters filled in.</summary>
 internal sealed class Candidate(ModuleRegistration registration, BoundParameters parameters)
@@ -131,6 +132,9 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
     private readonly Dictionary<ModuleSyntax, LoadNode> _nodes = [];
     private readonly List<LoadNode> _ordered = [];
 
+    // The pipeline's modules once templates are copied in.
+    private IReadOnlyList<ModuleSyntax> _modules = syntax.Modules;
+
     /// <summary>The pipeline's settings, with its defaults block applied, once it has loaded.</summary>
     public PipelineOptions Options { get; private set; } = PipelineOptions.Default;
 
@@ -141,7 +145,11 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
     {
         var constants = EvaluateConstants();
         options = ApplyDefaults(options);
-        CreateNodes(syntax.Modules);
+        _modules = TemplateExpander.Expand(syntax, diagnostics, name => registry.TryGetVerb(name, out _) || registry.IsPlugin(name));
+        _modules = CopyDistributedBranches(_modules, diagnostics);
+        if (diagnostics.HasErrors)
+            return false;
+        CreateNodes(_modules);
         CheckNames();
 
         var scope = new CompileScope(
@@ -160,7 +168,7 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
         if (diagnostics.HasErrors)
             return false;
 
-        Wire(parent: null, syntax.Modules);
+        Wire(parent: null, _modules);
         WireReferences();
         if (diagnostics.HasErrors)
             return false;
@@ -178,7 +186,8 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
     {
         var constants = new Dictionary<string, ConstantValue>(StringComparer.Ordinal);
         var scope = new CompileScope(constants, _ => null, _ => null, []);
-        foreach (var constant in syntax.Constants)
+        // Included files' constants come first, so the pipeline's own can't be redeclared by them unnoticed.
+        foreach (var constant in syntax.Included.SelectMany(i => i.Constants).Concat(syntax.Constants))
         {
             if (constant.Name is "msg" or "fam")
             {
@@ -244,7 +253,9 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
         value is not null && Dynamic.TryConvert(value, typeof(int), out var whole) && whole is int size and > 0 ? size : null;
 
     // Works out a value that's the same for every message. Returns false, having reported why, if it can't.
-    private bool TryConstant(ExpressionSyntax value, out object? result)
+    private bool TryConstant(ExpressionSyntax value, out object? result) => TryConstant(value, diagnostics, out result);
+
+    private static bool TryConstant(ExpressionSyntax value, Diagnostics diagnostics, out object? result)
     {
         try
         {
@@ -415,8 +426,62 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var node in _ordered)
         {
-            if (node.Syntax.Name is { } name && !seen.Add(name))
-                diagnostics.Error($"There's already a module called {name}.", node.Syntax.NameSpan ?? node.Syntax.VerbSpan);
+            // Distribute's copies share their original's name.
+            if (node.Syntax.Name is { } name && !seen.Add(name) && node.Syntax.CopyOf is null)
+            {
+                var hint = node.Syntax.ExpandedFrom is { Name: null } use
+                    ? $" It's named inside the template {use.Verb}: give each use of it a name, as in {use.Verb} as First, and the names inside start with that name (First_{name})."
+                    : "";
+                diagnostics.Error($"There's already a module called {name}.{hint}", node.Syntax.NameSpan ?? node.Syntax.VerbSpan);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The modules a pipeline runs, in the order it numbers them: with templates copied in and Distribute's branches
+    /// copied. Mistakes are left for loading to report. Edits find modules by these numbers (Q129).
+    /// </summary>
+    internal static IReadOnlyList<ModuleSyntax> Running(PipelineSyntax syntax)
+    {
+        var ignored = new Diagnostics(syntax.Source.Path);
+        return CopyDistributedBranches(TemplateExpander.Expand(syntax, ignored, _ => false), ignored);
+    }
+
+    // Distribute N copies the branch indented under it N times, side by side, before anything else sees it (Q53).
+    private static IReadOnlyList<ModuleSyntax> CopyDistributedBranches(IReadOnlyList<ModuleSyntax> modules, Diagnostics diagnostics)
+    {
+        static bool IsDistribute(ModuleSyntax m) => m.Verb == "Distribute" && m.Plugin is null;
+        static bool Any(IEnumerable<ModuleSyntax> list) => list.Any(m => IsDistribute(m) || Any(m.Children));
+        if (!Any(modules))
+            return modules;
+        return Copy(modules);
+
+        List<ModuleSyntax> Copy(IReadOnlyList<ModuleSyntax> list)
+        {
+            var copied = new List<ModuleSyntax>();
+            foreach (var module in list)
+            {
+                IEnumerable<ModuleSyntax> children = Copy(module.Children);
+                if (IsDistribute(module) && module.Children.Count > 0)
+                {
+                    if (module.Positional is null || !TryConstant(module.Positional, diagnostics, out var value) || PositiveWholeNumber(value) is not (>= 2 and var copies))
+                    {
+                        diagnostics.Error("Distribute needs a whole number of copies, at least 2, written in the file, as in Distribute 4, so the loader can make them.", module.Positional?.Span ?? module.VerbSpan);
+                        copies = 1;
+                    }
+                    var originals = children.ToList();
+                    children = Enumerable.Range(0, copies).SelectMany(lane => lane == 0 ? originals : originals.Select(DeepCopy));
+                }
+                copied.Add(module.Copy(e => e, children));
+            }
+            return copied;
+        }
+
+        static ModuleSyntax DeepCopy(ModuleSyntax module)
+        {
+            var copy = module.Copy(e => e, module.Children.Select(DeepCopy));
+            copy.CopyOf = module.CopyOf ?? module;
+            return copy;
         }
     }
 
@@ -679,7 +744,9 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
             foreach (var (name, span) in node.References)
             {
                 var named = _ordered.FirstOrDefault(n => n.Syntax.Name == name);
-                if (named is not null)
+                if (named is not null && _ordered.Any(n => n.Syntax.CopyOf is not null && n.Syntax.Name == name))
+                    diagnostics.Error($"{name} is in a branch Distribute copies, so there's more than one of it, and nothing can tell which to take from.", span);
+                else if (named is not null)
                     node.Upstream.Add(named);
                 else if (_ordered.Any(n => n.Syntax.Verb == name))
                     diagnostics.Error($"There's no module called {name}. Modules are found by name, so give the {name} you mean a name with 'as', and use that.", span);
@@ -914,6 +981,7 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
         }
         return new LoadedModules(
             builder,
+            ReferenceEquals(_modules, syntax.Modules) ? syntax : syntax.WithModules(_modules),
             _ordered.ToDictionary(node => node.Syntax, node => infos[node]),
             _ordered.ToDictionary(node => node.Syntax, node => (IReadOnlyList<Type>)[.. node.Candidates.Select(c => c.Registration.ModuleType)]));
     }

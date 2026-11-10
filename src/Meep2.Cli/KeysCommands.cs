@@ -105,6 +105,10 @@ internal static class KeysCommands
             return 1;
         }
 
+        // Pipeline files are signed one by one, each with a .sig beside it (goal 7).
+        if (paths.Length > 0 && paths.All(path => path.EndsWith(".meep", StringComparison.OrdinalIgnoreCase)))
+            return await SignPipelinesAsync(paths, keyPath, output, error, cancellationToken).ConfigureAwait(false);
+
         string folder;
         IEnumerable<string>? files = null;
         if (paths is [var only] && Directory.Exists(only))
@@ -201,6 +205,36 @@ internal static class KeysCommands
     }
 
     // ~/.ssh's usual keys, the first that's there.
+    private static async Task<int> SignPipelinesAsync(string[] paths, string keyPath, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    {
+        foreach (var path in paths)
+        {
+            if (!File.Exists(path))
+            {
+                await error.WriteLineAsync($"Can't find {path}.").ConfigureAwait(false);
+                return 1;
+            }
+            var signature = PipelineSignature.FileFor(Path.GetFullPath(path));
+            File.Delete(signature);
+            try
+            {
+                var (code, said) = await SshKeygenAsync(["-Y", "sign", "-n", PipelineSignature.Namespace, "-f", keyPath, Path.GetFullPath(path)], cancellationToken).ConfigureAwait(false);
+                if (code != 0 || !File.Exists(signature))
+                {
+                    await error.WriteLineAsync($"ssh-keygen couldn't sign {path}: {said.Trim()}").ConfigureAwait(false);
+                    return 1;
+                }
+            }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                await error.WriteLineAsync("meep sign uses ssh-keygen, which comes with OpenSSH. Install it, or put it on your PATH.").ConfigureAwait(false);
+                return 1;
+            }
+            await output.WriteLineAsync($"Signed {path} as {signature}. Publish them together; a pipeline from a URL or Git needs its signature beside it.").ConfigureAwait(false);
+        }
+        return 0;
+    }
+
     private static string? DefaultKey()
     {
         var ssh = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh");

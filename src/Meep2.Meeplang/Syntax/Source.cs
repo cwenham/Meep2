@@ -9,11 +9,15 @@ public sealed record SourceFile(string Path, string Text);
 /// <param name="Line">The line, counting from 1.</param>
 /// <param name="Column">The column, counting from 1.</param>
 /// <param name="Length">How many characters it covers.</param>
-public readonly record struct SourceSpan(int Line, int Column, int Length)
+/// <param name="File">
+/// The file it's in, when that isn't the file being loaded: a file brought in with <c>#include</c>, whose templates
+/// are copied into the pipeline. Null for the pipeline's own file.
+/// </param>
+public readonly record struct SourceSpan(int Line, int Column, int Length, string? File = null)
 {
     /// <summary>The span from the start of <paramref name="first"/> to the end of <paramref name="last"/>, on one line.</summary>
     public static SourceSpan Between(SourceSpan first, SourceSpan last) =>
-        new(first.Line, first.Column, Math.Max(last.Column + last.Length - first.Column, first.Length));
+        new(first.Line, first.Column, Math.Max(last.Column + last.Length - first.Column, first.Length), first.File);
 }
 
 /// <summary>How serious a diagnostic is.</summary>
@@ -38,5 +42,5 @@ public sealed record Diagnostic(DiagnosticSeverity Severity, string Message, Sou
 
     /// <summary>The diagnostic in the usual compiler format, which editors can link to: <c>file(line,column): error: …</c>.</summary>
     public override string ToString() =>
-        $"{Path ?? "pipeline"}({Span.Line},{Span.Column}): {(IsError ? "error" : "warning")}: {Message}";
+        $"{Span.File ?? Path ?? "pipeline"}({Span.Line},{Span.Column}): {(IsError ? "error" : "warning")}: {Message}";
 }

@@ -190,14 +190,38 @@ public sealed class MeepDaemon : IAsyncDisposable
     public async Task<HostedPipeline> StartPipelineAsync(string path, bool developerMode, bool watch, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(path);
+        PipelineAddress address;
+        try
+        {
+            address = PipelineAddress.Parse(path);
+        }
+        catch (FormatException exception)
+        {
+            throw new DaemonException(400, exception.Message);
+        }
+        return await StartPipelineAsync(address, developerMode, watch, text: null, name: null, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Starts a pipeline from its address (goal 7), or from <paramref name="text"/> sent over the socket, called
+    /// <paramref name="name"/>.
+    /// </summary>
+    /// <exception cref="DaemonException">A pipeline of that name is running already, or it didn't load.</exception>
+    public async Task<HostedPipeline> StartPipelineAsync(PipelineAddress address, bool developerMode, bool watch, string? text, string? name, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(address);
         if (Volatile.Read(ref _stopped) != 0)
             throw new DaemonException(503, "The daemon is stopping.");
-        path = Path.GetFullPath(path);
-        var name = Path.GetFileNameWithoutExtension(path);
+        if (text is not null)
+            address = new PipelineAddress(PipelineOrigin.Text, name ?? "pipeline");
+        if (watch && !address.IsFile)
+            throw new DaemonException(400, $"Only a file on this machine can be watched, and {address} isn't one.");
+        name ??= address.Name;
+        var path = address.ToString();
         var registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly);
         registry.Add<WriteLine, WriteLineParameters>("WriteLine", parameters => new WriteLine(parameters, _options.Output));
         var plugins = _options.Plugins with { DeveloperMode = _options.Plugins.DeveloperMode || developerMode };
-        var hosted = new HostedPipeline(name, path, registry, plugins);
+        var hosted = new HostedPipeline(name, address, registry, plugins);
         while (!_pipelines.TryAdd(name, hosted))
         {
             if (_pipelines.TryGetValue(name, out var existing) && existing.Ended is null)
@@ -240,7 +264,9 @@ public sealed class MeepDaemon : IAsyncDisposable
         };
         var builder = new PipelineBuilder($"{name} (bootstrap)", bootstrapOptions);
         builder.Chain(
-            builder.AddSource(() => new Read(new ReadParameters { Path = path })),
+            address.IsFile
+                ? builder.AddSource(() => new Read(new ReadParameters { Path = address.Location }))
+                : builder.AddSource(() => new ReadPipeline(address, plugins, text: text)),
             builder.Add(() => new Parse()),
             builder.Add(() => new Install(registry, new PluginInstaller(plugins))),
             builder.Add(() => new Build(registry, hostedOptions)),
@@ -458,7 +484,9 @@ public sealed class MeepDaemon : IAsyncDisposable
                 var start = request.Json is { } json
                     ? Deserialize(json, DaemonJson.Default.StartRequest)
                     : throw new DaemonException(400, "Starting a pipeline needs a JSON body, such as {\"path\": \"/home/you/ticker.meep\"}.");
-                var hosted = await StartPipelineAsync(start.Path, start.DeveloperMode, start.Watch, request.Aborted).ConfigureAwait(false);
+                var hosted = start.Text is not null
+                    ? await StartPipelineAsync(new PipelineAddress(PipelineOrigin.Text, start.Name ?? "pipeline"), start.DeveloperMode, watch: false, start.Text, start.Name, request.Aborted).ConfigureAwait(false)
+                    : await StartPipelineAsync(start.Path, start.DeveloperMode, start.Watch, request.Aborted).ConfigureAwait(false);
                 return Answer.Json(201, hosted.Summary(), DaemonJson.Default.PipelineSummary);
             }
             case ("GET", ["pipelines", var name]):
@@ -593,6 +621,11 @@ public sealed class MeepDaemon : IAsyncDisposable
         if (!edit.Save)
         {
             hosted.EditedApart(described, commit: null);
+        }
+        else if (!hosted.Address.IsFile)
+        {
+            hosted.EditedApart(described, commit: null);
+            result = result with { NotSaved = $"{hosted.Name} came from {hosted.Path}, not a file on this machine, so there's nowhere to save the edit." };
         }
         else if (Meep2.Git.PendingBranch.RepositoryOf(hosted.Path) is null)
         {

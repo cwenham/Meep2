@@ -167,7 +167,7 @@ public class ParserTests
         await Assert.That(diagnostics).Contains("(4,32): error: A plugin's SHA is written as sha256: and 64 hex digits.");
         await Assert.That(diagnostics).Contains("(5,9): error: Write a plugin as #plugin github.com/owner/repo 1.2.0 sha256:…");
         await Assert.That(diagnostics).Contains("(6,21): error: A plugin on this machine takes just its path, with no version or SHA.");
-        await Assert.That(diagnostics).Contains("(7,1): error: There's no #plugins directive. Meeplang has #plugin, and #include is to come.");
+        await Assert.That(diagnostics).Contains("(7,1): error: There's no #plugins directive. Meeplang has #plugin and #include.");
         await Assert.That(diagnostics).Contains("(9,1): error: #plugin goes before the pipeline's modules.");
         await Assert.That(syntax.Plugins.Count).IsEqualTo(0);
     }
@@ -198,15 +198,22 @@ public class ParserTests
     }
 
     [Test]
-    public async Task Features_that_arrive_later_are_reported_as_not_supported_yet()
+    public async Task By_gives_a_modules_key_as_a_keyword()
     {
         var syntax = Script.Parse("""
-            #include "shared.meep"
-            pipeline NextBus
+            Interval 1s
+                Distribute 4 by msg.Count % 4 as Spread
+                    Sink
+                Zip by msg.Count
             """);
+        var distribute = syntax.Modules[0].Children[0];
+        var zip = syntax.Modules[0].Children[1];
 
-        await Assert.That(Script.Diagnostics(syntax)).Contains("#include isn't supported yet");
-        await Assert.That(Script.Diagnostics(syntax)).Contains("'pipeline' blocks aren't supported yet");
+        await Assert.That(Script.Diagnostics(syntax)).IsEqualTo("");
+        await Assert.That((distribute.Arguments[0].Name, distribute.Arguments[0].Value is BinarySyntax, distribute.Name)).IsEqualTo(("by", true, "Spread"));
+        await Assert.That((zip.Positional, zip.Arguments[0].Name)).IsEqualTo(((ExpressionSyntax?)null, "by"));
+        await Assert.That(Script.Diagnostics(Script.Parse("Interval 1s\n    Zip by=msg.Count\n"))).Contains("Write by without =, as in by msg.Key.");
+        await Assert.That(Script.Diagnostics(Script.Parse("Interval 1s\n    Zip\n        by = msg.Count\n"))).Contains("Write by on the module's line, without =");
     }
 
     [Test]

@@ -19,6 +19,26 @@ public abstract class AInflection : AModule
     internal abstract bool Accepts(Message message);
 
     internal abstract ValueTask Handle(Message message, ModuleContext context, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Emits what can be made of the messages the module keeps (<see cref="ModuleContext.Keep"/>), or lets them go:
+    /// called between messages when nothing else is left for the pipeline to do, or when a flush the module asked for
+    /// is due. Messages it emits here have no parent unless it gives them some.
+    /// </summary>
+    protected internal virtual ValueTask FlushAsync(ModuleContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
+}
+
+/// <summary>
+/// For a module that sends each message down one of several copies of the branch below it, as Distribute does. The
+/// runtime asks it which, on the thread delivering the message, so it mustn't keep state that isn't safe for that.
+/// </summary>
+public interface IRouteMessages
+{
+    /// <summary>How many copies of the branch there are.</summary>
+    int Lanes { get; }
+
+    /// <summary>Which copy a message goes down, from 0 to <see cref="Lanes"/> - 1.</summary>
+    int LaneOf(Message message);
 }
 
 /// <summary>

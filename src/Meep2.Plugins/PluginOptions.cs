@@ -25,6 +25,12 @@ public sealed record PluginOptions
     public bool DeveloperMode { get; init; }
 
     /// <summary>
+    /// Whether only plugins already in the cache are used, with nothing downloaded, as while editing (Q138). A
+    /// plugin that isn't there is refused, saying so.
+    /// </summary>
+    public bool Offline { get; init; }
+
+    /// <summary>
     /// Where GitHub releases are downloaded from, and the keys of GitHub users, for <c>meep keys trust github:name</c>.
     /// Tests point it at a server of their own.
     /// </summary>
@@ -45,7 +51,8 @@ public sealed record PluginOptions
         DeveloperMode = developerMode,
     };
 
-    internal TrustedKeys TrustedKeys() => Trusted ?? Plugins.TrustedKeys.Load(TrustedKeysFile);
+    /// <summary>The keys you trust: <see cref="Trusted"/>, or those in <see cref="TrustedKeysFile"/>.</summary>
+    public TrustedKeys TrustedKeys() => Trusted ?? Plugins.TrustedKeys.Load(TrustedKeysFile);
 }
 
 /// <summary>A plugin couldn't be installed or loaded. The message says why, for the person running the pipeline.</summary>
