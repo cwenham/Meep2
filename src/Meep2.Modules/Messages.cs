@@ -179,6 +179,41 @@ public sealed record TcpDisconnected : Message
     public required string Reason { get; init; }
 }
 
+/// <summary>
+/// What Classify emits: the class a message most likely belongs to, and how likely. Its parent is the message that
+/// was classified, so <c>fam</c> reaches it. When the tree hasn't learned enough to classify it, <see cref="Class"/>
+/// is null and <see cref="Score"/> is 0 (Q144).
+/// </summary>
+/// <param name="Tree">The classification tree that was used, as named in the pipeline.</param>
+/// <param name="Class">The class with the highest score, such as "Science", or null if the message is unclassified.</param>
+/// <param name="Score">
+/// The probability, from 0 to 1, that the text belongs to <paramref name="Class"/> rather than another class the tree
+/// knows, or the classes given with <c>against</c>. Naive Bayes is overconfident, so scores near 1 are common on long
+/// texts; compare them with care.
+/// </param>
+/// <param name="Text">The text that was classified.</param>
+public sealed record ClassifiedMessage(string Tree, string? Class, double Score, string Text) : Message, IHasText
+{
+    /// <summary>Whether a class was found.</summary>
+    public bool IsClassified => Class is not null;
+
+    /// <summary>
+    /// Every class that was scored, with its probability. Without <c>against</c> they add up to 1; with it, each is
+    /// that class's probability against the <c>against</c> classes alone.
+    /// </summary>
+    public IReadOnlyDictionary<string, double> Scores { get; init; } = new Dictionary<string, double>();
+
+    /// <summary>Prints the tree, the class and the score, leaving out the text.</summary>
+    protected override bool PrintMembers(StringBuilder builder)
+    {
+        base.PrintMembers(builder);
+        builder.Append(", Tree = ").Append(Tree)
+            .Append(", Class = ").Append(Class)
+            .Append(", Score = ").Append(Score.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture));
+        return true;
+    }
+}
+
 /// <summary>An HTTP response whose status wasn't a success, as Fetch's HTTP inflection emits it.</summary>
 public sealed record HttpErrorMessage : ErrorMessage
 {

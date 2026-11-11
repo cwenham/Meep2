@@ -1,0 +1,13 @@
+// Learn teaches a named classification tree; Classify reads it by the same name. The tree belongs to this pipeline
+// (start its name with shared: to share it) and would be saved to ~/.meep/trees/classify_topics.json, but
+// save-every=0 keeps it in memory, so running the example again doesn't teach it the same files twice.
+//
+// Batch 2 waits for both files to be learned before classifying a headline. Each file is one document, so
+// min-training=1 lets Classify choose a class taught only once (it's 10 unless set).
++ Read "examples/science.txt"
+  Learn "topics" class="Science" save-every=0
++ Read "examples/business.txt"
+  Learn "topics" class="Business" save-every=0
+Batch 2
+    Classify "topics" min-training=1 text="Telescope finds water on a distant planet"
+        WriteLine "{msg.Class} ({msg.Score:P0})"

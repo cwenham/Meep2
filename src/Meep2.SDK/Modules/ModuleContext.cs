@@ -22,6 +22,13 @@ public abstract class ModuleContext
     public abstract CancellationToken Stopping { get; }
 
     /// <summary>
+    /// The name of the module's pipeline: its file's name without the extension, such as <c>nextbus</c> for
+    /// <c>nextbus.meep</c>. Modules that keep things for their pipeline, such as Learn's classification trees, use it to
+    /// tell pipelines apart.
+    /// </summary>
+    public virtual string PipelineName => "Pipeline";
+
+    /// <summary>
     /// Sends a message to every module downstream. A module that handles messages can only emit while it's
     /// handling one; a new message becomes a child of the message being handled.
     /// </summary>
