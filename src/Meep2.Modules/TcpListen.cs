@@ -24,7 +24,7 @@ namespace Meep2.Modules;
 /// </para>
 /// <para>
 /// A connection stays open while the client keeps it open, and after that until every message from it has left the
-/// pipeline. <c>Respond final=true</c> closes it sooner. A message longer than <c>max-size</c> closes the connection.
+/// pipeline. <c>Send final=true</c> closes it sooner. A message longer than <c>max-size</c> closes the connection.
 /// </para>
 /// </remarks>
 [Verb("Listen", Inflection = "TCP")]
@@ -173,7 +173,7 @@ public sealed record TcpListenParameters
 }
 
 /// <summary>A connection to <see cref="TcpListen"/>. Writes from several branches queue up rather than interleave.</summary>
-internal sealed class TcpConnectionLease : Lease
+internal sealed class TcpConnectionLease : Lease, IConnectionLease
 {
     private readonly TcpClient _client;
     private readonly SemaphoreSlim _writing = new(1, 1);
@@ -190,7 +190,7 @@ internal sealed class TcpConnectionLease : Lease
 
     public string Remote { get; }
 
-    /// <summary>What ends a message on this connection, which Respond writes after its own unless told otherwise.</summary>
+    /// <summary>What ends a message on this connection, which a reply writes after its own unless told otherwise.</summary>
     public string Ending { get; }
 
     /// <summary>Writes text and what ends it, then closes the connection if <paramref name="close"/> is set.</summary>
@@ -213,6 +213,9 @@ internal sealed class TcpConnectionLease : Lease
             await CloseAsync().ConfigureAwait(false);
     }
 
+    public Task ReplyAsync(Message message, string? text, string? end, bool final, CancellationToken cancellationToken) =>
+        WriteAsync(text ?? message.ToText(), end ?? Ending, final, cancellationToken);
+
     public override string ToString() => $"the connection from {Remote}";
 
     protected override ValueTask OnClosedAsync()
@@ -228,12 +231,14 @@ internal sealed class FramingException(string message) : Exception(message);
 /// <summary>How Listen.TCP tells where one message ends and the next begins: lines, an end marker, or a fixed length.</summary>
 internal abstract class Framing
 {
-    public static Framing For(TcpListenParameters parameters) =>
-        parameters.Length is { } length ? new Fixed(length)
-        : parameters.End is { } end ? new Marked(Encoding.UTF8.GetBytes(end), end)
+    public static Framing For(TcpListenParameters parameters) => For(parameters.End, parameters.Length);
+
+    public static Framing For(string? end, int? length) =>
+        length is { } fixedLength ? new Fixed(fixedLength)
+        : end is not null ? new Marked(Encoding.UTF8.GetBytes(end), end)
         : new Lines();
 
-    /// <summary>What ends a message, written after each of Respond's by default.</summary>
+    /// <summary>What ends a message, written after each reply by default.</summary>
     public abstract string Ending { get; }
 
     /// <summary>Reads messages until the connection ends. A message without its end at the very end still counts.</summary>

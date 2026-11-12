@@ -18,9 +18,11 @@ namespace Meep2.SDK.Messages;
 /// error policy.
 /// </para>
 /// <para>
-/// A module can also answer an error for whoever was waiting, as Respond does (<see cref="Modules.ModuleContext.Answered"/>).
-/// Its own taking of the error doesn't count as handling it then: unless a module after it handles the error, the
-/// error policy logs it, but doesn't count it towards stopping the pipeline (Q100).
+/// A module can also answer an error for whoever was waiting, as a Send replying to a request does
+/// (<see cref="Modules.ModuleContext.Answered"/>). Its own taking of the error doesn't count as handling it then:
+/// unless a module after it handles the error, the error policy logs it, but doesn't count it towards stopping the
+/// pipeline (Q100). A module that leaves an error alone (<see cref="Modules.ModuleContext.LeftAlone"/>) doesn't handle
+/// it either.
 /// </para>
 /// </remarks>
 public record ErrorMessage : Message
@@ -33,8 +35,11 @@ public record ErrorMessage : Message
     /// <summary>The exception behind the error, if there was one.</summary>
     public Exception? Exception { get; init; }
 
-    /// <summary>The module that answered the error for whoever was waiting, such as Respond, or null.</summary>
+    /// <summary>The module that answered the error for whoever was waiting, such as a Send replying to a request, or null.</summary>
     public ModuleInfo? AnsweredBy { get; internal set; }
+
+    /// <summary>The module that last took the error and left it alone (<see cref="Modules.ModuleContext.LeftAlone"/>), or null.</summary>
+    public ModuleInfo? LeftAloneBy { get; internal set; }
 
     internal bool IsHandled => (Volatile.Read(ref RuntimeFlags) & HandledFlag) != 0;
 

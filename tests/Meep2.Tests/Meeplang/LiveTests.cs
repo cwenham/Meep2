@@ -152,14 +152,14 @@ public class LiveTests
         var second = TestServer.FreePort();
         await using var run = TestRun.BeginLive($$"""
             Listen "http://127.0.0.1:{{first}}/"
-                Respond "one"
+                Send text="one"
             """);
         using var http = new HttpClient();
         await Wait.Until(async () => await Answers(http, first) == "one");
 
         var change = await run.Pipeline.ChangeAsync($$"""
             Listen "http://127.0.0.1:{{second}}/"
-                Respond "one"
+                Send text="one"
             """);
         await Wait.Until(async () => await Answers(http, second) == "one");
 
@@ -173,14 +173,14 @@ public class LiveTests
         var port = TestServer.FreePort();
         await using var run = TestRun.BeginLive($$"""
             Listen "http://127.0.0.1:{{port}}/old/"
-                Respond "here"
+                Send text="here"
             """);
         using var http = new HttpClient();
         await Wait.Until(async () => await Answers(http, port, "old/") == "here");
 
         var change = await run.Pipeline.ChangeAsync($$"""
             Listen "http://127.0.0.1:{{port}}/new/"
-                Respond "here"
+                Send text="here"
             """);
 
         // The old path is let go once its open requests are answered; until then it says it's stopping.

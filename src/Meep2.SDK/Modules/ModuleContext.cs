@@ -114,4 +114,29 @@ public abstract class ModuleContext
         ArgumentNullException.ThrowIfNull(error);
         error.AnsweredBy = Module;
     }
+
+    /// <summary>
+    /// Says the module left an error alone, as Send does when it has nowhere sensible to send one. Taking the error
+    /// then doesn't count as handling it, even as the last module in its branch, so it still reaches the error policy
+    /// unless a module after this one handles it.
+    /// </summary>
+    public void LeftAlone(ErrorMessage error)
+    {
+        ArgumentNullException.ThrowIfNull(error);
+        error.LeftAloneBy = Module;
+    }
+
+    /// <summary>
+    /// Emits at any time, from any thread, for a module that handles messages, such as one passing on what arrives on a
+    /// connection it opened. Take it while handling a message, so what it emits records the inflection doing the work.
+    /// Sources emit through the context itself at any time, so they don't need one.
+    /// </summary>
+    public virtual Outlet Outlet => throw new NotSupportedException("Only a module that handles messages has an outlet.");
+
+    /// <summary>
+    /// Things the modules of one pipeline share, by name, such as the connections a Listen has open, which Send reaches
+    /// by the Listen's name. A plugin should start its names with its own, so they don't clash.
+    /// </summary>
+    public virtual System.Collections.Concurrent.ConcurrentDictionary<string, object> Shared =>
+        throw new NotSupportedException("This context isn't part of a pipeline.");
 }

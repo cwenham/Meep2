@@ -27,7 +27,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
     }
 
     // One client for every Fetch, so connections are shared and pooled. Each request sets its own timeout.
-    private static readonly HttpClient s_client = CreateClient();
+    internal static readonly HttpClient Client = CreateClient();
 
     /// <inheritdoc/>
     protected override async ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
@@ -54,7 +54,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         HttpResponseMessage? response = null;
         try
         {
-            response = await s_client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+            response = await Client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
             if (parameters.Stream && response.IsSuccessStatusCode)
             {
                 // From here the lease owns the response, and disposes it when it closes.
@@ -63,7 +63,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
                 await EmitStreamedAsync(streamed, url, context, timeout.Token).ConfigureAwait(false);
                 return;
             }
-            var body = await ReadBodyAsync(response.Content, url, timeout.Token).ConfigureAwait(false);
+            var body = await ReadBodyAsync(response.Content, url, parameters.MaxSize, timeout.Token).ConfigureAwait(false);
             var text = Decode(body, response.Content.Headers.ContentType);
             var status = (int)response.StatusCode;
             if (!response.IsSuccessStatusCode)
@@ -137,9 +137,8 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
             lease);
     }
 
-    private async Task<byte[]> ReadBodyAsync(HttpContent content, string url, CancellationToken cancellationToken)
+    internal static async Task<byte[]> ReadBodyAsync(HttpContent content, string url, long limit, CancellationToken cancellationToken)
     {
-        var limit = parameters.MaxSize;
         if (content.Headers.ContentLength > limit)
             throw new TooLargeException($"{url} sent {content.Headers.ContentLength} bytes, over the limit of {limit}");
 
@@ -156,7 +155,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         return buffer.ToArray();
     }
 
-    private static string Decode(byte[] body, MediaTypeHeaderValue? contentType)
+    internal static string Decode(byte[] body, MediaTypeHeaderValue? contentType)
     {
         var encoding = Encoding.UTF8;
         if (contentType?.CharSet is { Length: > 0 } charset)
@@ -173,7 +172,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         return encoding.GetString(body);
     }
 
-    private static Dictionary<string, string> Headers(HttpResponseMessage response)
+    internal static Dictionary<string, string> Headers(HttpResponseMessage response)
     {
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var (name, values) in response.Headers.Concat(response.Content.Headers))
@@ -181,7 +180,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         return headers;
     }
 
-    private static string Describe(TimeSpan time) =>
+    internal static string Describe(TimeSpan time) =>
         time.TotalSeconds >= 1 ? $"{time.TotalSeconds:0.###}s" : $"{time.TotalMilliseconds:0.###}ms";
 
     private static HttpClient CreateClient()
@@ -198,7 +197,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         return client;
     }
 
-    private sealed class TooLargeException(string message) : Exception(message);
+    internal sealed class TooLargeException(string message) : Exception(message);
 }
 
 /// <summary>
@@ -295,7 +294,7 @@ public sealed record FetchParameters
     } = TimeSpan.FromSeconds(100);
 
     /// <summary>
-    /// Leaves a successful response's body unread, for one module to read, such as Respond passing it on to a client
+    /// Leaves a successful response's body unread, for one module to read, such as Send passing it on to a client
     /// without holding it all in memory (Q51). The connection stays open until then. Only HTTP streams.
     /// </summary>
     public bool Stream { get; init; }

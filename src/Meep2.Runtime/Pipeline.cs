@@ -156,6 +156,9 @@ public sealed class Pipeline : IAsyncDisposable
     /// <summary>Cancelled when the pipeline is asked to stop.</summary>
     internal CancellationToken StoppingToken { get; }
 
+    /// <summary>What the pipeline's modules share by name (<see cref="ModuleContext.Shared"/>).</summary>
+    internal System.Collections.Concurrent.ConcurrentDictionary<string, object> Shared { get; } = new(StringComparer.Ordinal);
+
     internal bool IsAborting => _aborting;
 
     /// <summary>
@@ -767,7 +770,7 @@ public sealed class Pipeline : IAsyncDisposable
     /// <summary>
     /// Deals with an error that nothing handled, following the error policy of the module that emitted it: logs it
     /// unless the policy ignores it, and counts it towards stopping the pipeline. An error a module answered, such as
-    /// Respond, is logged but not counted (Q100).
+    /// a Send replying to a request, is logged but not counted (Q100).
     /// </summary>
     internal void ReportUnhandled(ErrorMessage error)
     {

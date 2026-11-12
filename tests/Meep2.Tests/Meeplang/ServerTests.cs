@@ -10,7 +10,7 @@ using Meep2.Tests.Support;
 
 namespace Meep2.Tests.Meeplang;
 
-/// <summary>Listen and Respond over HTTP and TCP, default replies, and streamed bodies (step 5).</summary>
+/// <summary>Listen and Send replies over HTTP and TCP, default replies, and streamed bodies (step 5).</summary>
 public class ServerTests
 {
     private static readonly HttpClient s_client = new() { Timeout = Wait.Limit };
@@ -66,12 +66,12 @@ public class ServerTests
     }
 
     [Test]
-    public async Task Listen_and_Respond_answer_an_http_request()
+    public async Task Listen_and_Send_answer_an_http_request()
     {
         var port = TestServer.FreePort();
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/hello/"
-                Respond "Hello, {msg.Query['name']}"
+                Send text="Hello, {msg.Query['name']}"
             """);
 
         using var response = await GetAsync($"http://127.0.0.1:{port}/hello/?name=Ann");
@@ -82,12 +82,12 @@ public class ServerTests
     }
 
     [Test]
-    public async Task Respond_sends_the_status_and_media_type_it_is_given()
+    public async Task Send_sends_the_status_and_media_type_it_is_given()
     {
         var port = TestServer.FreePort();
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/"
-                Respond '{"ok":true}' status=201 content-type="application/json"
+                Send text='{"ok":true}' status=201 content-type="application/json"
             """);
 
         using var response = await GetAsync($"http://127.0.0.1:{port}/");
@@ -104,7 +104,7 @@ public class ServerTests
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/"
                 Where msg.Method == "POST"
-                    Respond "posted"
+                    Send text="posted"
             """);
 
         using var ignored = await GetAsync($"http://127.0.0.1:{port}/");
@@ -122,7 +122,7 @@ public class ServerTests
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/" default-status=404 default-reply="Nothing here"
                 Where msg.Path == "/found"
-                    Respond "found"
+                    Send text="found"
             """);
 
         using var response = await GetAsync($"http://127.0.0.1:{port}/missing");
@@ -138,7 +138,7 @@ public class ServerTests
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/"
                 Extract "$.x"
-                    Respond
+                    Send
             """);
 
         using var response = await PostAsync($"http://127.0.0.1:{port}/", "this isn't JSON");
@@ -147,7 +147,7 @@ public class ServerTests
         await Assert.That(await response.Content.ReadAsStringAsync()).IsEqualTo("Something went wrong.");
         await Wait.Until(() => !running.Run.Unhandled.IsEmpty);
         var logged = running.Run.Unhandled.Single();
-        await Assert.That(logged.AnsweredBy?.Verb).IsEqualTo("Respond");
+        await Assert.That(logged.AnsweredBy?.Verb).IsEqualTo("Send");
         await Assert.That(logged.EmittedBy?.ToString()).StartsWith("Extract");
     }
 
@@ -158,7 +158,7 @@ public class ServerTests
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/"
                 Extract "$.x"
-                    Respond "x is {msg.Text}"
+                    Send text="x is {msg.Text}"
             """);
 
         // Far more than the 10% of 20 messages that stops a pipeline whose errors go unhandled.
@@ -181,7 +181,7 @@ public class ServerTests
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/"
                 Extract "$.x"
-                    Respond
+                    Send
                         Sink
             """);
 
@@ -200,7 +200,7 @@ public class ServerTests
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/"
                 Extract "$.x"
-                    Respond "x is {msg.Text}" error-reply="Couldn't read that: {msg.Error}" error-status=400
+                    Send text="x is {msg.Text}" error-reply="Couldn't read that: {msg.Error}" error-status=400
             """);
 
         using var good = await PostAsync($"http://127.0.0.1:{port}/", """{"x":7}""");
@@ -218,7 +218,7 @@ public class ServerTests
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/"
                 Extract "$.x"
-                    Respond details=true
+                    Send details=true
             """);
 
         using var response = await PostAsync($"http://127.0.0.1:{port}/", "this isn't JSON");
@@ -235,9 +235,9 @@ public class ServerTests
         var port = TestServer.FreePort();
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/a/"
-                Respond "A"
+                Send text="A"
             Listen "http://127.0.0.1:{{port}}/a/b/"
-                Respond "B"
+                Send text="B"
             """);
 
         // The two Listens register their paths one after the other, so wait until both are there: until then,
@@ -276,7 +276,7 @@ public class ServerTests
         var port = TestServer.FreePort();
         await using var running = TestRun.Begin($$"""
             Listen "https://127.0.0.1:{{port}}/" certificate='{{certificatePath}}' key='{{keyPath}}'
-                Respond "secure"
+                Send text="secure"
             """);
 
         using var handler = new HttpClientHandler
@@ -307,19 +307,19 @@ public class ServerTests
     {
         var run = await TestRun.Start("""
             Listen "https://127.0.0.1:8443/"
-                Respond
+                Send
             """, run: false);
 
         await Assert.That(run.Diagnostics).Contains("HTTP needs a certificate for an https:// address, as in certificate=\"server.pem\"");
     }
 
     [Test]
-    public async Task Respond_without_a_value_sends_the_request_body_back()
+    public async Task Send_without_a_value_sends_the_request_body_back()
     {
         var port = TestServer.FreePort();
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/"
-                Respond
+                Send
             """);
 
         using var response = await PostAsync($"http://127.0.0.1:{port}/", "echo me");
@@ -334,14 +334,14 @@ public class ServerTests
         var port = TestServer.FreePort();
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/" max-size=4
-                Respond "too late"
+                Send text="too late"
             """);
 
         using var response = await PostAsync($"http://127.0.0.1:{port}/", "far too long");
 
         await Assert.That(response.StatusCode).IsEqualTo(HttpStatusCode.RequestEntityTooLarge);
         await Wait.Until(() => !running.Run.Unhandled.IsEmpty);
-        await Assert.That(running.Run.Unhandled.Single().Error).StartsWith("Respond had no request to answer with this error: A request to ");
+        await Assert.That(running.Run.Unhandled.Single().Error).StartsWith("Send had no address, and no request to reply to with this error: A request to ");
         await Assert.That(running.Run.Unhandled.Single().Error).EndsWith("sent more than 4 bytes, so it was refused with 413.");
     }
 
@@ -351,7 +351,7 @@ public class ServerTests
         var port = TestServer.FreePort();
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/" stream=true
-                Respond
+                Send
             """);
         var big = new string('x', 300_000);
 
@@ -368,7 +368,7 @@ public class ServerTests
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/"
                 Fetch "{{upstream.Url}}/data" stream=true
-                    Respond
+                    Send
             """);
 
         using var response = await GetAsync($"http://127.0.0.1:{port}/");
@@ -383,8 +383,8 @@ public class ServerTests
         var port = TestServer.FreePort();
         await using var running = TestRun.Begin($$"""
             Listen "http://127.0.0.1:{{port}}/"
-                Respond "one"
-                Respond "two"
+                Send text="one"
+                Send text="two"
             """);
 
         using var response = await GetAsync($"http://127.0.0.1:{port}/");
@@ -392,16 +392,16 @@ public class ServerTests
 
         var answer = await response.Content.ReadAsStringAsync();
         await Assert.That(answer is "one" or "two").IsTrue();
-        await Assert.That(running.Run.Unhandled.Single().Error).Contains("has already been answered, so Respond couldn't answer it again.");
+        await Assert.That(running.Run.Unhandled.Single().Error).Contains("has already been answered, so Send couldn't answer it again.");
     }
 
     [Test]
-    public async Task Listen_and_Respond_talk_over_tcp()
+    public async Task Listen_and_Send_talk_over_tcp()
     {
         var port = TestServer.FreePort();
         await using var running = TestRun.Begin($$"""
             Listen "tcp://127.0.0.1:{{port}}"
-                Respond "you said {msg.Text}"
+                Send text="you said {msg.Text}"
             """);
 
         using var client = await ConnectAsync(port);
@@ -413,12 +413,12 @@ public class ServerTests
     }
 
     [Test]
-    public async Task Respond_final_closes_a_tcp_connection()
+    public async Task Send_final_closes_a_tcp_connection()
     {
         var port = TestServer.FreePort();
         await using var running = TestRun.Begin($$"""
             Listen "tcp://127.0.0.1:{{port}}"
-                Respond "bye" final=true
+                Send text="bye" final=true
             """);
 
         using var client = await ConnectAsync(port);
@@ -436,9 +436,9 @@ public class ServerTests
         await using var running = TestRun.Begin($$"""
             Listen "tcp://127.0.0.1:{{port}}" connections=true
                 Where msg is TcpConnected
-                    Respond "Welcome"
+                    Send text="Welcome"
                 Where msg is TcpMessage
-                    Respond "you said {msg.Text}"
+                    Send text="you said {msg.Text}"
                 Where msg is TcpDisconnected
                     Sink
             """);
@@ -465,14 +465,14 @@ public class ServerTests
         var port = TestServer.FreePort();
         await using var running = TestRun.Begin($$"""
             Listen "tcp://127.0.0.1:{{port}}" end="\r\n.\r\n"
-                Respond "got {msg.Text}"
+                Send text="got {msg.Text}"
             """);
 
         using var client = await ConnectAsync(port);
         var stream = client.GetStream();
         await stream.WriteAsync("first\r\nline\r\n.\r\nsecond\r\n.\r\n"u8.ToArray());
 
-        // Respond ends its own messages the same way unless told otherwise.
+        // Send ends its own replies the same way unless told otherwise.
         var expected = "got first\r\nline\r\n.\r\ngot second\r\n.\r\n";
         await Assert.That(await Wait.For(ReadAsync(stream, expected.Length))).IsEqualTo(expected);
     }
@@ -483,7 +483,7 @@ public class ServerTests
         var port = TestServer.FreePort();
         await using var running = TestRun.Begin($$"""
             Listen "tcp://127.0.0.1:{{port}}" length=4
-                Respond "{msg.Text}!" end="\n"
+                Send text="{msg.Text}!" end="\n"
             """);
 
         using var client = await ConnectAsync(port);
@@ -517,7 +517,7 @@ public class ServerTests
     {
         var run = await TestRun.Start("""
             Listen "tcp://127.0.0.1:7000" end="\n" length=4
-                Respond
+                Send
             """, run: false);
 
         await Assert.That(run.Diagnostics).Contains("TCP takes end or length to tell where a message ends, not both");
@@ -543,21 +543,21 @@ public class ServerTests
     {
         var run = await TestRun.Start("""
             Listen "ftp://example.com"
-                Respond
+                Send
             """, run: false);
 
         await Assert.That(run.Diagnostics).Contains(
-            "(1,8): error: None of Listen's inflections can do this: HTTP needs an http:// or https:// address, not ftp://example.com; TCP needs a tcp:// address with a port, not ftp://example.com.");
+            "(1,8): error: None of Listen's inflections can do this: HTTP needs an http:// or https:// address, not ftp://example.com; TCP needs a tcp:// address with a port, not ftp://example.com; WebSocket needs a ws:// or wss:// address, not ftp://example.com.");
     }
 
     [Test]
-    public async Task Respond_needs_a_message_from_a_request()
+    public async Task Send_needs_a_message_from_a_request()
     {
         var run = await TestRun.Start("""
             Interval 10ms count=1
-                Respond "hello"
+                Send text="hello"
             """);
 
-        await Assert.That(run.Unhandled.Single().Error).IsEqualTo("Respond needs a message that came from a request, through Listen, but this one didn't.");
+        await Assert.That(run.Unhandled.Single().Error).IsEqualTo("Send without an address replies to the request or connection a message came from, but this one didn't come from one. Give Send an address to send it somewhere.");
     }
 }

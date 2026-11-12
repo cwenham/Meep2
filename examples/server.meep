@@ -1,16 +1,21 @@
-// A web greeting and a TCP echo, side by side. While it runs, try:
+// A web greeting, a TCP echo and a WebSocket chat room, side by side. While it runs, try:
 //   curl "http://127.0.0.1:8080/hello/?name=Ann"
 //   nc 127.0.0.1 7000      (then type a line)
+//   websocat ws://127.0.0.1:8080/chat/      (in two terminals, then type in either)
 // A request that nothing answers, such as one without a name, gets a 500.
 // Ctrl+C stops it once the requests in flight have been answered.
 
 Listen "http://127.0.0.1:8080/hello/"
-    Respond "Hello, {msg.Query['name']}!"
+    Send text="Hello, {msg.Query['name']}!"
 
 Listen "tcp://127.0.0.1:7000" connections=true
     Where msg is TcpConnected
-        Respond "Welcome. Say something."
+        Send text="Welcome. Say something."
     Where msg is TcpMessage
-        Respond "You said: {msg.Text}"
+        Send text="You said: {msg.Text}"
     Where msg is TcpDisconnected
         WriteLine "Connection {msg.Connection} from {msg.RemoteAddress} ended: {msg.Reason}"
+
+// Every message from one browser or client goes to everyone connected.
+Listen "ws://127.0.0.1:8080/chat/" as Room
+    Send "Room" text="{msg.Connection}: {msg.Text}"

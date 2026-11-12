@@ -73,7 +73,7 @@ public class LeaseBenchmarks
 }
 
 /// <summary>
-/// One HTTP request at a time from a client on this machine: Meep's Listen → Respond, against a bare Kestrel server
+/// One HTTP request at a time from a client on this machine: Meep's Listen → Send, against a bare Kestrel server
 /// set up the same way and answering directly, to show what the pipeline adds. Times are per request, end to end.
 /// </summary>
 [MemoryDiagnoser]
@@ -94,7 +94,7 @@ public class HttpBenchmarks
         var builder = new PipelineBuilder("Http");
         builder.Connect(
             builder.AddSource(() => new HttpListen(new HttpListenParameters { Url = _meepUrl })),
-            builder.Add(() => new Respond(new RespondParameters { Body = Computed<string>.Constant("ok") })));
+            builder.Add(() => new SendReply(new SendReplyParameters { Text = Computed<string>.Constant("ok") })));
         _pipeline = builder.Build();
         _running = _pipeline.RunAsync();
 

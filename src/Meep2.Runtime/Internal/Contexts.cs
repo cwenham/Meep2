@@ -30,6 +30,10 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
 
     public override string PipelineName => node.Pipeline.Name;
 
+    public override System.Collections.Concurrent.ConcurrentDictionary<string, object> Shared => node.Pipeline.Shared;
+
+    public override Outlet Outlet => new NodeOutlet(node, Module);
+
     /// <summary>Whether the module emitted the message it was given, passing it on unchanged.</summary>
     public bool PassedOn => _passedOn;
 
@@ -211,6 +215,8 @@ internal sealed class SourceContext(SourceNode node) : ModuleContext
 
     public override string PipelineName => node.Pipeline.Name;
 
+    public override System.Collections.Concurrent.ConcurrentDictionary<string, object> Shared => node.Pipeline.Shared;
+
     /// <summary>Called when the source finishes. Emitting after that is a mistake.</summary>
     public void Close() => _closed = true;
 
@@ -269,5 +275,45 @@ internal sealed class SourceContext(SourceNode node) : ModuleContext
     {
         if (_closed)
             throw new InvalidOperationException($"{node.Info} has finished, so it can't emit any more messages.");
+    }
+}
+
+/// <summary>
+/// Emits for a module that handles messages at any time, from any thread (<see cref="ModuleContext.Outlet"/>). It
+/// holds the pipeline open while it emits, and does nothing once the pipeline has halted.
+/// </summary>
+internal sealed class NodeOutlet(InflectionNode node, ModuleInfo emitter) : Outlet
+{
+    public override bool Emit(Message message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (!node.Pipeline.TryHold())
+            return false;
+        try
+        {
+            node.Pipeline.Emit(node, emitter, message, defaultParent: null);
+        }
+        finally
+        {
+            node.Pipeline.ReleaseHold();
+        }
+        return true;
+    }
+
+    public override bool Emit(Message message, Lease lease)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentNullException.ThrowIfNull(lease);
+        if (!node.Pipeline.TryHold())
+            return false;
+        try
+        {
+            node.Pipeline.EmitLeased(node, emitter, message, lease, defaultParent: null);
+        }
+        finally
+        {
+            node.Pipeline.ReleaseHold();
+        }
+        return true;
     }
 }

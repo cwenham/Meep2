@@ -48,7 +48,7 @@ public sealed class EmitsAttribute(Type messageType) : Attribute
 }
 
 /// <summary>
-/// Marks a parameter worked out only for errors, such as Respond's <c>error-reply</c>. When a parameters record has
+/// Marks a parameter worked out only for errors, such as <c>error-reply</c> on a Send that replies. When a parameters record has
 /// one, its other parameters worked out per message are only for messages that aren't errors. So an expression
 /// written for one kind doesn't keep the other kind out of the module, as it otherwise would (Q69).
 /// </summary>

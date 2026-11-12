@@ -14,7 +14,7 @@ namespace Meep2.Modules;
 /// <summary>
 /// Listen's HTTP inflection: a source that receives HTTP and HTTPS requests and emits each one as an
 /// <see cref="HttpRequest"/> carrying a lease on its connection. In Meeplang: <c>Listen "http://0.0.0.0:8080/quote/"</c>,
-/// then <c>Respond</c>.
+/// then <c>Send</c> to reply.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -348,14 +348,15 @@ internal sealed class HttpServer
             });
         });
         _host = builder.Build();
+        _host.UseWebSockets();
         _host.Run(ProcessRequestAsync);
     }
 
     /// <summary>
     /// Starts taking requests to a path, on the server for the endpoint, which starts if it isn't running. Takes
-    /// charge of the certificate.
+    /// charge of the certificate. A path can have one Listen for WebSockets and one for other requests (Q149).
     /// </summary>
-    public static async Task<Route> AddAsync(IPEndPoint endpoint, X509Certificate2? certificate, string path, Func<HttpContext, Task> handler, CancellationToken cancellationToken)
+    public static async Task<Route> AddAsync(IPEndPoint endpoint, X509Certificate2? certificate, string path, Func<HttpContext, Task> handler, CancellationToken cancellationToken, bool webSocket = false)
     {
         await s_changing.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
@@ -367,19 +368,19 @@ internal sealed class HttpServer
                 if (!same)
                 {
                     throw new InvalidOperationException(server._certificate is null
-                        ? $"Another Listen already takes plain http:// requests on {endpoint}, so this one can't take https:// there."
-                        : $"Another Listen already takes https:// requests on {endpoint} with a different certificate, or none.");
+                        ? $"Another Listen already takes plain http:// or ws:// requests on {endpoint}, so this one can't take https:// or wss:// there."
+                        : $"Another Listen already takes https:// or wss:// requests on {endpoint} with a different certificate, or none.");
                 }
-                if (server._routes.Any(r => string.Equals(r.Path, path, StringComparison.OrdinalIgnoreCase)))
-                    throw new InvalidOperationException($"Another Listen already takes requests to {path} on {endpoint}.");
-                var added = new Route(server, path, handler);
+                if (server._routes.Any(r => r.IsWebSocket == webSocket && string.Equals(r.Path, path, StringComparison.OrdinalIgnoreCase)))
+                    throw new InvalidOperationException($"Another Listen already takes {(webSocket ? "WebSockets" : "requests")} to {path} on {endpoint}.");
+                var added = new Route(server, path, handler, webSocket);
                 server._routes = [.. server._routes.Append(added).OrderByDescending(r => r.Path.Length)];
                 return added;
             }
 
             // A new server knows its first path before it starts, so nothing that arrives at once finds nothing there.
             server = new HttpServer(endpoint, certificate);
-            var route = new Route(server, path, handler);
+            var route = new Route(server, path, handler, webSocket);
             server._routes = [route];
             try
             {
@@ -420,12 +421,27 @@ internal sealed class HttpServer
         }
     }
 
+    // A WebSocket goes to the WebSocket Listen whose path fits best, or to an HTTP Listen if none fits. Any other
+    // request goes to an HTTP Listen, and gets 426 if only a WebSocket Listen takes its path.
     private async Task ProcessRequestAsync(HttpContext context)
     {
         var path = context.Request.Path.Value ?? "/";
+        var upgrade = context.WebSockets.IsWebSocketRequest;
+        if (!upgrade && !_routes.Any(r => !r.IsWebSocket && r.Fits(path)) && _routes.Any(r => r.IsWebSocket && r.Fits(path)))
+        {
+            var refused = context.Response;
+            refused.StatusCode = 426;
+            refused.Headers.Upgrade = "websocket";
+            refused.ContentType = Bodies.PlainText;
+            var explained = Encoding.UTF8.GetBytes($"{path} only takes WebSocket connections.");
+            refused.ContentLength = explained.Length;
+            await refused.Body.WriteAsync(explained).ConfigureAwait(false);
+            return;
+        }
+        var webSocket = upgrade && _routes.Any(r => r.IsWebSocket && r.Fits(path));
         foreach (var route in _routes)
         {
-            if (!route.Fits(path))
+            if (route.IsWebSocket != webSocket || !route.Fits(path))
                 continue;
             if (!route.TryEnter())
                 break;
@@ -442,7 +458,7 @@ internal sealed class HttpServer
 
         // Nothing takes this path, or the Listen that did is stopping.
         var response = context.Response;
-        var found = _routes.Any(r => r.Fits(path));
+        var found = _routes.Any(r => r.IsWebSocket == webSocket && r.Fits(path));
         response.StatusCode = found ? 503 : 404;
         response.ContentType = Bodies.PlainText;
         var text = found ? s_stopping : Encoding.UTF8.GetBytes($"Nothing is listening at {path}.");
@@ -451,13 +467,15 @@ internal sealed class HttpServer
     }
 
     /// <summary>A Listen's path on a server. Disposing it stops new requests, waits for open ones, then lets go.</summary>
-    internal sealed class Route(HttpServer server, string path, Func<HttpContext, Task> handler) : IAsyncDisposable
+    internal sealed class Route(HttpServer server, string path, Func<HttpContext, Task> handler, bool webSocket) : IAsyncDisposable
     {
         private readonly TaskCompletionSource _idle = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _open = 1; // held until disposed, so it can only reach zero once it's closing
         private int _disposed;
 
         public string Path => path;
+
+        public bool IsWebSocket => webSocket;
 
         public Func<HttpContext, Task> Handler => handler;
 
@@ -495,13 +513,14 @@ internal sealed class HttpServer
 /// <summary>An http:// or https:// address Listen takes: where to listen, and the path whose requests are its own.</summary>
 internal readonly record struct HttpAddress(bool Secure, string Host, int Port, string Path)
 {
-    public static bool TryParse(string address, out HttpAddress parsed)
+    public static bool TryParse(string address, out HttpAddress parsed, bool webSocket = false)
     {
         parsed = default;
-        if (!Uri.TryCreate(address, UriKind.Absolute, out var uri) || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+        var (plain, secure) = webSocket ? (Uri.UriSchemeWs, Uri.UriSchemeWss) : (Uri.UriSchemeHttp, Uri.UriSchemeHttps);
+        if (!Uri.TryCreate(address, UriKind.Absolute, out var uri) || (uri.Scheme != plain && uri.Scheme != secure))
             return false;
         var path = uri.AbsolutePath.EndsWith('/') ? uri.AbsolutePath : uri.AbsolutePath + "/";
-        parsed = new HttpAddress(uri.Scheme == Uri.UriSchemeHttps, uri.Host.Trim('[', ']'), uri.Port, Uri.UnescapeDataString(path));
+        parsed = new HttpAddress(uri.Scheme == secure, uri.Host.Trim('[', ']'), uri.Port, Uri.UnescapeDataString(path));
         return true;
     }
 }
