@@ -7,6 +7,7 @@ using Meep2.Meeplang.Parsing;
 using Meep2.Meeplang.Syntax;
 using Meep2.Modules;
 using Meep2.Plugins;
+using Meep2.SDK.Modules;
 
 namespace Meep2.Cli;
 
@@ -55,7 +56,7 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
                         ["capabilities"] = new JsonObject
                         {
                             ["textDocumentSync"] = 1, // the whole text, on each change
-                            ["completionProvider"] = new JsonObject { ["triggerCharacters"] = new JsonArray("@", " ", "#") },
+                            ["completionProvider"] = new JsonObject { ["triggerCharacters"] = new JsonArray("@", " ", "#", "\"") },
                             ["hoverProvider"] = true,
                         },
                         ["serverInfo"] = new JsonObject { ["name"] = "meep" },
@@ -169,11 +170,14 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
         return NotifyAsync("textDocument/publishDiagnostics", new JsonObject { ["uri"] = uri, ["diagnostics"] = list }, cancellationToken);
     }
 
-    // What fits where the cursor is: a modifier after @, a message type after is, a setting under defaults, or a verb.
+    // What fits where the cursor is: a book in a module's quoted value that takes one, a modifier after @, a message
+    // type after is, a setting under defaults, or a verb.
     private JsonNode Complete(JsonNode parameters)
     {
         var (line, word) = LineBefore(parameters);
         var registry = RegistryFor(parameters);
+        if (BookValue(line, registry) is { } quote)
+            return CompleteBooks(parameters, quote, registry);
         IEnumerable<(string Label, int Kind, string? Detail)> items;
         if (word.StartsWith('@'))
             items = s_modifiers.Select(m => ("@" + m, 14, (string?)"modifier"));
@@ -186,6 +190,53 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
         var list = new JsonArray();
         foreach (var (label, kind, detail) in items.OrderBy(i => i.Label, StringComparer.Ordinal))
             list.Add(new JsonObject { ["label"] = label, ["kind"] = kind, ["detail"] = detail });
+        return new JsonObject { ["isIncomplete"] = false, ["items"] = list };
+    }
+
+    // Where a book's name starts, when the cursor is in the quoted value straight after a verb whose value is a book,
+    // as in Enumerate "Coun (Q168).
+    private static int? BookValue(string line, ModuleRegistry registry)
+    {
+        var match = s_bookValue.Match(line);
+        if (!match.Success)
+            return null;
+        var verb = match.Groups["verb"].Value;
+        var dot = verb.IndexOf('.', StringComparison.Ordinal);
+        IReadOnlyList<ModuleRegistration>? inflections = null;
+        if (!registry.TryGetVerb(verb, out inflections) && dot > 0)
+        {
+            if (!registry.TryGetVerb(verb[..dot], out inflections) && !registry.TryGetPluginVerb(verb[..dot], verb[(dot + 1)..], out inflections))
+                inflections = null;
+        }
+        var takesBook = inflections?.Any(r => r.ParametersType?.GetProperties()
+            .Any(p => p.IsDefined(typeof(PositionalAttribute), false) && p.PropertyType == typeof(Book)) == true) == true;
+        return takesBook ? match.Groups["name"].Index : null;
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex s_bookValue =
+        new(@"^\s*(?<verb>[A-Za-z_][\w.]*)\s+""(?<name>[^""]*)$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    // The library's books, each replacing what's been typed of the name so far, spaces and all.
+    private static JsonObject CompleteBooks(JsonNode parameters, int start, ModuleRegistry registry)
+    {
+        var line = parameters["position"]!["line"]!.GetValue<int>();
+        var character = parameters["position"]!["character"]!.GetValue<int>();
+        var range = new JsonObject
+        {
+            ["start"] = new JsonObject { ["line"] = line, ["character"] = start },
+            ["end"] = new JsonObject { ["line"] = line, ["character"] = character },
+        };
+        var list = new JsonArray();
+        foreach (var book in registry.Books.Order(StringComparer.OrdinalIgnoreCase))
+        {
+            list.Add(new JsonObject
+            {
+                ["label"] = book,
+                ["kind"] = 18,
+                ["detail"] = "book",
+                ["textEdit"] = new JsonObject { ["range"] = range.DeepClone(), ["newText"] = book },
+            });
+        }
         return new JsonObject { ["isIncomplete"] = false, ["items"] = list };
     }
 

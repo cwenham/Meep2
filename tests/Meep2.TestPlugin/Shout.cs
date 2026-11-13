@@ -27,3 +27,11 @@ public sealed record ShoutParameters
     [Positional]
     public required Computed<string> Text { get; init; }
 }
+
+/// <summary>The plugin's own book, for Enumerate: a field rather than a property, to test both.</summary>
+public static class Shouts
+{
+    /// <summary>Things to shout.</summary>
+    [LibraryBook("Shouts")]
+    public static readonly IReadOnlyList<string> Book = ["hey", "oi", "yo"];
+}

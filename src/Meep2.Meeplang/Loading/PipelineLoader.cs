@@ -178,6 +178,7 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
         CheckTypes();
         if (diagnostics.HasErrors)
             return false;
+        CheckBuffers(options.BufferSize);
         Options = options;
         return true;
     }
@@ -516,7 +517,7 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
         var groups = node.Registrations.GroupBy(r => r.ParametersType).ToList();
         if (groups.Count == 1)
         {
-            var bound = new ParameterBinder(scope, diagnostics, syntax).Bind(node.Syntax, groups[0].First());
+            var bound = new ParameterBinder(scope, diagnostics, syntax, registry).Bind(node.Syntax, groups[0].First());
             if (bound.Failed)
                 return;
             foreach (var registration in groups[0])
@@ -528,7 +529,7 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
             foreach (var group in groups)
             {
                 var problems = new Diagnostics(syntax.Source.Path);
-                var bound = new ParameterBinder(scope, problems, syntax).Bind(node.Syntax, group.First());
+                var bound = new ParameterBinder(scope, problems, syntax, registry).Bind(node.Syntax, group.First());
                 attempts.Add(problems);
                 if (bound.Failed)
                     continue;
@@ -593,6 +594,44 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
                 node.Syntax.Positional?.Span ?? node.Syntax.VerbSpan);
         }
     }
+
+    // Warns about a module that can emit more messages at once than a module after it can hold, since emitting
+    // never waits and the earliest would be dropped (Q169). A passthrough module passes them straight on, so the
+    // modules after it need room for them too.
+    private void CheckBuffers(int pipelineBuffer)
+    {
+        foreach (var node in _ordered)
+        {
+            var most = node.Candidates
+                .Select(c => c.Registration.MostAtOnce is { } count && c.Parameters.Value is { } value ? count(value) : null)
+                .Max();
+            if (most is not { } count)
+                continue;
+            var seen = new HashSet<LoadNode>();
+            var next = new Queue<LoadNode>(Downstream(node));
+            while (next.TryDequeue(out var after))
+            {
+                if (!seen.Add(after))
+                    continue;
+                var buffer = after.Options.BufferSize ?? pipelineBuffer;
+                if (count > buffer)
+                {
+                    diagnostics.Warning(
+                        string.Create(
+                            System.Globalization.CultureInfo.InvariantCulture,
+                            $"{node.Syntax.Verb} can emit {count:N0} messages at once, but {after.Label} only holds {buffer:N0}, so the earliest would be dropped. Give {after.Label} @buffer={count}, or raise buffer under defaults."),
+                        node.Syntax.VerbSpan);
+                }
+                if (after.Registration.IsPassthrough)
+                {
+                    foreach (var further in Downstream(after))
+                        next.Enqueue(further);
+                }
+            }
+        }
+    }
+
+    private IEnumerable<LoadNode> Downstream(LoadNode node) => _ordered.Where(n => n.Upstream.Contains(node));
 
     private NodeOptions BuildOptions(LoadNode node)
     {

@@ -22,6 +22,11 @@ public sealed class ModuleRegistry
     private readonly Dictionary<string, Type> _messageTypes = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PluginEntry> _plugins = new(StringComparer.Ordinal);
 
+    // The library's books, read when a pipeline names one, and the names two plugins' books share. Book names are
+    // written as text, some with spaces, so they're matched ignoring case (Q166).
+    private readonly Dictionary<string, LibraryEntry> _books = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, List<string>> _sharedBooks = new(StringComparer.OrdinalIgnoreCase);
+
     // Names two plugins both use, so they need the plugin's name: Verb, Verb.Inflection, or a message type's.
     private readonly Dictionary<string, List<string>> _shared = new(StringComparer.Ordinal);
 
@@ -44,6 +49,10 @@ public sealed class ModuleRegistry
             copy._plugins[name] = plugin;
         foreach (var (name, plugins) in _shared)
             copy._shared[name] = [.. plugins];
+        foreach (var (name, book) in _books)
+            copy._books[name] = book;
+        foreach (var (name, plugins) in _sharedBooks)
+            copy._sharedBooks[name] = [.. plugins];
         return copy;
     }
 
@@ -82,6 +91,7 @@ public sealed class ModuleRegistry
 
         var entry = new PluginEntry(name);
         var modules = new List<ModuleRegistration>();
+        var books = FindBooks(assembly);
         foreach (var type in assembly.GetExportedTypes())
         {
             if (type.IsAbstract)
@@ -130,6 +140,23 @@ public sealed class ModuleRegistry
             else if (existing != type && PluginOf(existing) is { } other)
                 Share(typeName, other, name);
         }
+
+        // Its books, under the plugin's name, and under their own unless a core book has it. Two plugins' books
+        // with one name can only be reached by the plugin's.
+        foreach (var (bookName, book) in books)
+        {
+            entry.Books.Add(bookName);
+            _books[$"{name}.{bookName}"] = book with { Name = $"{name}.{book.Name}" };
+            if (_books.TryAdd(bookName, book))
+                continue;
+            if (_plugins.Values.FirstOrDefault(p => p != entry && p.Books.Contains(bookName)) is { } owner)
+            {
+                if (!_sharedBooks.TryGetValue(bookName, out var sharers))
+                    _sharedBooks[bookName] = sharers = [owner.Name];
+                if (!sharers.Contains(name))
+                    sharers.Add(name);
+            }
+        }
         return this;
     }
 
@@ -173,6 +200,62 @@ public sealed class ModuleRegistry
     /// <summary>The inflections' own names, across every verb.</summary>
     public IEnumerable<string> Inflections => _verbs.Values.SelectMany(inflections => inflections).Select(r => r.Inflection).Distinct();
 
+    /// <summary>The library's books by name, plugins' included, both under their own names and as <c>Plugin.Book</c>.</summary>
+    public IEnumerable<string> Books => _books.Where(b => !_sharedBooks.ContainsKey(b.Key)).Select(b => b.Value.Name);
+
+    /// <summary>The plugins whose books share this name, if two or more do, so only the plugin's name tells them apart.</summary>
+    public IReadOnlyList<string>? BookSharedBy(string name) => _sharedBooks.TryGetValue(name, out var plugins) ? plugins : null;
+
+    /// <summary>
+    /// Finds a book by name, ignoring case, and reads its items: its own name, or <c>Plugin.Book</c> for a plugin's. The
+    /// book found has the name as the library spells it. A name two plugins' books share isn't found.
+    /// </summary>
+    public bool TryGetBook(string name, [NotNullWhen(true)] out Book? book)
+    {
+        book = null;
+        if (_sharedBooks.ContainsKey(name) || !_books.TryGetValue(name, out var entry))
+            return false;
+        book = new Book(entry.Name, entry.Read() ?? []);
+        return true;
+    }
+
+    /// <summary>Adds a book to the library by hand, replacing one of the same name.</summary>
+    public ModuleRegistry AddBook(string name, IReadOnlyList<string> items)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        ArgumentNullException.ThrowIfNull(items);
+        _books[name] = new LibraryEntry(name, () => items);
+        return this;
+    }
+
+    // The public static members of an assembly's public types marked [LibraryBook], each read only when it's needed.
+    private static Dictionary<string, LibraryEntry> FindBooks(Assembly assembly)
+    {
+        var books = new Dictionary<string, LibraryEntry>(StringComparer.OrdinalIgnoreCase);
+        foreach (var type in assembly.GetExportedTypes())
+        {
+            foreach (var member in type.GetMembers(BindingFlags.Public | BindingFlags.Static))
+            {
+                if (member.GetCustomAttribute<LibraryBookAttribute>() is not { } attribute)
+                    continue;
+                Func<IReadOnlyList<string>?> read = member switch
+                {
+                    PropertyInfo property when typeof(IReadOnlyList<string>).IsAssignableFrom(property.PropertyType) && property.GetMethod is not null
+                        => () => (IReadOnlyList<string>?)property.GetValue(null),
+                    FieldInfo field when typeof(IReadOnlyList<string>).IsAssignableFrom(field.FieldType)
+                        => () => (IReadOnlyList<string>?)field.GetValue(null),
+                    _ => throw new ArgumentException(
+                        $"{type.Name}.{member.Name} is marked as the book {attribute.Name}, but a book has to be a public static property or field that's a list of strings."),
+                };
+                if (string.IsNullOrWhiteSpace(attribute.Name))
+                    throw new ArgumentException($"{type.Name}.{member.Name} is marked as a book without a name.");
+                if (!books.TryAdd(attribute.Name, new LibraryEntry(attribute.Name, read)))
+                    throw new ArgumentException($"There are two books called {attribute.Name}. Give one of them another name.");
+            }
+        }
+        return books;
+    }
+
     /// <summary>The message type names registered so far.</summary>
     public IEnumerable<string> MessageTypeNames => _messageTypes.Keys;
 
@@ -180,6 +263,8 @@ public sealed class ModuleRegistry
     public ModuleRegistry AddAssembly(Assembly assembly)
     {
         ArgumentNullException.ThrowIfNull(assembly);
+        foreach (var (name, book) in FindBooks(assembly))
+            _books[name] = book;
         foreach (var type in assembly.GetExportedTypes())
         {
             if (type.IsAbstract)
@@ -320,7 +405,12 @@ public sealed class ModuleRegistry
         public Dictionary<string, List<ModuleRegistration>> Verbs { get; } = new(StringComparer.Ordinal);
 
         public Dictionary<string, Type> MessageTypes { get; } = new(StringComparer.Ordinal);
+
+        public HashSet<string> Books { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
+
+    // A book: its name as the library spells it, and how to read its items.
+    private sealed record LibraryEntry(string Name, Func<IReadOnlyList<string>?> Read);
 }
 
 /// <summary>What the loader knows about one inflection of a verb.</summary>
@@ -341,6 +431,7 @@ public sealed class ModuleRegistration
         _emitsWhen = [.. emits.Select(a => (a.MessageType, a.When is null ? null : SwitchFor(moduleType, parametersType, a)))];
         EmitsInput = moduleType.IsDefined(typeof(EmitsInputAttribute), inherit: false);
         WhyNot = FindWhyNot(moduleType, parametersType);
+        MostAtOnce = FindMostAtOnce(moduleType, parametersType);
         Reconfigure = FindReconfigure(moduleType, parametersType);
     }
 
@@ -392,6 +483,29 @@ public sealed class ModuleRegistration
 
     /// <summary>The inflection's <see cref="IChosenByParameters{TParameters}.WhyNot"/>, taking its parameters record.</summary>
     internal Func<object, Message, string?>? WhyNot { get; }
+
+    /// <summary>The inflection's <see cref="IEmitsAtOnce{TParameters}.MostAtOnce"/>, taking its parameters record.</summary>
+    internal Func<object, long?>? MostAtOnce { get; }
+
+    // A call to the class's MostAtOnce, if it says how many messages it can emit at once.
+    private static Func<object, long?>? FindMostAtOnce(Type moduleType, Type? parametersType)
+    {
+        if (parametersType is null)
+            return null;
+        var contract = moduleType.GetInterfaces().FirstOrDefault(i =>
+            i.IsGenericType
+            && i.GetGenericTypeDefinition() == typeof(IEmitsAtOnce<>)
+            && i.GetGenericArguments()[0].IsAssignableFrom(parametersType));
+        if (contract is null)
+            return null;
+        var argument = contract.GetGenericArguments()[0];
+        var method = moduleType.GetMethod("MostAtOnce", BindingFlags.Public | BindingFlags.Static, [argument]);
+        if (method is null || method.ReturnType != typeof(long?))
+            return null;
+        var parameters = Expression.Parameter(typeof(object), "parameters");
+        var call = Expression.Call(method, Expression.Convert(parameters, argument));
+        return Expression.Lambda<Func<object, long?>>(call, parameters).Compile();
+    }
 
     /// <summary>
     /// Offers a running instance new parameters (<see cref="IReconfigurable{TParameters}"/>), or null if the class

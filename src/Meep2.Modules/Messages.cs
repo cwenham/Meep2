@@ -5,7 +5,7 @@ using Meep2.SDK.Messages;
 namespace Meep2.Modules;
 
 /// <summary>What <see cref="Interval"/> emits each time it fires.</summary>
-/// <param name="Count">How many times it has fired, counting from 1.</param>
+/// <param name="Count">The tick's number: how many times Interval has fired, counting from 1, or from its <c>count-start</c>.</param>
 public sealed record Tick(long Count) : Message
 {
     /// <summary>The text given with Interval's <c>payload</c> parameter, if any.</summary>
@@ -370,3 +370,9 @@ public sealed record JsonMessage(JsonElement Value) : Message, IHasText, IHasDyn
         return true;
     }
 }
+
+/// <summary>An item from a book in the library, as <see cref="Enumerate"/> emits it.</summary>
+/// <param name="Book">The book's name, as the library spells it.</param>
+/// <param name="Index">The item's place in the book, counting from 0.</param>
+/// <param name="Text">The item.</param>
+public sealed record BookItem(string Book, long Index, string Text) : Message, IHasText;

@@ -4,7 +4,8 @@ namespace Meep2.Modules;
 
 /// <summary>
 /// Emits a <see cref="Tick"/> straight away, then again every period, until stopped or until it has emitted
-/// <c>count</c> ticks. In Meeplang: <c>Interval 1m</c> or <c>Interval 500ms count=3</c>.
+/// <c>count</c> ticks. In Meeplang: <c>Interval 1m</c> or <c>Interval 500ms count=3</c>. Ticks are numbered from 1, or
+/// from <c>count-start</c>, as in <c>Interval 1s count-start=0</c>.
 /// </summary>
 [Verb("Interval")]
 [Emits(typeof(Tick))]
@@ -21,7 +22,7 @@ public sealed class Interval(IntervalParameters parameters) : ASource, IReconfig
         for (long count = 1; ; count++)
         {
             var current = _parameters;
-            context.Emit(new Tick(count) { Payload = current.Payload });
+            context.Emit(new Tick(current.CountStart + count - 1) { Payload = current.Payload });
             if (count >= current.Count)
                 return;
             if (!await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
@@ -30,8 +31,8 @@ public sealed class Interval(IntervalParameters parameters) : ASource, IReconfig
     }
 
     /// <summary>
-    /// Takes a new period, count and payload while it runs, carrying on its count (Q121). A new count it has already
-    /// reached ends it at the next tick.
+    /// Takes a new period, count, count start and payload while it runs, carrying on its count (Q121). A new count it
+    /// has already reached ends it at the next tick, and a new count start numbers the ticks after it from there.
     /// </summary>
     public bool ParametersChanged(IntervalParameters old, IntervalParameters next)
     {
@@ -70,6 +71,12 @@ public sealed record IntervalParameters
         get;
         init => field = value is null or > 0 ? value : throw new ArgumentOutOfRangeException(nameof(Count), "The count must be at least 1.");
     }
+
+    /// <summary>
+    /// The number of the first tick, such as 0 to match Enumerate's index (Q163). 1 unless set. It doesn't change how
+    /// many ticks <see cref="Count"/> emits.
+    /// </summary>
+    public long CountStart { get; init; } = 1;
 
     /// <summary>Text to put in each tick, for telling intervals apart.</summary>
     public string? Payload { get; init; }

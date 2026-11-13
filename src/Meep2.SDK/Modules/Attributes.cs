@@ -68,3 +68,26 @@ public sealed class EmitsInputAttribute : Attribute;
 /// </summary>
 /// <param name="Name">The module's name.</param>
 public sealed record ModuleReference(string Name);
+
+/// <summary>
+/// Adds a book to the library that Enumerate reads from, as in <c>Enumerate "Countries"</c>. Put it on a public static
+/// property or field whose type is an <see cref="IReadOnlyList{T}"/> of strings, one item to each entry.
+/// </summary>
+/// <remarks>
+/// A plugin's books join the others, and can also be reached by the plugin's name, as in <c>"Transit.Stops"</c>. The
+/// list is read when a pipeline names the book, not when the plugin loads, so a large book can load itself lazily.
+/// </remarks>
+[AttributeUsage(AttributeTargets.Property | AttributeTargets.Field, Inherited = false)]
+public sealed class LibraryBookAttribute(string name) : Attribute
+{
+    /// <summary>The book's name, such as <c>Countries</c>.</summary>
+    public string Name { get; } = name;
+}
+
+/// <summary>
+/// A parameter that names a book from the library (<see cref="LibraryBookAttribute"/>), as Enumerate's does. The
+/// loader finds the book when the pipeline loads, so a misspelt name is reported then.
+/// </summary>
+/// <param name="Name">The book's name as the library spells it, which a pipeline can write in any case.</param>
+/// <param name="Items">The book's items, never empty.</param>
+public sealed record Book(string Name, IReadOnlyList<string> Items);

@@ -29,7 +29,7 @@ internal sealed class BoundParameters
 /// under it. Parameter names match the record's properties ignoring case and hyphens, so <c>max-size</c> sets
 /// <c>MaxSize</c>.
 /// </summary>
-internal sealed class ParameterBinder(CompileScope scope, Diagnostics diagnostics, PipelineSyntax pipeline)
+internal sealed class ParameterBinder(CompileScope scope, Diagnostics diagnostics, PipelineSyntax pipeline, ModuleRegistry registry)
 {
     public BoundParameters Bind(ModuleSyntax module, ModuleRegistration registration)
     {
@@ -174,6 +174,9 @@ internal sealed class ParameterBinder(CompileScope scope, Diagnostics diagnostic
             return new ModuleReference(module.Name);
         }
 
+        if (type == typeof(Book))
+            return FindBook(syntax, name);
+
         if (type.IsEnum)
         {
             if (syntax is NameSyntax choice && Enum.TryParse(type, choice.Name, ignoreCase: true, out var parsed))
@@ -184,6 +187,24 @@ internal sealed class ParameterBinder(CompileScope scope, Diagnostics diagnostic
         if (ExpressionCompiler.UsesMessage(syntax))
             throw new BindException($"{name} has to be the same for every message, so it can't use msg or fam.", syntax.Span);
         return ConvertConstant(ExpressionCompiler.Evaluate(syntax, scope), type, syntax.Span);
+    }
+
+    // A book from the library, named by text that's the same for every message.
+    private Book FindBook(ExpressionSyntax syntax, string name)
+    {
+        if (ExpressionCompiler.UsesMessage(syntax) || ExpressionCompiler.Evaluate(syntax, scope).Value is not string title)
+            throw new BindException($"{name} needs the name of a book from the library, such as \"Countries\".", syntax.Span);
+        if (registry.BookSharedBy(title) is { } plugins)
+        {
+            throw new BindException(
+                $"The plugins {string.Join(" and ", plugins)} both have a book called {title}, so name it with its plugin's name, as in \"{plugins[0]}.{title}\".",
+                syntax.Span);
+        }
+        if (!registry.TryGetBook(title, out var book))
+            throw new BindException($"There's no book called {title} in the library." + Suggestions.For(title, registry.Books), syntax.Span);
+        if (book.Items.Count == 0)
+            throw new BindException($"The book {book.Name} is empty.", syntax.Span);
+        return book;
     }
 
     private static object? ConvertConstant(ConstantValue constant, Type target, SourceSpan span)

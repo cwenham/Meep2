@@ -1,11 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- The core modules that ship with Meep (Interval, Fetch, Where, WriteLine, Save, Tap …). -->
+  <!-- The core modules that ship with Meep (Interval, Fetch, Where, WriteLine, Save, Tap, Enumerate …). -->
   <PropertyGroup>
     <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
   <ItemGroup>
     <!-- Kestrel, for Listen's HTTP inflection (Q96). -->
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Enumerate's built-in books, one item to a line. -->
+    <EmbeddedResource Include="Library\*.txt" LogicalName="Meep2.Modules.Library.%(Filename)%(Extension)" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Meep2.SDK\Meep2.SDK.csproj" />

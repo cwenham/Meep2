@@ -349,6 +349,46 @@ public class PluginTests
     }
 
     [Test]
+    public async Task A_plugins_books_join_the_library_under_their_own_name_and_the_plugins()
+    {
+        using var lab = new PluginLab();
+        lab.CopyPlugin("shout", lab.Key);
+
+        var run = await lab.RunAsync("""
+            #plugin "shout/Meep2.TestPlugin.dll" as Loud
+            Interval 10ms count=2
+                Enumerate "Shouts"
+                    WriteLine "{msg.Text}"
+                Enumerate "Loud.Shouts" index=2
+                    WriteLine "{msg.Text}!"
+            """, new PluginCatalog());
+
+        await Assert.That(run.AllErrors).IsEmpty();
+        await Assert.That(run.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Order()).IsEquivalentTo(["hey", "oi", "yo!", "yo!"]);
+    }
+
+    [Test]
+    public async Task A_book_two_plugins_share_needs_the_plugins_name()
+    {
+        using var lab = new PluginLab();
+        lab.CopyPlugin("one", lab.Key);
+        lab.CopyPlugin("two", lab.Key);
+        const string Plugins = """
+            #plugin "one/Meep2.TestPlugin.dll" as One
+            #plugin "two/Meep2.TestPlugin.dll" as Two
+            Interval 10ms count=1
+
+            """;
+
+        var bare = await lab.RunAsync(Plugins + "    Enumerate \"Shouts\"\n", new PluginCatalog());
+        var named = await lab.RunAsync(Plugins + "    Enumerate \"Two.Shouts\"\n        WriteLine \"{msg.Text}\"\n", new PluginCatalog());
+
+        await Assert.That(bare.AllErrors).Contains("The plugins One and Two both have a book called Shouts, so name it with its plugin's name, as in \"One.Shouts\".");
+        await Assert.That(named.AllErrors).IsEmpty();
+        await Assert.That(named.Output).IsEqualTo("hey\n");
+    }
+
+    [Test]
     public async Task Names_two_plugins_share_need_the_plugins_name()
     {
         using var lab = new PluginLab();

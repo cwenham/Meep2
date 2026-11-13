@@ -88,7 +88,27 @@ public class LanguageServerTests
         await Assert.That(Labels(2)).Contains("@bypass");
         await Assert.That(Labels(3)).Contains("Tick");
         await Assert.That(hover).Contains("**Interval**");
-        await Assert.That(hover).Contains("period, count, payload");
+        await Assert.That(hover).Contains("period, count, count-start, payload");
+    }
+
+    [Test]
+    public async Task It_completes_book_names_in_a_value_that_takes_a_book()
+    {
+        const string Uri = "file:///tmp/books.meep";
+        var replies = await Converse(
+            Open(Uri, "Interval 1s\n    Enumerate \"Common P\n    WriteLine \"Co"),
+            At(1, "textDocument/completion", Uri, 1, 24),
+            At(2, "textDocument/completion", Uri, 2, 17));
+
+        var books = replies.Single(r => r["id"]?.GetValue<int>() == 1)["result"]!["items"]!.AsArray();
+        var passwords = books.Single(i => i!["label"]!.GetValue<string>() == "Common Passwords")!;
+        var edit = passwords["textEdit"]!;
+        string[] notBooks = [.. replies.Single(r => r["id"]?.GetValue<int>() == 2)["result"]!["items"]!.AsArray().Select(i => i!["label"]!.GetValue<string>())];
+        await Assert.That(books.Select(i => i!["label"]!.GetValue<string>())).Contains("ISO 3166 Countries");
+        await Assert.That(edit["newText"]!.GetValue<string>()).IsEqualTo("Common Passwords");
+        await Assert.That(edit["range"]!["start"]!["character"]!.GetValue<int>()).IsEqualTo(15);
+        await Assert.That(edit["range"]!["end"]!["character"]!.GetValue<int>()).IsEqualTo(24);
+        await Assert.That(notBooks).DoesNotContain("Common Passwords");
     }
 
     [Test]
