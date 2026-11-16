@@ -412,8 +412,7 @@ public class WebSocketTests
         var port = TestServer.FreePort();
         await using var server = TestRun.Begin($$"""
             Listen "tcp://127.0.0.1:{{port}}" connections=true
-                Where msg is TcpConnected
-                    Sink
+                Sink
             """);
         await using var client = TestRun.Begin($$"""
             Interval 1h
@@ -422,8 +421,10 @@ public class WebSocketTests
                 Send "tcp://127.0.0.1:{{port}}" text="b"
             """);
 
-        await Task.Delay(500);
-        await Assert.That(server.Run.At("Sink").Count).IsEqualTo(1);
+        // Send tries again a second later if Listen hasn't started yet, so wait for all four messages rather than a
+        // set time. A second connection would have come before the messages sent on it.
+        await Wait.Until(() => server.Run.At("Sink").OfType<TcpMessage>().Count() == 4);
+        await Assert.That(server.Run.At("Sink").OfType<TcpConnected>().Count()).IsEqualTo(1);
     }
 
     [Test]

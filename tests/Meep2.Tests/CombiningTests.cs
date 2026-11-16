@@ -32,8 +32,9 @@ public class CombiningTests
     [Test]
     public async Task Batch_within_sends_what_has_come_once_the_time_is_up()
     {
+        // Ticks far apart for the time it takes, so a busy machine can't make a batch late enough to take in two.
         var run = await TestRun.Start("""
-            Interval 150ms count=3
+            Interval 400ms count=3
                 Batch within=20ms
                     Sink
             """);
@@ -97,25 +98,27 @@ public class CombiningTests
     public async Task Zip_gives_up_on_a_message_past_its_limit_its_time_or_its_deadline()
     {
         // Interval sends its first message at once, so each first pair is made straight away, and the right's second
-        // message comes 300ms later.
-        var limited = await TestRun.Start("""
-            + Interval 2ms count=6 payload="left"
-            + Interval 300ms count=2 payload="right"
+        // message comes 800ms later. The two sources start separately, so the right's first can be late, above all
+        // in a full run of the tests: every timing here leaves at least 160ms for that. The left's third comes at
+        // 160ms, and its first waits up to 300ms. The left's last comes, or gives up, at least 400ms before the
+        // right's second.
+        var runs = await Task.WhenAll(TestRun.Start("""
+            + Interval 80ms count=6 payload="left"
+            + Interval 800ms count=2 payload="right"
             Zip limit=2
                 Sink
-            """);
-        var timed = await TestRun.Start("""
-            + Interval 2ms count=2 payload="left"
-            + Interval 300ms count=2 payload="right"
-            Zip within=50ms
+            """), TestRun.Start("""
+            + Interval 80ms count=2 payload="left"
+            + Interval 800ms count=2 payload="right"
+            Zip within=300ms
                 Sink
-            """);
-        var expiring = await TestRun.Start("""
-            + Interval 2ms count=2 payload="left" @expires=40ms
-            + Interval 300ms count=2 payload="right"
+            """), TestRun.Start("""
+            + Interval 80ms count=2 payload="left" @expires=300ms
+            + Interval 800ms count=2 payload="right"
             Zip
                 Sink
-            """);
+            """));
+        var (limited, timed, expiring) = (runs[0], runs[1], runs[2]);
         static string[] Errors(TestRun run) => [.. run.At("Sink").OfType<ErrorMessage>().Select(e => $"{e.Error} ({((Tick)e.Parents[0]).Count})")];
         static long[] Paired(TestRun run) => [.. run.At("Sink").OfType<Zipped>().Select(p => ((Tick)p.Left).Count)];
 
@@ -128,7 +131,7 @@ public class CombiningTests
         ]);
         await Assert.That(Paired(limited)).IsEquivalentTo([1L, 5L]); // the right's second takes the oldest still waiting
         await Assert.That(Errors(timed)).IsEquivalentTo([
-            "Nothing came on Zip's input 2 to pair with this message within 50ms. (2)",
+            "Nothing came on Zip's input 2 to pair with this message within 300ms. (2)",
             "Nothing came on Zip's input 1 to pair with this message. (2)",
         ]);
         await Assert.That(Errors(expiring)).IsEquivalentTo([

@@ -477,8 +477,9 @@ public class PluginTests
 
         var first = lab.RunAsync(slow, catalog);
         var second = lab.RunAsync(slow, catalog);
-        await Wait.Until(() => catalog.Loaded.Count > 0);
-        var loadedWhileRunning = catalog.Loaded.Count;
+        // Counted as it's seen, as a busy machine can resume this test only after both have finished.
+        var loadedWhileRunning = 0;
+        await Wait.Until(() => (loadedWhileRunning = catalog.Loaded.Count) > 0);
         await Task.WhenAll(first, second);
 
         await Assert.That(loadedWhileRunning).IsEqualTo(1);

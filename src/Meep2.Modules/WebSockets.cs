@@ -192,6 +192,17 @@ internal sealed class WebSocketLink
             }
             if (_socket.State != WebSocketState.Closed)
                 await _readerDone.Task.WaitAsync(s_closing).ConfigureAwait(false);
+            // A reader that stopped early, at a message too long, leaves the rest of it and the other end's close
+            // unread. Closing over unread data resets the connection, and the reset can reach the other end before
+            // our close does, losing its code. So read on to their close, as the protocol asks.
+            if (_socket.State == WebSocketState.CloseSent)
+            {
+                using var timeout = new CancellationTokenSource(s_closing);
+                var discard = new byte[4096];
+                while ((await _socket.ReceiveAsync(discard, timeout.Token).ConfigureAwait(false)).MessageType != WebSocketMessageType.Close)
+                {
+                }
+            }
         }
         catch (Exception exception) when (exception is TimeoutException or OperationCanceledException or WebSocketException or IOException or ObjectDisposedException)
         {
