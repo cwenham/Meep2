@@ -28,6 +28,7 @@ namespace Meep2.Modules;
 /// </para>
 /// </remarks>
 [Verb("Listen", Inflection = "TCP")]
+[Role(VerbRole.Inlet)]
 [Emits(typeof(TcpMessage))]
 [Emits(typeof(TcpConnected), When = nameof(TcpListenParameters.Connections))]
 [Emits(typeof(TcpDisconnected), When = nameof(TcpListenParameters.Connections))]

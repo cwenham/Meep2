@@ -23,6 +23,14 @@ public sealed class HostedPipeline
     private PipelineWatcher? _watcher;
     private readonly List<(string Edit, string? Commit)> _unsaved = [];
 
+    // The graph's version, the graph it's the version of (as JSON, without the version), and the last change notice.
+    private readonly Lock _graphing = new();
+    private int _graphVersion;
+    private string? _graphText;
+    private int _noticedVersion;
+    private (GraphNotice? Notice, int Serial) _notice;
+    private TaskCompletionSource _noticed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     internal HostedPipeline(string name, PipelineAddress address, ModuleRegistry registry, PluginOptions plugins)
     {
         Name = name;
@@ -152,14 +160,96 @@ public sealed class HostedPipeline
 
     internal void Running(BuiltPipeline built)
     {
+        bool restarted;
         lock (_lock)
         {
+            restarted = _built is not null;
             _built = built;
             if (_state != PipelineStates.Stopping)
             {
                 _state = PipelineStates.Running;
                 _reason = null;
             }
+        }
+        GraphChanged(restarted ? "restart" : null);
+    }
+
+    /// <summary>
+    /// Its graph, with the version that goes with it. The version counts up whenever the graph differs from the one
+    /// it had last, so it's right even when the graph is asked for while it's being changed.
+    /// </summary>
+    /// <exception cref="DaemonException">It hasn't loaded yet.</exception>
+    internal PipelineGraph Graph()
+    {
+        var live = Live ?? throw new DaemonException(409, $"{Name} isn't running yet.");
+        var graph = Graphs.Describe(Name, Path, live, version: 0);
+        var text = System.Text.Json.JsonSerializer.Serialize(graph, DaemonJson.Default.PipelineGraph);
+        lock (_graphing)
+        {
+            if (text != _graphText)
+            {
+                _graphText = text;
+                _graphVersion++;
+            }
+            return graph with { Version = _graphVersion };
+        }
+    }
+
+    /// <summary>The graph's version, or null if it hasn't loaded.</summary>
+    internal int? GraphVersion
+    {
+        get
+        {
+            lock (_graphing)
+                return _graphVersion == 0 ? null : _graphVersion;
+        }
+    }
+
+    /// <summary>
+    /// Works out the graph again after something that may have changed it, and tells those watching if it did, so a
+    /// notice always means a new version. A restart that leaves the graph as it was is seen in the counts' restarts
+    /// instead. <paramref name="reason"/> is null for when it first loads, which nobody is told about.
+    /// </summary>
+    internal void GraphChanged(string? reason)
+    {
+        if (Live is null)
+            return;
+        var version = Graph().Version;
+        TaskCompletionSource noticed;
+        lock (_graphing)
+        {
+            if (reason is null)
+            {
+                _noticedVersion = version;
+                return;
+            }
+            if (version == _noticedVersion)
+                return;
+            _noticedVersion = version;
+            _notice = (new GraphNotice(version, reason), _notice.Serial + 1);
+            noticed = _noticed;
+            _noticed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        noticed.TrySetResult();
+    }
+
+    /// <summary>The last change to the graph that those watching were told about, and a number that counts them.</summary>
+    internal (GraphNotice? Notice, int Serial) GraphNotice
+    {
+        get
+        {
+            lock (_graphing)
+                return _notice;
+        }
+    }
+
+    /// <summary>Completes at the next change to the graph that those watching are told about.</summary>
+    internal Task GraphNoticed
+    {
+        get
+        {
+            lock (_graphing)
+                return _noticed.Task;
         }
     }
 
@@ -216,6 +306,7 @@ public sealed class HostedPipeline
                 Edited = false;
                 lock (_lock)
                     _unsaved.Clear();
+                GraphChanged("reload");
             }
             return change;
         }
@@ -299,7 +390,7 @@ public sealed class HostedPipeline
             (_state, _reason) = _stopRequested ? (PipelineStates.Stopped, "it was asked to stop")
                 : _failure is not null ? (PipelineStates.Failed, _failure)
                 : (PipelineStates.Finished, "its sources finished");
-            _final = final with { State = _state, Ended = Ended, Reason = _reason, Restarts = Restarts };
+            _final = final with { State = _state, Ended = Ended, Reason = _reason, Restarts = Restarts, GraphVersion = GraphVersion };
         }
     }
 
@@ -336,6 +427,7 @@ public sealed class HostedPipeline
                 Ended = Ended,
                 Reason = _reason,
                 Restarts = Restarts,
+                GraphVersion = GraphVersion,
             };
         }
     }

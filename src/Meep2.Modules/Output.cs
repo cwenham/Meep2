@@ -9,6 +9,7 @@ namespace Meep2.Modules;
 /// message as text.
 /// </summary>
 [Verb("WriteLine")]
+[Role(VerbRole.Outlet)]
 public sealed class WriteLine : APassthrough<Message>
 {
     private readonly WriteLineParameters _parameters;
@@ -59,6 +60,7 @@ public sealed record WriteLineParameters
 /// </summary>
 /// <remarks>Folders are created as needed. A leading <c>~</c> means your home folder.</remarks>
 [Verb("Save")]
+[Role(VerbRole.Outlet)]
 public sealed class Save(SaveParameters parameters) : APassthrough<Message>
 {
     /// <inheritdoc/>

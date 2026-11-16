@@ -38,7 +38,14 @@ namespace Meep2.Daemon;
 /// <list type="bullet">
 /// <item><c>GET /</c>: the daemon and what you may do.</item>
 /// <item><c>GET /pipelines</c>, <c>GET /pipelines/{name}</c>: what's running, and each module's counts (observe).</item>
-/// <item><c>GET /pipelines/{name}/stats?every=1s</c>: those counts as a live stream of server-sent events (observe).</item>
+/// <item>
+/// <c>GET /pipelines/{name}/stats?every=1s</c>: those counts as a live stream of server-sent events (observe). A
+/// <c>graph</c> event comes between them, straight away, when the pipeline's graph changes.
+/// </item>
+/// <item>
+/// <c>GET /pipelines/{name}/graph</c>: its modules, where each is written, its verb's role, and the links between
+/// them with the message types they carry (observe). See <see cref="PipelineGraph"/>.
+/// </item>
 /// <item><c>GET /pipelines/{name}/modules/{module}/tap?where=…&amp;sample=…</c>: the messages passing a module, as a live stream (observe).</item>
 /// <item><c>POST /pipelines/{name}/modules/{module}/inject</c>: sends text, or JSON, into a module (inject).</item>
 /// <item><c>POST /pipelines</c>, <c>DELETE /pipelines/{name}</c>, <c>POST /stop</c>: start and stop pipelines, and the daemon (control).</item>
@@ -496,6 +503,9 @@ public sealed class MeepDaemon : IAsyncDisposable
                 Require(capabilities, Capabilities.Control);
                 await StopPipelineAsync(name).ConfigureAwait(false);
                 return new Answer(204, null);
+            case ("GET", ["pipelines", var name, "graph"]):
+                Require(capabilities, Capabilities.Observe);
+                return Answer.Json(200, Find(name).Graph(), DaemonJson.Default.PipelineGraph);
             case ("GET", ["pipelines", var name, "stats"]):
                 Require(capabilities, Capabilities.Observe);
                 return Stats(Find(name), request.Query);
@@ -615,6 +625,7 @@ public sealed class MeepDaemon : IAsyncDisposable
         if (!change.Applied)
             throw new DaemonException(400, $"After those edits {hosted.Name} wouldn't load, so nothing changed.", [.. change.Diagnostics.Where(d => d.IsError).Select(d => d.ToString())]);
         Log($"[{hosted.Name}] edited: {string.Join("; ", edits)}. {HostedPipeline.Summary(change.Report!)}");
+        hosted.GraphChanged("edit");
 
         var result = Reloading.Describe(change) with { Text = next.Source.Text };
         var described = edits.Select(e => e.ToString()).ToList();
@@ -671,7 +682,8 @@ public sealed class MeepDaemon : IAsyncDisposable
     }
 
     // The modules' counts, every so often, until the pipeline stops or the client goes. A restarted pipeline's
-    // counts start again from zero, under the same name.
+    // counts start again from zero, under the same name. When its graph changes, a graph event says so straight away,
+    // followed by its counts.
     private static Events Stats(HostedPipeline hosted, IReadOnlyDictionary<string, string> query)
     {
         var every = TimeSpan.FromSeconds(1);
@@ -684,13 +696,20 @@ public sealed class MeepDaemon : IAsyncDisposable
 
         async IAsyncEnumerable<ApiEvent> Stream([EnumeratorCancellation] CancellationToken cancellationToken)
         {
+            var told = hosted.GraphNotice.Serial;
             while (!cancellationToken.IsCancellationRequested)
             {
+                var noticed = hosted.GraphNoticed;
+                if (hosted.GraphNotice is { Notice: { } notice, Serial: var serial } && serial != told)
+                {
+                    told = serial;
+                    yield return new ApiEvent("graph", writer => JsonSerializer.Serialize(writer, notice, DaemonJson.Default.GraphNotice));
+                }
                 var detail = hosted.Detail();
                 yield return new ApiEvent("stats", writer => JsonSerializer.Serialize(writer, detail, DaemonJson.Default.PipelineDetail));
                 if (hosted.Ended is not null)
                     break;
-                await Task.WhenAny(hosted.Finished, Task.Delay(every, cancellationToken)).ConfigureAwait(false);
+                await Task.WhenAny(hosted.Finished, Task.Delay(every, cancellationToken), noticed).ConfigureAwait(false);
             }
             if (!cancellationToken.IsCancellationRequested)
                 yield return End($"{hosted.Name} has {hosted.State}" + (hosted.Reason is { } reason ? $", because {reason}." : "."));

@@ -260,7 +260,7 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
         var word = line[start..end];
         if (!RegistryFor(parameters).TryGetVerb(word, out var inflections))
             return null;
-        var markdown = new StringBuilder($"**{word}**");
+        var markdown = new StringBuilder($"**{word}** ({inflections[0].Role.ToString().ToLowerInvariant()})");
         foreach (var inflection in inflections)
         {
             markdown.Append($"\n\n`{word}.{inflection.Inflection}`");
@@ -274,7 +274,7 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
     }
 
     private static string Describe(ModuleRegistry registry, string verb) =>
-        registry.TryGetVerb(verb, out var inflections) ? $"{string.Join(", ", inflections.Select(i => i.Inflection))}" : "module";
+        registry.TryGetVerb(verb, out var inflections) ? $"{inflections[0].Role.ToString().ToLowerInvariant()}: {string.Join(", ", inflections.Select(i => i.Inflection))}" : "module";
 
     private (string Line, string Word) LineBefore(JsonNode parameters)
     {

@@ -43,6 +43,7 @@ namespace Meep2.Modules;
 /// </para>
 /// </remarks>
 [Verb("Listen", Inflection = "WebSocket")]
+[Role(VerbRole.Inlet)]
 [Emits(typeof(WebSocketText))]
 [Emits(typeof(WebSocketBinary))]
 [Emits(typeof(WebSocketConnected), When = nameof(WebSocketListenParameters.Connections))]

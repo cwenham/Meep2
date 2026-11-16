@@ -139,6 +139,43 @@ The registry looks for these when it registers the class and refuses it otherwis
 
 A new instance is made for each module in a pipeline, and again when the runtime replaces one (see [Errors](#errors)).
 
+## Roles
+
+Every verb has a role: a word for what it does with messages, so tools can show a module without knowing its verb. Synesthesia draws each role as its own shape, and the daemon's graph (`GET /pipelines/{name}/graph`) and `meep lsp`'s hovers give it.
+
+| Role | What the verb does | Worked out, or declared | Core verbs |
+|---|---|---|---|
+| `Source` | Makes messages itself. | Any source that doesn't declare `Inlet`. | `Interval`, `Read` |
+| `Inlet` | A source whose messages come in from outside the pipeline. | Declared. | `Listen` |
+| `Filter` | Passes on some of what it receives, unchanged, and drops the rest. | Declared. | `Where` |
+| `Outlet` | Sends messages out of the pipeline. | Declared. | `Send`, `Save`, `WriteLine` |
+| `Tap` | Receives another module's messages without being indented under it, so it can be drawn as a wire from that module. | Declared. | `Tap` |
+| `Router` | Spreads messages over copies of the branch beneath it. | Any module that implements `IRouteMessages`. | `Distribute` |
+| `Step` | Anything else: fetches, reshapes, combines, classifies. | Any other module that handles messages. | `Fetch`, `Extract`, `Batch`, `Learn`, … |
+
+Most verbs needn't say: the registry works the role out from the class. Declare it with `[Role]` beside `[Verb]` when that isn't enough:
+
+```csharp
+[Verb("Listen", Inflection = "TCP")]
+[Role(VerbRole.Inlet)]
+public sealed class TcpListen(TcpListenParameters parameters) : ASource { … }
+
+[Verb("Where")]
+[Role(VerbRole.Filter)]
+[EmitsInput]
+public sealed class Where(WhereParameters parameters) : AInflection<Message> { … }
+
+[Verb("Save")]
+[Role(VerbRole.Outlet)]
+public sealed class Save(SaveParameters parameters) : APassthrough<Message> { … }
+```
+
+Being a passthrough doesn't make a verb an outlet: one that counts or logs the messages going past is a step, so an outlet says so.
+
+`[EmitsInput]` alone doesn't make a filter: `Tap`, `Learn`, `Forget` and `Distribute` pass on what they receive too, but they pass on all of it.
+
+The registry refuses a role that doesn't fit the class: `Source` and `Inlet` are for sources only, the others for modules that handle messages, a `Filter` needs `[EmitsInput]` (or to be a passthrough), and a `Router` needs `IRouteMessages`. It also refuses inflections of one verb that disagree, so put the same `[Role]` on each.
+
 ## Parameters
 
 The parameters record is an ordinary C# record with public `init` properties and a public parameterless constructor (a record without a primary constructor has one). The loader fills it in from the pipeline line.
@@ -151,6 +188,8 @@ Properties are written in kebab case in Meeplang: `MaxSize` is `max-size`, `Coun
 Fetch "https://api.example.com/big.json" timeout=30s
     max-size = 1048576
 ```
+
+Parameter lines come before any modules under the module; one written after them is refused.
 
 At most one property can be marked `[Positional]`. It's the value written straight after the verb without a name, such as the URL in `Fetch "https://…"`.
 
@@ -299,7 +338,7 @@ public sealed class FileFetch(FetchParameters parameters) : AInflection<Message>
 
 Rules:
 
-- A verb's inflections must agree on whether they're sources, and on whether they're passthrough modules. The registry refuses one that doesn't.
+- A verb's inflections must agree on whether they're sources, on whether they're passthrough modules, and on their [role](#roles). The registry refuses one that doesn't.
 - Two classes can't give the same verb the same inflection name.
 - They can share a parameters record, as `HttpFetch` and `FileFetch` share `FetchParameters`, or have their own.
 
@@ -501,6 +540,7 @@ Before calling a verb done:
 - [ ] A public constructor taking the parameters record, or none.
 - [ ] Parameters with XML doc comments, defaults, and checks in `init` with messages written for pipeline writers.
 - [ ] `[Emits]` for every message type it makes, or `[EmitsInput]`.
+- [ ] `[Role]` if the worked-out [role](#roles) isn't right: `Inlet` for a source fed from outside, `Filter` for a filter, `Outlet` for a module that sends messages out, passthrough or not.
 - [ ] Expected failures emitted as errors; `EvaluationException` caught.
 - [ ] Resources released in `Dispose` or `DisposeAsync`.
 - [ ] Tests, including the load errors.

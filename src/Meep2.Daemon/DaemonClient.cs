@@ -90,6 +90,23 @@ public sealed class DaemonClient : IDisposable
     public Task<PipelineDetail> GetAsync(string name, CancellationToken cancellationToken = default) =>
         SendAsync(HttpMethod.Get, $"pipelines/{Uri.EscapeDataString(name)}", null, DaemonJson.Default.PipelineDetail, cancellationToken);
 
+    /// <summary>A pipeline as a graph: its modules, where each is written, and the links between them.</summary>
+    public Task<PipelineGraph> GraphAsync(string name, CancellationToken cancellationToken = default) =>
+        SendAsync(HttpMethod.Get, $"pipelines/{Uri.EscapeDataString(name)}/graph", null, DaemonJson.Default.PipelineGraph, cancellationToken);
+
+    /// <summary>
+    /// Each change to a pipeline's graph as it happens, until the pipeline finishes or the token is
+    /// cancelled. It listens to the stats stream, so it costs a stats event an hour besides.
+    /// </summary>
+    public async IAsyncEnumerable<GraphNotice> GraphChangesAsync(string name, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        await foreach (var (kind, data) in EventsAsync($"pipelines/{Uri.EscapeDataString(name)}/stats?every=1h", cancellationToken).ConfigureAwait(false))
+        {
+            if (kind == "graph")
+                yield return JsonSerializer.Deserialize(data, DaemonJson.Default.GraphNotice)!;
+        }
+    }
+
     /// <summary>Stops a pipeline, letting its messages finish. Returns once it has.</summary>
     public Task StopAsync(string name, CancellationToken cancellationToken = default) =>
         SendAsync(HttpMethod.Delete, $"pipelines/{Uri.EscapeDataString(name)}", null, cancellationToken);

@@ -35,6 +35,7 @@ namespace Meep2.Modules;
 /// </para>
 /// </remarks>
 [Verb("Send", Inflection = "Reply")]
+[Role(VerbRole.Outlet)]
 public sealed class SendReply(SendReplyParameters parameters) : APassthrough<Message>
 {
     /// <inheritdoc/>
@@ -187,6 +188,7 @@ public sealed record SendReplyParameters
 /// left alone, so they carry on to whatever handles them.
 /// </remarks>
 [Verb("Send", Inflection = "Broadcast")]
+[Role(VerbRole.Outlet)]
 public sealed class SendBroadcast(SendBroadcastParameters parameters) : APassthrough<Message>, IChosenByParameters<SendBroadcastParameters>
 {
     /// <summary>Takes the name of a Listen: a word, rather than an address.</summary>
@@ -273,6 +275,7 @@ public sealed record SendBroadcastParameters
 /// <para>Errors are left alone, so they carry on to whatever handles them.</para>
 /// </remarks>
 [Verb("Send", Inflection = "WebSocket")]
+[Role(VerbRole.Outlet)]
 [Emits(typeof(WebSocketText))]
 [Emits(typeof(WebSocketBinary))]
 [Emits(typeof(WebSocketConnected), When = nameof(SendWebSocketParameters.Connections))]
@@ -397,6 +400,7 @@ public sealed record SendWebSocketParameters
 /// <para>Errors are left alone, so they carry on to whatever handles them.</para>
 /// </remarks>
 [Verb("Send", Inflection = "TCP")]
+[Role(VerbRole.Outlet)]
 [Emits(typeof(TcpMessage))]
 [Emits(typeof(TcpConnected), When = nameof(SendTcpParameters.Connections))]
 [Emits(typeof(TcpDisconnected), When = nameof(SendTcpParameters.Connections))]
@@ -525,6 +529,7 @@ public sealed record SendTcpParameters
 /// </para>
 /// </remarks>
 [Verb("Send", Inflection = "HTTP")]
+[Role(VerbRole.Outlet)]
 [Emits(typeof(HttpResponse))]
 public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Message>, IChosenByParameters<SendHttpParameters>
 {

@@ -87,7 +87,7 @@ public class LanguageServerTests
         await Assert.That(Labels(1)).Contains("template");
         await Assert.That(Labels(2)).Contains("@bypass");
         await Assert.That(Labels(3)).Contains("Tick");
-        await Assert.That(hover).Contains("**Interval**");
+        await Assert.That(hover).Contains("**Interval** (source)");
         await Assert.That(hover).Contains("period, count, count-start, payload");
     }
 

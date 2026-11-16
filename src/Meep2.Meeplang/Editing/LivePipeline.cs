@@ -2,6 +2,7 @@ using Meep2.Meeplang.Loading;
 using Meep2.Meeplang.Parsing;
 using Meep2.Meeplang.Syntax;
 using Meep2.Runtime;
+using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
 
 namespace Meep2.Meeplang.Editing;
@@ -57,7 +58,8 @@ public sealed class LivePipeline
         var (modules, diagnostics) = new PipelineLoader(registry).Define(syntax, options);
         if (modules is null)
             return (null, diagnostics);
-        var state = new State(syntax, registry, modules, Fingerprints(modules.Expanded, modules), holds ?? []);
+        var (keys, nextKey) = Keys(modules, null, null, 1);
+        var state = new State(syntax, registry, modules, Fingerprints(modules.Expanded, modules), holds ?? [], keys, nextKey);
         return (new LivePipeline(modules.Builder.Build(), state, options), diagnostics);
     }
 
@@ -85,7 +87,8 @@ public sealed class LivePipeline
         var (modules, diagnostics) = new PipelineLoader(state.Registry).Define(state.Syntax, _options);
         if (modules is null)
             throw new InvalidOperationException($"{Pipeline.Name} didn't load again, so it can't be restarted: {string.Join("; ", diagnostics.Where(d => d.IsError))}");
-        _state = state with { Modules = modules, Fingerprints = Fingerprints(modules.Expanded, modules) };
+        var (keys, nextKey) = Keys(modules, ModuleMatcher.Match(state.Modules.Expanded, modules.Expanded), state.Keys, state.NextKey);
+        _state = state with { Modules = modules, Fingerprints = Fingerprints(modules.Expanded, modules), Keys = keys, NextKey = nextKey };
         return Pipeline = modules.Builder.Build();
     }
 
@@ -134,7 +137,8 @@ public sealed class LivePipeline
             }
 
             var previous = state.Holds;
-            _state = new State(next, registry ?? state.Registry, modules, fingerprints, holds ?? state.Holds);
+            var (keys, nextKey) = Keys(modules, matches, state.Keys, state.NextKey);
+            _state = new State(next, registry ?? state.Registry, modules, fingerprints, holds ?? state.Holds, keys, nextKey);
             if (holds is not null)
                 Release(previous);
             return new LiveChange(true, report, matches, diagnostics) { SettingsChanged = Settings(state.Syntax) != Settings(next) };
@@ -162,6 +166,82 @@ public sealed class LivePipeline
             module => $"{ModuleMatcher.ParametersOf(syntax, module)}|{constants}|{string.Join(',', modules.Types[module].Select(t => t.AssemblyQualifiedName + "@" + t.Assembly.GetHashCode()))}");
     }
 
+    /// <summary>
+    /// The pipeline as a graph: its modules, each with a key that lasts while the pipeline is changed and restarted,
+    /// and the links between them, with the message types each can carry.
+    /// </summary>
+    public PipelineShape Shape()
+    {
+        var state = _state;
+        var loaded = state.Modules.Modules;
+        var bySyntax = loaded.ToDictionary(m => m.Syntax, (IEqualityComparer<ModuleSyntax>)ReferenceEqualityComparer.Instance);
+        string? KeyOf(ModuleSyntax? module) => module is not null && state.Keys.TryGetValue(module, out var key) ? key : null;
+
+        var modules = loaded.Select(m => new ModuleShape(
+            state.Keys[m.Syntax],
+            m.Info,
+            m.Syntax,
+            m.Inflections,
+            m.Inflections[0].Role,
+            m.Errors)
+        {
+            Under = KeyOf(Under(state.Modules.Expanded.Modules, m.Syntax)),
+            CopyOf = KeyOf(m.Syntax.CopyOf),
+        }).ToList();
+
+        var links = new List<LinkShape>();
+        foreach (var to in loaded)
+        {
+            for (var i = 0; i < to.Upstream.Count; i++)
+            {
+                var from = bySyntax[to.Upstream[i]];
+                var types = from.Outputs.Append(typeof(ErrorMessage))
+                    .Where(t => to.Errors switch
+                    {
+                        ErrorDelivery.Only => typeof(ErrorMessage).IsAssignableFrom(t),
+                        ErrorDelivery.Exclude => !typeof(ErrorMessage).IsAssignableFrom(t),
+                        _ => true,
+                    })
+                    .Distinct()
+                    .ToList();
+                links.Add(new LinkShape(state.Keys[from.Syntax], state.Keys[to.Syntax], from.Info, to.Info, i + 1, to.Errors, types));
+            }
+        }
+        return new PipelineShape(state.Syntax, state.Modules.Expanded, modules, links);
+    }
+
+    // The module a module is indented under, as built, or null at the left margin.
+    private static ModuleSyntax? Under(IReadOnlyList<ModuleSyntax> modules, ModuleSyntax module)
+    {
+        foreach (var candidate in modules)
+        {
+            if (candidate.Children.Contains(module))
+                return candidate;
+            if (Under(candidate.Children, module) is { } found)
+                return found;
+        }
+        return null;
+    }
+
+    // Each module's key: the key of the module it was matched with before the change, or a new one, never used
+    // before in this pipeline. A pipeline's first keys are m1, m2 and so on, in the order it numbers its modules.
+    private static (IReadOnlyDictionary<ModuleSyntax, string> Keys, int Next) Keys(
+        LoadedModules modules, IReadOnlyList<ModuleMatch>? matches, IReadOnlyDictionary<ModuleSyntax, string>? old, int next)
+    {
+        var keys = new Dictionary<ModuleSyntax, string>(ReferenceEqualityComparer.Instance);
+        foreach (var match in matches ?? [])
+        {
+            if (match is { Old: { } before, Next: { } after } && old!.TryGetValue(before, out var key) && modules.Infos.ContainsKey(after))
+                keys[after] = key;
+        }
+        foreach (var module in modules.Modules)
+        {
+            if (!keys.ContainsKey(module.Syntax))
+                keys[module.Syntax] = $"m{next++}";
+        }
+        return (keys, next);
+    }
+
     private static string Settings(PipelineSyntax syntax) =>
         string.Join(';', syntax.Defaults.Select(d => d.Name + "=" + ExpressionText.Of(d.Value)));
 
@@ -176,5 +256,7 @@ public sealed class LivePipeline
         ModuleRegistry Registry,
         LoadedModules Modules,
         IReadOnlyDictionary<ModuleSyntax, string> Fingerprints,
-        IReadOnlyList<IDisposable> Holds);
+        IReadOnlyList<IDisposable> Holds,
+        IReadOnlyDictionary<ModuleSyntax, string> Keys,
+        int NextKey);
 }

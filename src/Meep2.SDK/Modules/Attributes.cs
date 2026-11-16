@@ -24,6 +24,64 @@ public sealed class VerbAttribute(string name) : Attribute
 }
 
 /// <summary>
+/// What a verb does with messages, in a word, so tools can show it without knowing every verb's name: a drawing of a
+/// pipeline gives each role its own shape, for instance. Most verbs needn't say: a source's role is
+/// <see cref="Source"/>, a module that routes messages to copies of a branch (<see cref="IRouteMessages"/>) is a
+/// <see cref="Router"/>, and any other's is <see cref="Step"/>. Declare another with <see cref="RoleAttribute"/>.
+/// </summary>
+public enum VerbRole
+{
+    /// <summary>
+    /// Anything else: takes messages in and does something with them, such as fetching, reshaping, combining or
+    /// classifying them. The role of a module that handles messages, unless it routes them or declares another.
+    /// </summary>
+    Step = 0,
+
+    /// <summary>A source that makes messages itself, as Interval and Read do. The role of any source that doesn't declare <see cref="Inlet"/>.</summary>
+    Source,
+
+    /// <summary>A source whose messages come in from outside the pipeline, as Listen's do from the network. Declared.</summary>
+    Inlet,
+
+    /// <summary>Passes on some of the messages it receives, unchanged, and drops the rest, as Where does. Declared.</summary>
+    Filter,
+
+    /// <summary>Sends messages out of the pipeline, as Send, Save and WriteLine do. Declared.</summary>
+    Outlet,
+
+    /// <summary>
+    /// Receives another module's messages without being indented under it, as Tap does, so a drawing can show it as
+    /// a wire from that module. Declared.
+    /// </summary>
+    Tap,
+
+    /// <summary>
+    /// Spreads messages over copies of the branch beneath it, as Distribute does. The role of a module that
+    /// implements <see cref="IRouteMessages"/>, and only of one that does.
+    /// </summary>
+    Router,
+}
+
+/// <summary>
+/// Declares a verb's <see cref="VerbRole"/>, when what the class already says doesn't give it: <c>[Role(VerbRole.Inlet)]</c>
+/// on a source that receives messages from outside, <c>[Role(VerbRole.Outlet)]</c> on a module that sends messages out
+/// of the pipeline, or <c>[Role(VerbRole.Filter)]</c> on a module that passes on only some of its messages. Put it beside <see cref="VerbAttribute"/>, on every inflection of the verb, since a verb's
+/// inflections must agree on their role.
+/// </summary>
+/// <remarks>
+/// <see cref="VerbRole.Source"/> and <see cref="VerbRole.Inlet"/> are for sources only, and the other roles for
+/// modules that handle messages. <see cref="VerbRole.Filter"/> also needs <see cref="EmitsInputAttribute"/>, since
+/// a filter passes on what it receives, and <see cref="VerbRole.Router"/> needs <see cref="IRouteMessages"/>.
+/// </remarks>
+/// <param name="role">The verb's role.</param>
+[AttributeUsage(AttributeTargets.Class, Inherited = false)]
+public sealed class RoleAttribute(VerbRole role) : Attribute
+{
+    /// <summary>The verb's role.</summary>
+    public VerbRole Role { get; } = role;
+}
+
+/// <summary>
 /// Marks the parameter written straight after the verb, without a name: the URL in <c>Fetch "https://…"</c>.
 /// A parameters record can have at most one.
 /// </summary>

@@ -394,8 +394,12 @@ public sealed class ModuleRegistry
             return $"{registration.Verb}'s inflections have to be all sources or none, but {first.Inflection} and {registration.Inflection} differ.";
         if (first.IsPassthrough != registration.IsPassthrough)
             return $"{registration.Verb}'s inflections have to be all passthrough modules or none, but {first.Inflection} and {registration.Inflection} differ.";
+        if (first.Role != registration.Role)
+            return $"{registration.Verb}'s inflections have to agree on their role, but {first.Inflection} is {Article(first.Role)} and {registration.Inflection} is {Article(registration.Role)}. Give them the same [Role].";
         return null;
     }
+
+    private static string Article(VerbRole role) => role is VerbRole.Inlet or VerbRole.Outlet ? $"an {role}" : $"a {role}";
 
     // A plugin's verbs and message types, under its name.
     private sealed class PluginEntry(string name)
@@ -433,7 +437,38 @@ public sealed class ModuleRegistration
         WhyNot = FindWhyNot(moduleType, parametersType);
         MostAtOnce = FindMostAtOnce(moduleType, parametersType);
         Reconfigure = FindReconfigure(moduleType, parametersType);
+        var declared = moduleType.GetCustomAttribute<RoleAttribute>()?.Role;
+        Role = declared ?? (IsSource ? VerbRole.Source : IsRouter ? VerbRole.Router : VerbRole.Step);
+        RoleDeclared = declared is not null;
+        if (RoleProblem() is { } problem)
+            throw new ArgumentException(problem, nameof(moduleType));
     }
+
+    /// <summary>
+    /// What the verb does with messages: declared with <see cref="RoleAttribute"/>, or else worked out from the class.
+    /// A source is a <see cref="VerbRole.Source"/>, a module that implements <see cref="IRouteMessages"/> a
+    /// <see cref="VerbRole.Router"/>, and any other a <see cref="VerbRole.Step"/>.
+    /// </summary>
+    public VerbRole Role { get; }
+
+    /// <summary>Whether <see cref="Role"/> was declared with <see cref="RoleAttribute"/>, rather than worked out.</summary>
+    public bool RoleDeclared { get; }
+
+    private bool IsRouter => typeof(IRouteMessages).IsAssignableFrom(ModuleType);
+
+    // Why the declared role doesn't fit the class, or null if it does.
+    private string? RoleProblem() => Role switch
+    {
+        VerbRole.Source or VerbRole.Inlet when !IsSource =>
+            $"{ModuleType.Name} declares the role {Role}, which is for sources, but it handles messages. Give it {nameof(VerbRole.Step)}, {nameof(VerbRole.Filter)}, {nameof(VerbRole.Outlet)} or {nameof(VerbRole.Tap)}, or none.",
+        not (VerbRole.Source or VerbRole.Inlet) when IsSource =>
+            $"{ModuleType.Name} is a source, so it can't declare the role {Role}. A source is a {nameof(VerbRole.Source)}, or an {nameof(VerbRole.Inlet)} if its messages come from outside the pipeline.",
+        VerbRole.Filter when !EmitsInput && !IsPassthrough =>
+            $"{ModuleType.Name} declares the role {nameof(VerbRole.Filter)}, but a filter passes on what it receives, so it needs [EmitsInput] too.",
+        VerbRole.Router when !IsRouter =>
+            $"{ModuleType.Name} declares the role {nameof(VerbRole.Router)}, but only a module that implements {nameof(IRouteMessages)} routes messages to copies of a branch.",
+        _ => null,
+    };
 
     /// <summary>The verb's name.</summary>
     public string Verb { get; }

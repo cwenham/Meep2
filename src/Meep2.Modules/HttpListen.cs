@@ -30,6 +30,7 @@ namespace Meep2.Modules;
 /// <para>When the pipeline stops, Listen stops taking requests but keeps the requests it has open until they're answered.</para>
 /// </remarks>
 [Verb("Listen", Inflection = "HTTP")]
+[Role(VerbRole.Inlet)]
 [Emits(typeof(HttpRequest))]
 public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChosenByParameters<HttpListenParameters>, IReconfigurable<HttpListenParameters>
 {

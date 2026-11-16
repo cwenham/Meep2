@@ -668,11 +668,16 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
         var value = parser.Parse();
         if (value is null || !ExpectEnd(parser.Current))
             return;
-        var argument = new ArgumentSyntax(name.Text, value, name.Span);
+        var argument = new ArgumentSyntax(name.Text, value, name.Span) { Span = SourceSpan.Between(name.Span, tokens[parser.Position - 1].Span) };
         switch (owner)
         {
+            case ModuleSyntax module when module.Children.Count > 0:
+                // Otherwise the module's lines would be split around its children, and its span would take them in.
+                _diagnostics.Error($"Write {module.Verb}'s parameters before the modules under it.", name.Span);
+                break;
             case ModuleSyntax module:
                 module.AddArgument(argument);
+                module.Extent = module.Extent.To(tokens[parser.Position - 1].Span);
                 break;
             case List<ArgumentSyntax> defaults:
                 defaults.Add(argument);
@@ -722,6 +727,7 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
             module.Positional = parser.Parse();
             if (module.Positional is null)
                 return;
+            module.PositionalSpan = SourceSpan.Between(tokens[position].Span, tokens[parser.Position - 1].Span);
             position = parser.Position;
         }
 
@@ -763,7 +769,7 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
                         return;
                     position = parser.Position;
                 }
-                module.AddModifier(new ModifierSyntax(name.Text, value, SourceSpan.Between(token.Span, value?.Span ?? name.Span)));
+                module.AddModifier(new ModifierSyntax(name.Text, value, SourceSpan.Between(token.Span, tokens[position - 1].Span)));
             }
             else if (token.IsWord("by"))
             {
@@ -777,7 +783,7 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
                 var value = parser.Parse();
                 if (value is null)
                     return;
-                module.AddArgument(new ArgumentSyntax("by", value, token.Span));
+                module.AddArgument(new ArgumentSyntax("by", value, token.Span) { Span = SourceSpan.Between(token.Span, tokens[parser.Position - 1].Span) });
                 position = parser.Position;
             }
             else if (token.Kind == TokenKind.Identifier && tokens[position + 1].Is("="))
@@ -786,7 +792,7 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
                 var value = parser.Parse();
                 if (value is null)
                     return;
-                module.AddArgument(new ArgumentSyntax(token.Text, value, token.Span));
+                module.AddArgument(new ArgumentSyntax(token.Text, value, token.Span) { Span = SourceSpan.Between(token.Span, tokens[parser.Position - 1].Span) });
                 position = parser.Position;
             }
             else
@@ -796,6 +802,7 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
             }
         }
 
+        module.Extent = SourceRange.Between(tokens[0].Span, tokens[position - 1].Span);
         switch (owner)
         {
             case null when isInclude:

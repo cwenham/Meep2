@@ -104,7 +104,10 @@ internal static class TemplateExpander
             var inside = new Substitutions(parameters, useName is null ? null : Renames(template, useName));
             var modules = List(template.Body, inside, [.. within, template.Name]);
             foreach (var module in Walk(modules))
+            {
                 module.ExpandedFrom ??= use;
+                module.TemplateUses = [.. module.TemplateUses, use];
+            }
             if (modules.Count == 0)
             {
                 diagnostics.Error($"The template {template.Name} has no modules indented under it.", template.NameSpan);

@@ -1,32 +1,34 @@
 # Verbs and inflections
 
-The verbs Meeplang has so far, as of 12 November 2026, from the `[Verb]` attributes in `src/Meep2.Modules`. A verb with more than one inflection has a class for each. The runtime picks one by the message's type or by the parameters (usually the address's scheme), and `Verb.Inflection` names one directly, as in `Fetch.HTTP`.
+The verbs Meeplang has so far, as of 15 November 2026, from the `[Verb]` attributes in `src/Meep2.Modules`. A verb with more than one inflection has a class for each. The runtime picks one by the message's type or by the parameters (usually the address's scheme), and `Verb.Inflection` names one directly, as in `Fetch.HTTP`.
 
 Parameters are written in kebab case (`max-size`, `save-every`). The positional parameter, written straight after the verb without a name, is shown in the Positional column.
 
 ## Summary
 
-| Verb | Inflections | Kind |
-|---|---|---|
-| Interval | — | Source |
-| Read | — | Source |
-| Listen | HTTP, TCP, WebSocket | Source |
-| Fetch | HTTP, File | Inflection |
-| Extract | — | Inflection |
-| Enumerate | — | Inflection |
-| Where | — | Filter (emits its input) |
-| Tap | — | Emits its input |
-| Batch | — | Inflection |
-| Zip | — | Inflection |
-| Distribute | — | Routes its input |
-| Learn | — | Emits its input |
-| Classify | — | Inflection |
-| Forget | — | Emits its input |
-| WriteLine | — | Passthrough |
-| Save | — | Passthrough |
-| Send | Reply, Broadcast, HTTP, TCP, WebSocket | Passthrough |
+| Verb | Inflections | Kind | Role |
+|---|---|---|---|
+| Interval | — | Source | source |
+| Read | — | Source | source |
+| Listen | HTTP, TCP, WebSocket | Source | inlet (declared) |
+| Fetch | HTTP, File | Inflection | step |
+| Extract | — | Inflection | step |
+| Enumerate | — | Inflection | step |
+| Where | — | Filter (emits its input) | filter (declared) |
+| Tap | — | Emits its input | tap (declared) |
+| Batch | — | Inflection | step |
+| Zip | — | Inflection | step |
+| Distribute | — | Routes its input | router |
+| Learn | — | Emits its input | step |
+| Classify | — | Inflection | step |
+| Forget | — | Emits its input | step |
+| WriteLine | — | Passthrough | outlet (declared) |
+| Save | — | Passthrough | outlet (declared) |
+| Send | Reply, Broadcast, HTTP, TCP, WebSocket | Passthrough | outlet (declared) |
 
 17 verbs, 25 inflections in all.
+
+The role says what a verb does with messages, so tools can show it without knowing its name: a source makes messages itself, an inlet receives them from outside, a filter passes on some of what it receives, an outlet sends messages out of the pipeline, a tap receives another module's messages without being indented under it, a router spreads messages over copies of a branch, and a step is anything else. Sources, routers and steps are worked out from the class, and the rest declared with `[Role]`. See [Roles](writing-verbs.md#roles) in the guide to writing verbs.
 
 ## Sources
 

@@ -128,6 +128,25 @@ public sealed class ModuleSyntax
     /// <summary>The value written straight after the verb, if any.</summary>
     public ExpressionSyntax? Positional { get; internal set; }
 
+    /// <summary>
+    /// Where the value after the verb is written, brackets and all, which <see cref="ExpressionSyntax.Span"/> leaves out
+    /// around a whole expression.
+    /// </summary>
+    public SourceSpan? PositionalSpan { get; internal set; }
+
+    /// <summary>
+    /// Where the module is written: from the start of its line (its <c>+</c>, or its verb) to the end of its last
+    /// parameter line, or of its own line if it has none. Comments after it aren't included, and nor are the modules
+    /// indented under it, unless parameter lines are written after them. For a copy, it's where the original is.
+    /// </summary>
+    public SourceRange Extent { get; internal set; }
+
+    /// <summary>
+    /// The template uses this module was copied in by, the one whose template it's written in first, then the use
+    /// that one is in, and so on out to the pipeline's own modules. Empty if no template made it.
+    /// </summary>
+    public IReadOnlyList<ModuleSyntax> TemplateUses { get; internal set; } = [];
+
     /// <summary>Named parameters, from the module line and the parameter lines under it.</summary>
     public IReadOnlyList<ArgumentSyntax> Arguments => _arguments;
 
@@ -180,6 +199,9 @@ public sealed class ModuleSyntax
             ExpandedFrom = ExpandedFrom,
             CopyOf = CopyOf,
             Original = Written,
+            PositionalSpan = PositionalSpan,
+            Extent = Extent,
+            TemplateUses = TemplateUses,
         };
         foreach (var argument in _arguments)
             copy._arguments.Add(argument with { Value = rewrite(argument.Value) });
@@ -197,12 +219,19 @@ public sealed class ModuleSyntax
 /// <param name="Name">The name as written.</param>
 /// <param name="Value">The value.</param>
 /// <param name="NameSpan">Where the name is.</param>
-public sealed record ArgumentSyntax(string Name, ExpressionSyntax Value, SourceSpan NameSpan);
+public sealed record ArgumentSyntax(string Name, ExpressionSyntax Value, SourceSpan NameSpan)
+{
+    /// <summary>
+    /// Where the whole parameter is written, from its name to the end of its value, brackets and all. Null for one
+    /// made other than by the parser.
+    /// </summary>
+    public SourceSpan? Span { get; init; }
+}
 
 /// <summary>An <c>@</c> modifier, such as <c>@bypass</c> or <c>@buffer=1000</c>.</summary>
 /// <param name="Name">The name, without the <c>@</c>.</param>
 /// <param name="Value">The value, if one was given.</param>
-/// <param name="Span">Where the modifier is.</param>
+/// <param name="Span">Where the modifier is, from its <c>@</c> to the end of its value.</param>
 public sealed record ModifierSyntax(string Name, ExpressionSyntax? Value, SourceSpan Span);
 
 /// <summary>A <c>const Name = value</c> declaration.</summary>

@@ -8,6 +8,7 @@ namespace Meep2.Modules;
 /// </summary>
 /// <remarks>Messages whose type the condition doesn't fit skip Where and carry on, as with <c>@bypass</c>.</remarks>
 [Verb("Where")]
+[Role(VerbRole.Filter)]
 [EmitsInput]
 public sealed class Where(WhereParameters parameters) : AInflection<Message>
 {
@@ -40,6 +41,7 @@ public sealed record WhereParameters
 /// <c>Tap Schedule</c>, or <c>Tap Schedule @errors</c> for its errors only.
 /// </summary>
 [Verb("Tap")]
+[Role(VerbRole.Tap)]
 [EmitsInput]
 public sealed class Tap(TapParameters parameters) : AInflection<Message>
 {

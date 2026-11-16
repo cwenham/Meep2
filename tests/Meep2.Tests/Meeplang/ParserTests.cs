@@ -217,6 +217,28 @@ public class ParserTests
     }
 
     [Test]
+    public async Task A_parameter_line_comes_before_the_modules_under_its_module()
+    {
+        var before = Script.Parse("""
+            Interval 1s
+                Fetch "https://example.com"
+                    timeout = 10s
+                    Sink
+            """);
+        var after = Script.Parse("""
+            Interval 1s
+                Fetch "https://example.com"
+                    Sink
+                        Sink
+                    timeout = 10s
+            """);
+
+        await Assert.That(Script.Diagnostics(before)).IsEqualTo("");
+        await Assert.That(Script.Diagnostics(after)).Contains("Write Fetch's parameters before the modules under it.");
+        await Assert.That(after.Modules[0].Children[0].Arguments).IsEmpty();
+    }
+
+    [Test]
     [Arguments("5s", 5_000)]
     [Arguments("250ms", 250)]
     [Arguments("1.5m", 90_000)]
