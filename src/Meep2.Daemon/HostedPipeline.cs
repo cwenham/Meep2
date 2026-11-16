@@ -413,6 +413,8 @@ public sealed class HostedPipeline
     private PipelineDetail DetailNow()
     {
         var pipeline = Pipeline;
+        var live = Live;
+        var links = pipeline is not null && live is not null ? Graphs.LinkCounts(live, pipeline) : null;
         lock (_lock)
         {
             return new PipelineDetail(
@@ -428,6 +430,7 @@ public sealed class HostedPipeline
                 Reason = _reason,
                 Restarts = Restarts,
                 GraphVersion = GraphVersion,
+                Links = links,
             };
         }
     }

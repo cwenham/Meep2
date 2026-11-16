@@ -37,7 +37,10 @@ namespace Meep2.Daemon;
 /// <para>The API, with the capability each part needs:</para>
 /// <list type="bullet">
 /// <item><c>GET /</c>: the daemon and what you may do.</item>
-/// <item><c>GET /pipelines</c>, <c>GET /pipelines/{name}</c>: what's running, and each module's counts (observe).</item>
+/// <item>
+/// <c>GET /pipelines</c>, <c>GET /pipelines/{name}</c>: what's running, each module's counts, and how many messages
+/// each link of its graph has carried, by the link's key (observe). See <see cref="PipelineDetail"/>.
+/// </item>
 /// <item>
 /// <c>GET /pipelines/{name}/stats?every=1s</c>: those counts as a live stream of server-sent events (observe). A
 /// <c>graph</c> event comes between them, straight away, when the pipeline's graph changes.

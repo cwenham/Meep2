@@ -86,7 +86,7 @@ public sealed class DaemonClient : IDisposable
     public Task<IReadOnlyList<PipelineSummary>> ListAsync(CancellationToken cancellationToken = default) =>
         SendAsync(HttpMethod.Get, "pipelines", null, DaemonJson.Default.IReadOnlyListPipelineSummary, cancellationToken);
 
-    /// <summary>A pipeline, with its modules' counts.</summary>
+    /// <summary>A pipeline, with its modules' counts and its links' counts (<see cref="PipelineDetail.Links"/>).</summary>
     public Task<PipelineDetail> GetAsync(string name, CancellationToken cancellationToken = default) =>
         SendAsync(HttpMethod.Get, $"pipelines/{Uri.EscapeDataString(name)}", null, DaemonJson.Default.PipelineDetail, cancellationToken);
 
@@ -120,7 +120,11 @@ public sealed class DaemonClient : IDisposable
         SendAsync(HttpMethod.Post, $"pipelines/{Uri.EscapeDataString(pipeline)}/modules/{Uri.EscapeDataString(module)}/inject",
             new StringContent(content, Encoding.UTF8, json ? "application/json" : "text/plain"), DaemonJson.Default.Injected, cancellationToken);
 
-    /// <summary>A pipeline's modules and counts, every so often, until it finishes or the token is cancelled.</summary>
+    /// <summary>
+    /// A pipeline's modules and counts, and its links' counts, every so often, until it finishes or the token is
+    /// cancelled. The counts only go up, except when the pipeline restarts, so the difference between two is what
+    /// happened between them.
+    /// </summary>
     public async IAsyncEnumerable<PipelineDetail> WatchAsync(string name, TimeSpan every, [EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
         var milliseconds = (long)every.TotalMilliseconds;

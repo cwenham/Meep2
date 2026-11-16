@@ -39,6 +39,26 @@ public static class Graphs
         return new PipelineGraph(name, path, version, modules, links);
     }
 
+    /// <summary>
+    /// The counts for each link of a running pipeline, keyed as its graph's links are. A link whose modules have no key
+    /// yet, in the moment while a change is made, is left out until the next time.
+    /// </summary>
+    /// <param name="live">The pipeline, for its modules' keys.</param>
+    /// <param name="pipeline">The pipeline running now, or the last one to run, whose counts these are.</param>
+    public static IReadOnlyList<LinkDetail> LinkCounts(LivePipeline live, Pipeline pipeline)
+    {
+        ArgumentNullException.ThrowIfNull(live);
+        ArgumentNullException.ThrowIfNull(pipeline);
+        var keys = live.ModuleKeys();
+        var links = new List<LinkDetail>();
+        foreach (var link in pipeline.GetLinkStats())
+        {
+            if (keys.TryGetValue(link.From, out var from) && keys.TryGetValue(link.To, out var to))
+                links.Add(new LinkDetail($"{from}>{to}", link.Carried, link.Errors));
+        }
+        return links;
+    }
+
     private static GraphModule Module(ModuleShape module, Files files)
     {
         var built = module.Syntax;

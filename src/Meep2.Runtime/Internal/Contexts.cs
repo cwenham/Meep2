@@ -161,6 +161,7 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
             _passedOn = true;
             if (!node.IsPassthrough)
             {
+                node.CountPassed();
                 node.Tapped(message);
                 node.Pipeline.Deliver(node, message);
             }

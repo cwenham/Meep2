@@ -27,10 +27,51 @@ internal sealed record InflectionSpec(ModuleInfo Info, Func<AModule> Create, Fun
 /// <param name="IsSource">Whether it's a source.</param>
 internal sealed record NodeSpec(ModuleInfo Info, InflectionSpec[] Inflections, NodeOptions Options, bool IsSource);
 
-/// <summary>The modules one feeds, and for each, which of its inputs that is, counting from 1.</summary>
-internal sealed record Fanout(InflectionNode[] Targets, int[] Inputs)
+/// <summary>
+/// The modules one feeds, and for each, which of its inputs that is, counting from 1, and the count of messages that
+/// link has carried.
+/// </summary>
+internal sealed record Fanout(InflectionNode[] Targets, int[] Inputs, LinkCount[] Counts)
 {
-    public static readonly Fanout None = new([], []);
+    public static readonly Fanout None = new([], [], []);
+}
+
+/// <summary>
+/// How many messages a link has carried since the pipeline started, and how many of them were errors. A change to the
+/// running pipeline that keeps the link hands the same counter on, so its counts carry on.
+/// </summary>
+/// <remarks>
+/// Both counts share a cache line, which each counter has to itself, so links counted on different threads don't slow each other down. (The
+/// runtime ignores <c>StructLayout.Size</c> on a class, so a field at the end of the line makes the room.)
+/// </remarks>
+[System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Explicit)]
+internal sealed class LinkCount
+{
+    /// <summary>For messages that come in along no link, as an injected one does.</summary>
+    public static readonly LinkCount Nowhere = new();
+
+    [System.Runtime.InteropServices.FieldOffset(0)]
+    private long _carried;
+
+    [System.Runtime.InteropServices.FieldOffset(8)]
+    private long _errors;
+
+#pragma warning disable CS0169 // never used: it only takes up the rest of the cache line
+    [System.Runtime.InteropServices.FieldOffset(56)]
+    private readonly long _padding;
+#pragma warning restore CS0169
+
+    public long Carried => Interlocked.Read(ref _carried);
+
+    public long Errors => Interlocked.Read(ref _errors);
+
+    /// <summary>Counts a message that went along the link: a second increment only for an error, which is rare.</summary>
+    public void Count(bool isError)
+    {
+        Interlocked.Increment(ref _carried);
+        if (isError)
+            Interlocked.Increment(ref _errors);
+    }
 }
 
 /// <summary>One module's place in a running pipeline: its instances, its downstream modules and its counts.</summary>
@@ -39,6 +80,7 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
     private long _received;
     private long _handled;
     private long _emitted;
+    private long _passed;
     private long _dropped;
     private long _filtered;
     private long _failed;
@@ -125,6 +167,7 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
         Interlocked.Read(ref _received),
         Interlocked.Read(ref _handled),
         Interlocked.Read(ref _emitted),
+        Interlocked.Read(ref _passed),
         Interlocked.Read(ref _dropped),
         Interlocked.Read(ref _filtered),
         Interlocked.Read(ref _failed),
@@ -182,6 +225,8 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
     public void CountHandled() => Interlocked.Increment(ref _handled);
 
     public void CountEmitted() => Interlocked.Increment(ref _emitted);
+
+    public void CountPassed() => Interlocked.Increment(ref _passed);
 
     public void CountDropped() => Interlocked.Increment(ref _dropped);
 

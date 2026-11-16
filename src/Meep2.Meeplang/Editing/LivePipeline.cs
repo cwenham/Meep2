@@ -210,6 +210,23 @@ public sealed class LivePipeline
         return new PipelineShape(state.Syntax, state.Modules.Expanded, modules, links);
     }
 
+    /// <summary>
+    /// The key of each module of the running pipeline (<see cref="ModuleShape.Key"/>), by the identity the pipeline
+    /// gives it now, as <see cref="Pipeline.Modules"/> and <see cref="Pipeline.GetLinkStats"/> have it. Cheaper than
+    /// <see cref="Shape"/>, for putting keys on counts.
+    /// </summary>
+    public IReadOnlyDictionary<ModuleInfo, string> ModuleKeys()
+    {
+        var state = _state;
+        var keys = new Dictionary<ModuleInfo, string>(state.Modules.Infos.Count, ReferenceEqualityComparer.Instance);
+        foreach (var (syntax, info) in state.Modules.Infos)
+        {
+            if (state.Keys.TryGetValue(syntax, out var key))
+                keys[info] = key;
+        }
+        return keys;
+    }
+
     // The module a module is indented under, as built, or null at the left margin.
     private static ModuleSyntax? Under(IReadOnlyList<ModuleSyntax> modules, ModuleSyntax module)
     {

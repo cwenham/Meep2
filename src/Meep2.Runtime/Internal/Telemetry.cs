@@ -33,7 +33,7 @@ internal static class Telemetry
     static Telemetry()
     {
         Meter.CreateObservableCounter("meep.module.messages", ObserveCounts, "{message}",
-            "Messages through each module, by what happened to them: received, handled, emitted, dropped, filtered, expired or refused.");
+            "Messages through each module, by what happened to them: received, handled, emitted, passed, dropped, filtered, expired or refused.");
         Meter.CreateObservableCounter("meep.module.failures", ObserveFailures, "{failure}",
             "Times each module threw, and times it was restarted.");
         Meter.CreateObservableUpDownCounter("meep.module.queued", ObserveQueues, "{message}",
@@ -165,6 +165,7 @@ internal static class Telemetry
                 yield return Measure(stats.Received, pipeline, node, "received");
                 yield return Measure(stats.Handled, pipeline, node, "handled");
                 yield return Measure(stats.Emitted, pipeline, node, "emitted");
+                yield return Measure(stats.Passed, pipeline, node, "passed");
                 yield return Measure(stats.Dropped, pipeline, node, "dropped");
                 yield return Measure(stats.Filtered, pipeline, node, "filtered");
                 yield return Measure(stats.Expired, pipeline, node, "expired");

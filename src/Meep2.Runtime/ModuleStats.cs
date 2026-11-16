@@ -1,9 +1,15 @@
+using Meep2.SDK.Modules;
+
 namespace Meep2.Runtime;
 
 /// <summary>Counts for one module since its pipeline started.</summary>
 /// <param name="Received">Messages put in the module's buffer.</param>
 /// <param name="Handled">Messages the module handled without throwing.</param>
-/// <param name="Emitted">Messages the module emitted, not counting ones it passed on unchanged.</param>
+/// <param name="Emitted">Messages the module emitted, new ones and errors, not counting ones it passed on unchanged.</param>
+/// <param name="Passed">
+/// Messages the module passed on unchanged, as a filter does with those it keeps, or a passthrough or Distribute with
+/// every one. So a filter's received is its passed, plus its emitted errors, plus what it held back.
+/// </param>
 /// <param name="Dropped">
 /// Messages dropped from the module's full buffer, lost because the module couldn't restart, or that reached it
 /// after the error policy stopped its branch.
@@ -18,6 +24,7 @@ public readonly record struct ModuleStats(
     long Received,
     long Handled,
     long Emitted,
+    long Passed,
     long Dropped,
     long Filtered,
     long Failed,
@@ -25,3 +32,16 @@ public readonly record struct ModuleStats(
     long Expired,
     long Refused,
     long Queued);
+
+/// <summary>The count for one link since its pipeline started (<see cref="Pipeline.GetLinkStats"/>).</summary>
+/// <param name="From">The module it comes from.</param>
+/// <param name="To">The module it goes to.</param>
+/// <param name="Input">Which of <paramref name="To"/>'s inputs it is, counting from 1.</param>
+/// <param name="Carried">
+/// Messages that went along it, errors included: each one the module at its end took in or stopped (dropped,
+/// expired or refused it), or let pass by to the modules under it, as an error passes a module with
+/// <c>@no-errors</c>. Not the other messages that stop at a module with <c>@errors</c>. A change to the running
+/// pipeline that keeps both modules keeps the link's counts.
+/// </param>
+/// <param name="Errors">How many of <paramref name="Carried"/> were errors.</param>
+public readonly record struct LinkStats(ModuleInfo From, ModuleInfo To, int Input, long Carried, long Errors);

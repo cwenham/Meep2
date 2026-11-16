@@ -40,7 +40,7 @@ public sealed class Pipeline : IAsyncDisposable
     private volatile Dictionary<ModuleInfo, Node> _nodesByModule = [];
     private volatile HashSet<ModuleInfo> _sourceInfos = [];
     private volatile SourceWindow? _sourceWindow;
-    private volatile IReadOnlyList<ModuleInfo> _modules = [];
+    private volatile Layout _layout = new([], []);
     private readonly SemaphoreSlim _changing = new(1, 1);
     private readonly InFlightCounter _inFlight = new();
     private long _kept;
@@ -75,7 +75,7 @@ public sealed class Pipeline : IAsyncDisposable
         spec.IsSource ? new SourceNode(this, spec) : new InflectionNode(this, spec, spec.Options.BufferSize ?? options.BufferSize);
 
     // Points each module at the ones it feeds. Specs are what the modules are to be: a kept module takes its new
-    // spec a little later, between messages.
+    // spec a little later, between messages. A link between two modules that were linked before keeps its count.
     private static void Wire(Node[] nodes, NodeSpec[] specs, (ModuleInfo From, ModuleInfo To)[] connections)
     {
         var byInfo = new Dictionary<ModuleInfo, Node>();
@@ -98,9 +98,20 @@ public sealed class Pipeline : IAsyncDisposable
         }
         foreach (var node in nodes)
         {
-            node.Links = downstream.TryGetValue(node, out var targets)
-                ? new Fanout([.. targets], [.. targets.Select(target => inputs[target][node])])
-                : Fanout.None;
+            if (!downstream.TryGetValue(node, out var targets))
+            {
+                node.Links = Fanout.None;
+                continue;
+            }
+            var before = node.Links;
+            var counts = new LinkCount[targets.Count];
+            for (var i = 0; i < counts.Length; i++)
+            {
+                var kept = Array.IndexOf(before.Targets, targets[i]);
+                var same = targets.IndexOf(targets[i]); // a link listed twice is still one link
+                counts[i] = same < i ? counts[same] : kept >= 0 ? before.Counts[kept] : new LinkCount();
+            }
+            node.Links = new Fanout([.. targets], [.. targets.Select(target => inputs[target][node])], counts);
         }
     }
 
@@ -126,8 +137,8 @@ public sealed class Pipeline : IAsyncDisposable
         _sourceWindow = options.ErrorPolicy.StopPipelineAtPercent is null ? null : _sourceWindow ?? new SourceWindow(ErrorPolicy.StopPipelineWindow);
         _inflections = [.. nodes.OfType<InflectionNode>()];
         _sources = [.. nodes.OfType<SourceNode>()];
-        _modules = [.. specs.Select(spec => spec.Info)];
         _nodes = nodes;
+        _layout = new Layout(nodes, [.. specs.Select(spec => spec.Info)]);
     }
 
     /// <summary>The pipelines running in this process now.</summary>
@@ -136,7 +147,7 @@ public sealed class Pipeline : IAsyncDisposable
     internal IReadOnlyList<Node> Nodes => _nodes;
 
     /// <summary>The pipeline's modules, in the order they were added, or as the last change to it has them.</summary>
-    public IReadOnlyList<ModuleInfo> Modules => _modules;
+    public IReadOnlyList<ModuleInfo> Modules => _layout.Modules;
 
     /// <summary>Whether the pipeline has started and hasn't finished.</summary>
     public bool IsRunning => Volatile.Read(ref _state) == Running;
@@ -169,6 +180,36 @@ public sealed class Pipeline : IAsyncDisposable
 
     /// <summary>Counts for one module since the pipeline started.</summary>
     public ModuleStats GetStats(ModuleInfo module) => NodeOf(module).GetStats();
+
+    /// <summary>
+    /// The count for each link between the pipeline's modules since it started, grouped by the module each goes to,
+    /// in the order of its inputs. A change to the running pipeline that keeps two linked modules keeps their link's
+    /// count; a new link starts from zero.
+    /// </summary>
+    public IReadOnlyList<LinkStats> GetLinkStats()
+    {
+        var layout = _layout;
+        var numbers = new Dictionary<Node, int>(layout.Nodes.Length);
+        for (var i = 0; i < layout.Nodes.Length; i++)
+            numbers[layout.Nodes[i]] = i;
+        var links = new List<LinkStats>();
+        for (var i = 0; i < layout.Nodes.Length; i++)
+        {
+            var fanout = layout.Nodes[i].Links;
+            for (var j = 0; j < fanout.Targets.Length; j++)
+            {
+                // Mid-change, a module may feed one that isn't installed yet; it's counted from the next call. A link
+                // listed twice is one link, with one count.
+                if (numbers.TryGetValue(fanout.Targets[j], out var to) && Array.IndexOf(fanout.Targets, fanout.Targets[j]) == j)
+                    links.Add(new LinkStats(layout.Modules[i], layout.Modules[to], fanout.Inputs[j], fanout.Counts[j].Carried, fanout.Counts[j].Errors));
+            }
+        }
+        links.Sort((a, b) => a.To.Number != b.To.Number ? a.To.Number.CompareTo(b.To.Number) : a.Input.CompareTo(b.Input));
+        return links;
+    }
+
+    // The modules, each with the identity the last change gave it, replaced together so they always match.
+    private sealed record Layout(Node[] Nodes, ModuleInfo[] Modules);
 
     /// <summary>
     /// Opens a debug tap on a module: a copy of each message it emits or passes on, until the tap is disposed or the
@@ -208,7 +249,7 @@ public sealed class Pipeline : IAsyncDisposable
             Telemetry.Injected(this, message);
         if (node is InflectionNode target)
         {
-            DeliverTo(target, message, depth: 0, input: 0);
+            DeliverTo(target, message, depth: 0, input: 0, LinkCount.Nowhere);
         }
         else
         {
@@ -324,7 +365,7 @@ public sealed class Pipeline : IAsyncDisposable
         {
             // They finish where they were going.
             var still = Enumerable.Range(0, links.Targets.Length).Where(i => !kept.Contains(links.Targets[i]) || nodes.Contains(links.Targets[i])).ToList();
-            node.Links = new Fanout([.. still.Select(i => links.Targets[i])], [.. still.Select(i => links.Inputs[i])]);
+            node.Links = new Fanout([.. still.Select(i => links.Targets[i])], [.. still.Select(i => links.Inputs[i])], [.. still.Select(i => links.Counts[i])]);
         }
         Options = options;
         Install(nodes, specs, options, updates.Select(u => (u.Old, u.Node)));
@@ -598,16 +639,28 @@ public sealed class Pipeline : IAsyncDisposable
     {
         var links = from.Links;
         for (var i = 0; i < links.Targets.Length; i++)
-            DeliverTo(links.Targets[i], message, depth: 0, links.Inputs[i]);
+            DeliverTo(links.Targets[i], message, depth: 0, links.Inputs[i], links.Counts[i]);
     }
 
-    private void DeliverTo(InflectionNode target, Message message, int depth, int input)
+    // Sends a message along one link, counting it on the link unless it stops at the module at its end because that
+    // module has @errors and it isn't one. An error that passes a module with @no-errors is counted (Q179).
+    private void DeliverTo(InflectionNode target, Message message, int depth, int input, LinkCount link)
     {
         if (depth > MaxForwardDepth)
         {
             target.CountFiltered();
             return;
         }
+        var isError = message is ErrorMessage;
+        var wanted = target.Options.Errors switch
+        {
+            ErrorDelivery.Only => isError,
+            ErrorDelivery.Exclude => !isError,
+            _ => true,
+        };
+        if (wanted || isError || target.Options.Bypass)
+            link.Count(isError);
+
         if (target.IsStopped)
         {
             // The error policy stopped this module's branch. An error dropped here is reported as unhandled.
@@ -619,18 +672,11 @@ public sealed class Pipeline : IAsyncDisposable
         {
             // Distribute: the message goes on down one copy of the branch below, chosen here, on this thread.
             target.CountReceived();
+            target.CountPassed();
             target.Tapped(message);
             Route(target, router, message, depth);
             return;
         }
-
-        var isError = message is ErrorMessage;
-        var wanted = target.Options.Errors switch
-        {
-            ErrorDelivery.Only => isError,
-            ErrorDelivery.Exclude => !isError,
-            _ => true,
-        };
 
         if (wanted && target.Accepts(message))
         {
@@ -650,6 +696,7 @@ public sealed class Pipeline : IAsyncDisposable
                 target.Enqueue(message, input);
                 if (target.IsPassthrough)
                 {
+                    target.CountPassed();
                     target.Tapped(message);
                     Forward(target, message, depth);
                 }
@@ -677,7 +724,7 @@ public sealed class Pipeline : IAsyncDisposable
     {
         var links = from.Links;
         for (var i = 0; i < links.Targets.Length; i++)
-            DeliverTo(links.Targets[i], message, depth + 1, links.Inputs[i]);
+            DeliverTo(links.Targets[i], message, depth + 1, links.Inputs[i], links.Counts[i]);
     }
 
     // The copies a router feeds are its downstream modules in order, each copy's in a run: copy n is the n-th run.
@@ -702,7 +749,7 @@ public sealed class Pipeline : IAsyncDisposable
         lane = (int)((uint)lane % (uint)lanes);
         var size = links.Targets.Length / lanes;
         for (var i = lane * size; i < (lane + 1) * size; i++)
-            DeliverTo(links.Targets[i], message, depth + 1, links.Inputs[i]);
+            DeliverTo(links.Targets[i], message, depth + 1, links.Inputs[i], links.Counts[i]);
     }
 
     /// <summary>Keeps a message a module has finished handling, with its leases open (<see cref="ModuleContext.Keep"/>).</summary>

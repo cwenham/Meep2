@@ -112,6 +112,16 @@ public sealed record PipelineDetail(string Name, string Path, string State, Date
     /// </summary>
     public int? GraphVersion { get; init; }
 
+    /// <summary>
+    /// How many messages, and how many errors, each link of its graph has carried since it started, keyed as the graph's links are
+    /// (<see cref="GraphLink.Key"/>), so a client can draw what goes along each wire. Grouped by the module each goes
+    /// to, in the order of its inputs. Null until it has loaded.
+    /// </summary>
+    public IReadOnlyList<LinkDetail>? Links { get; init; }
+
+    /// <summary>The count for one of its links, by the link's key, or null if it has no such link.</summary>
+    public long? Carried(string link) => Links?.FirstOrDefault(l => l.Key == link)?.Carried;
+
     /// <summary>When it ended, if it has.</summary>
     public DateTimeOffset? Ended { get; init; }
 
@@ -129,6 +139,21 @@ public sealed record PipelineDetail(string Name, string Path, string State, Date
 /// <param name="Name">The name it was given with <c>as</c>, if any.</param>
 /// <param name="Counts">Its counts since the pipeline started.</param>
 public sealed record ModuleDetail(int Number, string Module, string Verb, string? Name, ModuleStats Counts);
+
+/// <summary>One link of a running pipeline, with its counts.</summary>
+/// <param name="Key">The link's key, <c>from&gt;to</c>, as the graph has it (<see cref="GraphLink.Key"/>).</param>
+/// <param name="Carried">
+/// Messages that have gone along it since the pipeline started, errors included: each one the module at its end took
+/// in or stopped (dropped, expired or refused it), or let pass by to the modules under it. An error that passes a
+/// module with <c>@no-errors</c> is counted on the link into it, though its port is <c>no-errors</c>, so a particle
+/// can be drawn arriving at the module and leaving it. Other messages that stop at a module with <c>@errors</c>
+/// aren't counted, so a link on the <c>errors</c> port counts only errors. It counts up, like the modules' counts,
+/// so a client takes differences, and missing an update loses nothing. A reload or edit that keeps both modules
+/// keeps the counts; a new link starts from zero, and so does every link when the pipeline restarts. Where a module
+/// filters, as Where does, the links after it count what it passed on, which is its <c>passed</c>.
+/// </param>
+/// <param name="Errors">How many of <paramref name="Carried"/> were errors, so a client can draw them apart.</param>
+public sealed record LinkDetail(string Key, long Carried, long Errors);
 
 /// <summary>
 /// A pipeline as a graph, from <c>GET /pipelines/{name}/graph</c>: its modules, where each is written, and the links
@@ -233,7 +258,10 @@ public sealed record GraphInclude(string Path, GraphSpan Span);
 /// A link between two modules: everything one emits goes to the other. Errors go along every link, unless the receiving
 /// module has <c>@no-errors</c>, and only errors go to a module with <c>@errors</c>.
 /// </summary>
-/// <param name="Key">The link's own key, <c>from&gt;to</c>, from the modules' keys, so it lasts as they do.</param>
+/// <param name="Key">
+/// The link's own key, <c>from&gt;to</c>, from the modules' keys, so it lasts as they do. The stats count what each
+/// link carries by this key (<see cref="PipelineDetail.Links"/>).
+/// </param>
 /// <param name="From">The key of the module it comes from.</param>
 /// <param name="To">The key of the module it goes to.</param>
 /// <param name="Input">Which of the receiving module's inputs it is, counting from 1, as Zip numbers them.</param>
