@@ -1,7 +1,7 @@
 {
   "name": "meeplang",
   "displayName": "Meeplang",
-  "description": "Meeplang for Meep pipelines: colouring, and the mistakes meep run would find, as you type.",
+  "description": "Meeplang for Meep pipelines: colouring from Meep's own parser, and the mistakes meep run would find, as you type.",
   "version": "0.1.0",
   "publisher": "cwenham",
   "license": "MIT",
@@ -48,7 +48,52 @@
           "description": "The meep command, which runs the language server with meep lsp. A full path if it isn't on your PATH."
         }
       }
-    }
+    },
+    "configurationDefaults": {
+      "[meeplang]": {
+        "editor.semanticHighlighting.enabled": true
+      }
+    },
+    "semanticTokenScopes": [
+      {
+        "language": "meeplang",
+        "scopes": {
+          "function": [
+            "entity.name.function.verb.meeplang"
+          ],
+          "method": [
+            "entity.name.function.inflection.meeplang"
+          ],
+          "macro": [
+            "entity.name.function.template.meeplang"
+          ],
+          "namespace": [
+            "entity.name.namespace.plugin.meeplang"
+          ],
+          "parameter": [
+            "variable.parameter.meeplang"
+          ],
+          "property": [
+            "variable.other.property.meeplang"
+          ],
+          "variable.declaration": [
+            "entity.name.variable.module.meeplang"
+          ],
+          "variable.readonly": [
+            "variable.other.constant.meeplang"
+          ],
+          "variable.defaultLibrary": [
+            "variable.language.meeplang"
+          ],
+          "type": [
+            "entity.name.type.message.meeplang"
+          ],
+          "decorator": [
+            "storage.modifier.meeplang"
+          ]
+        }
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p ./",

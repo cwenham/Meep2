@@ -88,7 +88,10 @@ public class LanguageServerTests
         await Assert.That(Labels(2)).Contains("@bypass");
         await Assert.That(Labels(3)).Contains("Tick");
         await Assert.That(hover).Contains("**Interval** (source)");
-        await Assert.That(hover).Contains("period, count, count-start, payload");
+        await Assert.That(hover).Contains("`Interval.Interval`: Emits a Tick straight away");
+        await Assert.That(hover).Contains("- `period` duration, after the verb, required. How long between ticks.");
+        await Assert.That(hover).Contains("- `count-start` number, default `1`. The number of the first tick");
+        await Assert.That(hover).Contains("- `payload` text. Text to put in each tick, for telling intervals apart.");
     }
 
     [Test]

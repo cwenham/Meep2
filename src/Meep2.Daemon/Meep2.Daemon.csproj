@@ -16,6 +16,8 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Meep2.Tests" />
+    <!-- meep lsp serves the graph contract too (meep/graph). -->
+    <InternalsVisibleTo Include="meep" />
     <InternalsVisibleTo Include="Meep2.Benchmarks" />
   </ItemGroup>
 </Project>

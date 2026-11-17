@@ -446,7 +446,7 @@ A verb can take a book as a parameter by giving it a property of type `Book`.
 
 Put the class in `src/Meep2.Modules`, in the namespace `Meep2.Modules`. Every public class there with a `[Verb]` attribute is registered automatically, since the CLI, daemon and language server all call `AddAssembly(CoreModules.Assembly)`. Put message types in `Messages.cs` or beside the verb, as `Combining.cs` does with `Batched` and `Zipped`.
 
-The project is AOT-compatible and treats warnings as errors.
+The project is AOT-compatible and treats warnings as errors. It writes its XML documentation beside the assembly, so a public member without a doc comment fails the build, and `meep lsp`'s verb catalogue (`meep/verbs`) shows each class's and parameter's summary from it.
 
 ### In a plugin
 
@@ -474,6 +474,8 @@ A pipeline names the plugin with a `#plugin` line, after `defaults` and `const` 
 Interval 1m
     Mine.Shout "tick"
 ```
+
+For tools that show your verbs, such as `meep lsp`'s verb catalogue (`meep/verbs`), ship the plugin's XML documentation and symbols beside it: add `<GenerateDocumentationFile>true</GenerateDocumentationFile>` for the descriptions, and keep the `.pdb` that `dotnet publish` writes (or set `<DebugType>embedded</DebugType>`) for the file and line of each class. SourceLink, which the .NET SDK adds for a repository on GitHub, puts an address for each file in the symbols, so the catalogue can point to it from any machine.
 
 Its verbs can be used by name alone, or by the plugin's name (`Mine.Shout`) when two plugins share one. Where a plugin uses a name a core verb has, the core verb keeps it. A plugin's name can't be one of its own verbs' names.
 

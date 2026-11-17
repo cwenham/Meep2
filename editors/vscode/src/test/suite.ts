@@ -1,5 +1,5 @@
 // Runs inside VS Code with the extension loaded: opens a pipeline and checks that meep lsp reports its mistake,
-// clears it once it's fixed, offers verbs as you type and describes them on hover.
+// clears it once it's fixed, offers verbs as you type, describes them on hover and colours the file from Meep's parser.
 import * as assert from "assert";
 import * as vscode from "vscode";
 
@@ -47,6 +47,28 @@ export async function run(): Promise<void> {
   const hover = hovers.flatMap((h) => h.contents).map((c) => (typeof c === "string" ? c : c.value)).join("\n");
   assert.ok(hover.includes("**Interval**"), `Hovering over Interval shows: ${hover || "nothing"}`);
 
+  // Semantic tokens colour the verb, the duration and the member from Meep's own parser.
+  const legend = await vscode.commands.executeCommand<vscode.SemanticTokensLegend>("vscode.provideDocumentSemanticTokensLegend", uri);
+  assert.ok(legend, "meep lsp gave no semantic tokens legend.");
+  let tokens: vscode.SemanticTokens | undefined;
+  for (let tries = 0; tries < 50 && !(tokens && tokens.data.length > 0); tries++) {
+    if (tries > 0) await new Promise((resolve) => setTimeout(resolve, 100));
+    tokens = await vscode.commands.executeCommand<vscode.SemanticTokens>("vscode.provideDocumentSemanticTokens", uri);
+  }
+  assert.ok(tokens && tokens.data.length > 0, "meep lsp gave no semantic tokens.");
+  const coloured: string[] = [];
+  let line = 0;
+  let character = 0;
+  for (let i = 0; i < tokens.data.length; i += 5) {
+    line += tokens.data[i];
+    character = tokens.data[i] === 0 ? character + tokens.data[i + 1] : tokens.data[i + 1];
+    const text = document.lineAt(line).text.substr(character, tokens.data[i + 2]);
+    coloured.push(`${text}:${legend.tokenTypes[tokens.data[i + 3]]}`);
+  }
+  for (const expected of ["Interval:function", "1s:number", "WriteLine:function", "msg:variable", "Count:property"]) {
+    assert.ok(coloured.includes(expected), `${expected} isn't among the semantic tokens: ${coloured.join(" ")}`);
+  }
+
   await vscode.commands.executeCommand("workbench.action.files.revert");
-  console.log("In VS Code, meep lsp reported the mistake, cleared it once fixed, offered WriteLine and described Interval.");
+  console.log("In VS Code, meep lsp reported the mistake, cleared it once fixed, offered WriteLine, described Interval and coloured the file.");
 }

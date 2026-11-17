@@ -173,41 +173,7 @@ public sealed class LivePipeline
     public PipelineShape Shape()
     {
         var state = _state;
-        var loaded = state.Modules.Modules;
-        var bySyntax = loaded.ToDictionary(m => m.Syntax, (IEqualityComparer<ModuleSyntax>)ReferenceEqualityComparer.Instance);
-        string? KeyOf(ModuleSyntax? module) => module is not null && state.Keys.TryGetValue(module, out var key) ? key : null;
-
-        var modules = loaded.Select(m => new ModuleShape(
-            state.Keys[m.Syntax],
-            m.Info,
-            m.Syntax,
-            m.Inflections,
-            m.Inflections[0].Role,
-            m.Errors)
-        {
-            Under = KeyOf(Under(state.Modules.Expanded.Modules, m.Syntax)),
-            CopyOf = KeyOf(m.Syntax.CopyOf),
-        }).ToList();
-
-        var links = new List<LinkShape>();
-        foreach (var to in loaded)
-        {
-            for (var i = 0; i < to.Upstream.Count; i++)
-            {
-                var from = bySyntax[to.Upstream[i]];
-                var types = from.Outputs.Append(typeof(ErrorMessage))
-                    .Where(t => to.Errors switch
-                    {
-                        ErrorDelivery.Only => typeof(ErrorMessage).IsAssignableFrom(t),
-                        ErrorDelivery.Exclude => !typeof(ErrorMessage).IsAssignableFrom(t),
-                        _ => true,
-                    })
-                    .Distinct()
-                    .ToList();
-                links.Add(new LinkShape(state.Keys[from.Syntax], state.Keys[to.Syntax], from.Info, to.Info, i + 1, to.Errors, types));
-            }
-        }
-        return new PipelineShape(state.Syntax, state.Modules.Expanded, modules, links);
+        return PipelineShape.Of(state.Syntax, state.Modules, state.Keys);
     }
 
     /// <summary>
@@ -227,22 +193,9 @@ public sealed class LivePipeline
         return keys;
     }
 
-    // The module a module is indented under, as built, or null at the left margin.
-    private static ModuleSyntax? Under(IReadOnlyList<ModuleSyntax> modules, ModuleSyntax module)
-    {
-        foreach (var candidate in modules)
-        {
-            if (candidate.Children.Contains(module))
-                return candidate;
-            if (Under(candidate.Children, module) is { } found)
-                return found;
-        }
-        return null;
-    }
-
     // Each module's key: the key of the module it was matched with before the change, or a new one, never used
     // before in this pipeline. A pipeline's first keys are m1, m2 and so on, in the order it numbers its modules.
-    private static (IReadOnlyDictionary<ModuleSyntax, string> Keys, int Next) Keys(
+    internal static (IReadOnlyDictionary<ModuleSyntax, string> Keys, int Next) Keys(
         LoadedModules modules, IReadOnlyList<ModuleMatch>? matches, IReadOnlyDictionary<ModuleSyntax, string>? old, int next)
     {
         var keys = new Dictionary<ModuleSyntax, string>(ReferenceEqualityComparer.Instance);

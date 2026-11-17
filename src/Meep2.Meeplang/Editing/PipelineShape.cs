@@ -1,6 +1,7 @@
 using Meep2.Meeplang.Loading;
 using Meep2.Meeplang.Syntax;
 using Meep2.Runtime;
+using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
 
 namespace Meep2.Meeplang.Editing;
@@ -10,7 +11,63 @@ namespace Meep2.Meeplang.Editing;
 /// <param name="Expanded">The text with its templates copied in: the modules that were built.</param>
 /// <param name="Modules">Its modules, in the order the pipeline numbers them.</param>
 /// <param name="Links">The links between them, grouped by the module they go to, in the order of its inputs.</param>
-public sealed record PipelineShape(PipelineSyntax Syntax, PipelineSyntax Expanded, IReadOnlyList<ModuleShape> Modules, IReadOnlyList<LinkShape> Links);
+public sealed record PipelineShape(PipelineSyntax Syntax, PipelineSyntax Expanded, IReadOnlyList<ModuleShape> Modules, IReadOnlyList<LinkShape> Links)
+{
+    /// <summary>The shape of loaded modules, with each module's key.</summary>
+    /// <param name="syntax">The text they were loaded from.</param>
+    /// <param name="loaded">What the loader made of it.</param>
+    /// <param name="keys">Each module's key, by its line as built.</param>
+    internal static PipelineShape Of(PipelineSyntax syntax, LoadedModules loaded, IReadOnlyDictionary<ModuleSyntax, string> keys)
+    {
+        var bySyntax = loaded.Modules.ToDictionary(m => m.Syntax, (IEqualityComparer<ModuleSyntax>)ReferenceEqualityComparer.Instance);
+        string? KeyOf(ModuleSyntax? module) => module is not null && keys.TryGetValue(module, out var key) ? key : null;
+
+        var modules = loaded.Modules.Select(m => new ModuleShape(
+            keys[m.Syntax],
+            m.Info,
+            m.Syntax,
+            m.Inflections,
+            m.Inflections[0].Role,
+            m.Errors)
+        {
+            Under = KeyOf(Under(loaded.Expanded.Modules, m.Syntax)),
+            CopyOf = KeyOf(m.Syntax.CopyOf),
+        }).ToList();
+
+        var links = new List<LinkShape>();
+        foreach (var to in loaded.Modules)
+        {
+            for (var i = 0; i < to.Upstream.Count; i++)
+            {
+                var from = bySyntax[to.Upstream[i]];
+                var types = from.Outputs.Append(typeof(ErrorMessage))
+                    .Where(t => to.Errors switch
+                    {
+                        ErrorDelivery.Only => typeof(ErrorMessage).IsAssignableFrom(t),
+                        ErrorDelivery.Exclude => !typeof(ErrorMessage).IsAssignableFrom(t),
+                        _ => true,
+                    })
+                    .Distinct()
+                    .ToList();
+                links.Add(new LinkShape(keys[from.Syntax], keys[to.Syntax], from.Info, to.Info, i + 1, to.Errors, types));
+            }
+        }
+        return new PipelineShape(syntax, loaded.Expanded, modules, links);
+    }
+
+    // The module a module is indented under, as built, or null at the left margin.
+    private static ModuleSyntax? Under(IReadOnlyList<ModuleSyntax> modules, ModuleSyntax module)
+    {
+        foreach (var candidate in modules)
+        {
+            if (candidate.Children.Contains(module))
+                return candidate;
+            if (Under(candidate.Children, module) is { } found)
+                return found;
+        }
+        return null;
+    }
+}
 
 /// <summary>One module of a running pipeline.</summary>
 /// <param name="Key">

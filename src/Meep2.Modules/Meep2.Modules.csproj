@@ -2,6 +2,8 @@
   <!-- The core modules that ship with Meep (Interval, Fetch, Where, WriteLine, Save, Tap, Enumerate …). -->
   <PropertyGroup>
     <IsAotCompatible>true</IsAotCompatible>
+    <!-- Shipped beside the assembly, so meep lsp's verb catalogue can describe each verb and parameter. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
   <ItemGroup>
     <!-- Kestrel, for Listen's HTTP inflection (Q96). -->

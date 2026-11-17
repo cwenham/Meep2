@@ -50,6 +50,7 @@ internal sealed class Lexer
     private readonly Diagnostics _diagnostics;
     private readonly List<Token> _tokens = [];
     private int _position;
+    private int? _comment;
 
     private Lexer(string text, int line, int firstColumn, Diagnostics diagnostics)
     {
@@ -67,6 +68,14 @@ internal sealed class Lexer
         return lexer._tokens;
     }
 
+    /// <summary>Lexes a whole line for colouring it: its tokens, and the column its comment starts at, if it has one.</summary>
+    public static (List<Token> Tokens, int? CommentColumn) LexLine(string text, int line)
+    {
+        var lexer = new Lexer(text, line, 1, new Diagnostics(path: null));
+        lexer.Run();
+        return (lexer._tokens, lexer._comment is { } comment ? comment + 1 : null);
+    }
+
     private int Column(int position) => _firstColumn + position;
 
     private void Run()
@@ -80,6 +89,7 @@ internal sealed class Lexer
             }
             else if (c == '/' && Peek(1) == '/')
             {
+                _comment = _position;
                 break; // a comment: the rest of the line is ignored
             }
             else if (char.IsAsciiLetter(c) || c == '_')
