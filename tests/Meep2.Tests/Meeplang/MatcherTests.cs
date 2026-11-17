@@ -56,8 +56,8 @@ public class MatcherTests
                 WriteLine "a"
             """);
 
-        // The new source is new; the WriteLine under it keeps its module, matched by position.
-        await Assert.That(Describe(matches)).IsEqualTo("->1 Nothing,2>2 Position moved,1>- Nothing");
+        // The new source is new; the WriteLine under it is unchanged, so it keeps its module, though it moved (Q195).
+        await Assert.That(Describe(matches)).IsEqualTo("->1 Nothing,2>2 Structure moved,1>- Nothing");
     }
 
     [Test]
@@ -70,11 +70,12 @@ public class MatcherTests
             """, """
             Interval 1s
                 Where msg.Count > 0
-                    Tally
+                    Tally step=2
                         Sink
             """);
 
-        await Assert.That(Describe(matches)).IsEqualTo("1>1 Structure,->2 Nothing,2>3 Position moved,3>4 Structure");
+        // Tally's parameters changed, so it isn't matched as unchanged (Q195), and it's no longer under Interval.
+        await Assert.That(Describe(matches)).IsEqualTo("1>1 Structure,->2 Nothing,2>3 Position changed moved,3>4 Structure");
     }
 
     [Test]

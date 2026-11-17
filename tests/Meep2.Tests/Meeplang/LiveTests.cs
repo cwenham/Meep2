@@ -36,7 +36,7 @@ public class LiveTests
         // Tally kept counting: no number came twice, so it wasn't made again.
         var numbers = run.Numbers; // once: the pipeline is still adding to it
         await Assert.That(numbers.Distinct().Count()).IsEqualTo(numbers.Count);
-        await Assert.That(change.Matches.Single(m => m.Next?.Verb == "Tally").By).IsEqualTo(MatchedBy.Position);
+        await Assert.That(change.Matches.Single(m => m.Next?.Verb == "Tally").By).IsEqualTo(MatchedBy.Structure); // unchanged, moved (Q195)
         await Assert.That(change.Matches.Single(m => m.Next?.Verb == "Sink").By).IsEqualTo(MatchedBy.Structure);
     }
 
@@ -67,6 +67,39 @@ public class LiveTests
         var numbers = run.Numbers;
         await Assert.That(numbers.Distinct().Count()).IsEqualTo(numbers.Count); // it wasn't made again, so no number came twice
         await Assert.That(numbers.Any(n => n >= 1000)).IsFalse(); // and Sink is still under the Tally it was under
+    }
+
+    [Test]
+    public async Task A_module_an_insert_pushes_under_one_with_the_same_verb_keeps_its_state()
+    {
+        await using var run = TestRun.BeginLive("""
+            Interval 5ms
+                Tally
+                    Sink
+            """);
+        await Wait.Until(() => run.Numbers.Count >= 3);
+
+        // A Tally inserted above the Tally: the old one, unchanged, is now under the new one, and keeps counting
+        // where it was, rather than the new one taking its count (Q195).
+        var change = await run.Pipeline.ChangeAsync("""
+            Interval 5ms
+                Tally step=1000
+                    Tally
+                        Sink
+            """);
+        var before = run.Numbers.Count;
+        await Wait.Until(() => run.Numbers.Count >= before + 3);
+
+        await Assert.That(change.Applied).IsTrue();
+        await Assert.That(Labels(change.Report!.Added)).IsEqualTo("Tally #2");
+        await Assert.That(Labels(change.Report.Unchanged)).IsEqualTo("Interval #1,Tally #3,Sink #4");
+        await Assert.That(change.Report.Removed).IsEmpty();
+        var numbers = run.Numbers;
+        await Assert.That(numbers.Distinct().Count()).IsEqualTo(numbers.Count); // it wasn't made again, so no number came twice
+        await Assert.That(numbers.Any(n => n >= 1000)).IsFalse(); // and Sink is still under the Tally it was under
+        var moved = change.Matches.Single(m => m.Next is { Verb: "Tally", Arguments.Count: 0 });
+        await Assert.That(moved.By).IsEqualTo(MatchedBy.Structure);
+        await Assert.That(moved.Moved).IsTrue();
     }
 
     [Test]

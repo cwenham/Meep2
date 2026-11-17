@@ -255,13 +255,12 @@ public class LanguageServerEditTests
         await Assert.That(after.Modules.Where(m => m.Key is "m6" or "m7").Select(m => m.Parameters[0].Text)).IsEquivalentTo(["\"once more\"", "\"once more\""]);
     }
 
-    // A module inserted above one with the same verb further down: ModuleMatcher pairs the new one with the old one,
-    // as a reload would give it the old one's state, and the old one gets a new key (Q195). added still names the
-    // module the edit wrote, whatever key it has.
+    // A module inserted above one with the same verb further down: the old one is unchanged, so it keeps its key,
+    // though it's now a level further in, and the new one gets a new key (Q195).
     [Test]
-    [Arguments("Where msg.StatusCode < 500", "m1=Interval #1 m2=Check m3=Where #3 m7=Where #4 m4=WriteLine #5 m5=Tap #6 m6=WriteLine #7", "m3")]
-    [Arguments("WriteLine \"checked\"", "m1=Interval #1 m2=Check m4=WriteLine #3 m3=Where #4 m7=WriteLine #5 m5=Tap #6 m6=WriteLine #7", "m4")]
-    public async Task An_inserted_module_that_matching_pairs_with_one_below_it_is_still_the_one_added(string line, string keys, string key)
+    [Arguments("Where msg.StatusCode < 500", "m1=Interval #1 m2=Check m7=Where #3 m3=Where #4 m4=WriteLine #5 m5=Tap #6 m6=WriteLine #7")]
+    [Arguments("WriteLine \"checked\"", "m1=Interval #1 m2=Check m7=WriteLine #3 m3=Where #4 m4=WriteLine #5 m5=Tap #6 m6=WriteLine #7")]
+    public async Task A_module_inserted_above_one_with_the_same_verb_leaves_it_its_key(string line, string keys)
     {
         await using var lsp = new LspSession();
         await lsp.OpenAsync(Uri, Site);
@@ -271,8 +270,8 @@ public class LanguageServerEditTests
 
         await Assert.That(text).Contains($"        {line}\n\n            // Only good answers.\n            Where msg.StatusCode == 200");
         await Assert.That(Keys(after)).IsEqualTo(keys);
-        await Assert.That(Added(answer)).IsEqualTo($"0:{key}");
-        await Assert.That(after.Modules.Single(m => m.Key == key).Span.StartLine).IsEqualTo(7);
+        await Assert.That(Added(answer)).IsEqualTo("0:m7");
+        await Assert.That(after.Modules.Single(m => m.Key == "m7").Span.StartLine).IsEqualTo(7);
     }
 
     [Test]

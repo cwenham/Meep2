@@ -184,6 +184,23 @@ public class LanguageServerGraphTests
     }
 
     [Test]
+    public async Task A_module_typed_above_one_with_the_same_verb_that_moves_it_a_level_in_leaves_it_its_key()
+    {
+        const string Uri = "file:///tmp/pushed.meep";
+        await using var lsp = new LspSession();
+        await lsp.OpenAsync(Uri, "Interval 1s\n    WriteLine \"b\"\n");
+        var first = GraphIn((await lsp.RequestAsync("meep/graph", GraphRequest(Uri)))!);
+
+        // b is now under c, so not under the module it was under, but it's unchanged (Q195).
+        await lsp.ChangeAsync(Uri, "Interval 1s\n    WriteLine \"c\"\n        WriteLine \"b\"\n", version: 2);
+        var after = GraphIn((await lsp.RequestAsync("meep/graph", GraphRequest(Uri)))!);
+
+        await Assert.That(Keys(first)).IsEqualTo("m1=Interval #1 m2=WriteLine #2");
+        await Assert.That(after.Modules.Single(m => m.Parameters[0].Text == "\"b\"").Key).IsEqualTo("m2");
+        await Assert.That(after.Modules.Single(m => m.Parameters[0].Text == "\"c\"").Key).IsEqualTo("m3");
+    }
+
+    [Test]
     public async Task A_module_typed_above_an_unchanged_one_with_the_same_verb_leaves_it_its_key()
     {
         const string Uri = "file:///tmp/above.meep";
