@@ -34,8 +34,9 @@ public sealed record ModuleMatch(ModuleSyntax? Old, ModuleSyntax? Next, MatchedB
 
 /// <summary>
 /// Works out which modules of a pipeline's new text are which of its old text, without IDs in the file (Q30, Q61):
-/// by name first, then by structure (the same verb, under the same module, with the most similar parameters), then
-/// by position among the modules with the same verb. A module whose verb changed is a new module.
+/// by name first, then those whose verb, name and parameters are unchanged under the same module, then by structure
+/// (the same verb, under the same module, with the most similar parameters), then by position among the modules with
+/// the same verb. A module whose verb changed is a new module.
 /// </summary>
 /// <remarks>
 /// Structure is what keeps the commonest edit right, inserting a module mid-chain: matching by position alone would
@@ -64,6 +65,25 @@ public static class ModuleMatcher
         {
             if (entry.Module.Name is { } name && named.TryGetValue(name, out var same) && same.Key == entry.Key)
                 Pair(entry, same, MatchedBy.Name);
+        }
+
+        // Unchanged: the same verb, name and parameters, under the same module, top to bottom so a module's parent is
+        // paired before it. Done before structure, which takes the first same-verb sibling it meets, so a module
+        // written above an unchanged one with the same verb can't take the unchanged one's place (Q186).
+        foreach (var entry in after)
+        {
+            if (matched.ContainsKey(entry))
+                continue;
+            Entry? parentWas = entry.Parent is null ? null : matched.TryGetValue(entry.Parent, out var parent) ? parent.Old : null;
+            if (entry.Parent is not null && parentWas is null)
+                continue;
+            var same = before
+                .Where(candidate => !taken.Contains(candidate) && candidate.Key == entry.Key && candidate.Parameters == entry.Parameters
+                    && candidate.Module.Name == entry.Module.Name && ReferenceEquals(candidate.Parent, parentWas))
+                .OrderBy(candidate => Math.Abs(candidate.Order - entry.Order))
+                .FirstOrDefault();
+            if (same is not null)
+                Pair(entry, same, MatchedBy.Structure);
         }
 
         // Structure, then position, in turns: a module matched by position lets those under it match by structure.

@@ -41,6 +41,35 @@ public class LiveTests
     }
 
     [Test]
+    public async Task A_module_written_above_an_unchanged_one_with_the_same_verb_leaves_it_its_state()
+    {
+        await using var run = TestRun.BeginLive("""
+            Interval 5ms
+                Tally
+                    Sink
+            """);
+        await Wait.Until(() => run.Numbers.Count >= 3);
+
+        // A second Tally above the first: the first is unchanged, so it keeps counting where it was (Q186).
+        var change = await run.Pipeline.ChangeAsync("""
+            Interval 5ms
+                Tally step=1000
+                Tally
+                    Sink
+            """);
+        var before = run.Numbers.Count;
+        await Wait.Until(() => run.Numbers.Count >= before + 3);
+
+        await Assert.That(change.Applied).IsTrue();
+        await Assert.That(Labels(change.Report!.Added)).IsEqualTo("Tally #2");
+        await Assert.That(Labels(change.Report.Unchanged)).IsEqualTo("Interval #1,Tally #3,Sink #4");
+        await Assert.That(change.Report.Removed).IsEmpty();
+        var numbers = run.Numbers;
+        await Assert.That(numbers.Distinct().Count()).IsEqualTo(numbers.Count); // it wasn't made again, so no number came twice
+        await Assert.That(numbers.Any(n => n >= 1000)).IsFalse(); // and Sink is still under the Tally it was under
+    }
+
+    [Test]
     public async Task A_module_that_cant_take_new_parameters_is_made_again()
     {
         await using var run = TestRun.BeginLive("""

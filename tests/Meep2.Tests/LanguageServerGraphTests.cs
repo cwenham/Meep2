@@ -184,6 +184,22 @@ public class LanguageServerGraphTests
     }
 
     [Test]
+    public async Task A_module_typed_above_an_unchanged_one_with_the_same_verb_leaves_it_its_key()
+    {
+        const string Uri = "file:///tmp/above.meep";
+        await using var lsp = new LspSession();
+        await lsp.OpenAsync(Uri, "Interval 1s\n    WriteLine \"b\"\n");
+        var first = GraphIn((await lsp.RequestAsync("meep/graph", GraphRequest(Uri)))!);
+
+        await lsp.ChangeAsync(Uri, "Interval 1s\n    WriteLine \"c\"\n    WriteLine \"b\"\n", version: 2);
+        var after = GraphIn((await lsp.RequestAsync("meep/graph", GraphRequest(Uri)))!);
+
+        await Assert.That(Keys(first)).IsEqualTo("m1=Interval #1 m2=WriteLine #2");
+        await Assert.That(after.Modules.Single(m => m.Parameters[0].Text == "\"b\"").Key).IsEqualTo("m2");
+        await Assert.That(after.Modules.Single(m => m.Parameters[0].Text == "\"c\"").Key).IsEqualTo("m3");
+    }
+
+    [Test]
     public async Task A_file_that_never_loaded_has_no_graph_yet_but_says_why()
     {
         const string Uri = "file:///tmp/broken.meep";
