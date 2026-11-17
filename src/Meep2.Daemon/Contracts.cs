@@ -101,6 +101,12 @@ public sealed record PipelineSummary(string Name, string Path, string State, Dat
 
     /// <summary>How many times it has been restarted.</summary>
     public int Restarts { get; init; }
+
+    /// <summary>
+    /// Whether the daemon is watching its file, and the files it includes, so saving a change to one reloads it
+    /// without asking (started with <c>watch</c>). False once it has ended.
+    /// </summary>
+    public bool Watching { get; init; }
 }
 
 /// <summary>A pipeline the daemon runs, or ran recently, with its modules and their counts, final ones if it has ended.</summary>
@@ -130,6 +136,12 @@ public sealed record PipelineDetail(string Name, string Path, string State, Date
 
     /// <summary>How many times it has been restarted.</summary>
     public int Restarts { get; init; }
+
+    /// <summary>
+    /// Whether the daemon is watching its file, and the files it includes, so saving a change to one reloads it
+    /// without asking (started with <c>watch</c>). False once it has ended.
+    /// </summary>
+    public bool Watching { get; init; }
 }
 
 /// <summary>One module of a running pipeline.</summary>

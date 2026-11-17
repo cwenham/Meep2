@@ -605,6 +605,41 @@ public sealed class MeepDaemon : IAsyncDisposable
             ? live
             : throw new DaemonException(409, $"{hosted.Name} isn't running" + (hosted.Ended is null ? " yet." : $". It's {hosted.State}."));
 
+    // Makes edits that name modules by their keys in the pipeline's graph, or as +N, the module an earlier edit added
+    // (Q199), as meep lsp makes them: each key names the module that has it after the edits before it, keyed as the
+    // change will key it, from the running pipeline's keys.
+    private static async Task<Meep2.Meeplang.Syntax.PipelineSyntax> EditByKeyAsync(HostedPipeline hosted, LivePipeline live, IReadOnlyList<SourceEdit> edits, CancellationToken cancellationToken)
+    {
+        var running = live.Shape().Modules.ToDictionary(m => m.Info.Number);
+        var draft = new PipelineDraft();
+        var (_, problem) = draft.SetBase(live.Syntax, live.Registry, (number, verb) => running.TryGetValue(number, out var module) && module.Info.Verb == verb ? module.Key : null);
+        if (problem is not null)
+            throw new DaemonException(500, problem);
+        draft.Update(live.Syntax, live.Registry);
+
+        // Texts with other #plugin lines than the running one's have their plugins installed, as the change will.
+        var held = new List<IDisposable>();
+        static string Plugins(Meep2.Meeplang.Syntax.PipelineSyntax syntax) => string.Join('\n', syntax.Plugins.Select(p => $"{p} as {p.Alias}"));
+        async Task<(ModuleRegistry?, IReadOnlyList<Meep2.Meeplang.Syntax.Diagnostic>)> RegistryFor(Meep2.Meeplang.Syntax.PipelineSyntax syntax, CancellationToken token)
+        {
+            if (Plugins(syntax) == Plugins(live.Syntax))
+                return (live.Registry, []);
+            var installed = await Install.InstallAllAsync(syntax, hosted.BaseRegistry, new PluginInstaller(hosted.Plugins), new PluginCatalog(), saveLock: false, token).ConfigureAwait(false);
+            held.AddRange(installed.Holds);
+            return installed.Problems.Count > 0 ? (null, installed.Problems) : (installed.Registry, installed.Warnings);
+        }
+        try
+        {
+            var path = live.Syntax.Source.Path;
+            var made = await DraftEditor.ApplyAsync(draft, live.Syntax, edits, text => Meep2.Meeplang.Parsing.MeeplangParser.Parse(new Meep2.Meeplang.Syntax.SourceFile(path, text)), RegistryFor, cancellationToken).ConfigureAwait(false);
+            return made.Syntax;
+        }
+        finally
+        {
+            Build.Release(held);
+        }
+    }
+
     // Edits the running pipeline's text, changes the pipeline to match, and commits the text to pending (Q32).
     private async Task<Answer> EditAsync(HostedPipeline hosted, ApiRequest request)
     {
@@ -618,9 +653,15 @@ public sealed class MeepDaemon : IAsyncDisposable
         Meep2.Meeplang.Syntax.PipelineSyntax next;
         try
         {
-            next = SourceEditor.Apply(live.Syntax, edits);
+            next = edits.Any(e => e.Kind < EditKind.SetDefault && DraftEditor.NamesByKey(e.Module))
+                ? await EditByKeyAsync(hosted, live, edits, request.Aborted).ConfigureAwait(false)
+                : SourceEditor.Apply(live.Syntax, edits);
         }
         catch (EditException exception)
+        {
+            throw new DaemonException(400, exception.Message);
+        }
+        catch (DraftEditException exception)
         {
             throw new DaemonException(400, exception.Message);
         }

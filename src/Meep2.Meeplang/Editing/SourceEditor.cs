@@ -30,10 +30,12 @@ public enum EditKind
     /// <summary>Inserts a module between this one and the modules under it, which move under the new one.</summary>
     Insert,
 
-    /// <summary>Removes the module. The modules under it move up to take its place.</summary>
+    /// <summary>
+    /// Removes the module, with a comment written right above it. The modules under it move up to take its place.
+    /// </summary>
     Remove,
 
-    /// <summary>Removes the module and everything under it.</summary>
+    /// <summary>Removes the module and everything under it, with a comment written right above it.</summary>
     RemoveBranch,
 
     /// <summary>Sets a setting under <c>defaults</c>, adding the block if there isn't one (Q125).</summary>
@@ -90,6 +92,14 @@ public sealed record SourceEdit(string Module, EditKind Kind, string? Name = nul
 /// <summary>An edit couldn't be made. The message says why.</summary>
 public sealed class EditException(string message) : Exception(message);
 
+/// <summary>A file's text after one edit (<see cref="SourceEditor.Change"/>).</summary>
+/// <param name="Text">The new text.</param>
+/// <param name="AddedLine">
+/// For <see cref="EditKind.Add"/> and <see cref="EditKind.Insert"/>, the line of the new text the new module is
+/// written on, counting from 1. Null for other edits.
+/// </param>
+public sealed record EditedText(string Text, int? AddedLine);
+
 /// <summary>
 /// Changes a pipeline file's text the way a person would (goal 4): each edit touches only the text it has to, so
 /// comments, blank lines and the way things are laid out stay as they were.
@@ -107,8 +117,20 @@ public static class SourceEditor
         ArgumentNullException.ThrowIfNull(syntax);
         ArgumentNullException.ThrowIfNull(edits);
         foreach (var edit in edits)
-            syntax = MeeplangParser.Parse(new SourceFile(syntax.Source.Path, Apply(syntax, edit)));
+            syntax = MeeplangParser.Parse(new SourceFile(syntax.Source.Path, Apply(syntax, edit).Text));
         return syntax;
+    }
+
+    /// <summary>
+    /// Makes one edit, and says where a module it adds is written, so an editor can find the new module. The text
+    /// isn't parsed again; parse it as the caller reads included files.
+    /// </summary>
+    /// <exception cref="EditException">The edit names a module that isn't there, or can't be made.</exception>
+    public static EditedText Change(PipelineSyntax syntax, SourceEdit edit)
+    {
+        ArgumentNullException.ThrowIfNull(syntax);
+        ArgumentNullException.ThrowIfNull(edit);
+        return Apply(syntax, edit);
     }
 
     /// <summary>
@@ -193,13 +215,14 @@ public static class SourceEditor
             ? [.. AllModules(syntax).Select(m => m.Module).Where(m => m.Verb == name && m.Plugin is null && m.Inflection is null)]
             : [];
 
-    private static string Apply(PipelineSyntax syntax, SourceEdit edit)
+    private static EditedText Apply(PipelineSyntax syntax, SourceEdit edit)
     {
         if (edit.Kind >= EditKind.SetDefault)
-            return ApplyToFile(syntax, edit);
+            return new EditedText(ApplyToFile(syntax, edit), null);
         var module = Target(syntax, edit.Module, renaming: edit.Kind == EditKind.Rename);
         var text = new Text(syntax.Source.Text);
         var line = Line.Of(syntax, module);
+        int? added = null;
         switch (edit.Kind)
         {
             case EditKind.Set:
@@ -220,10 +243,10 @@ public static class SourceEditor
                 Rename(text, module, line, edit.Value);
                 break;
             case EditKind.Add:
-                Add(syntax, text, module, Required(edit));
+                added = Add(syntax, text, module, Required(edit));
                 break;
             case EditKind.Insert:
-                Insert(syntax, text, module, Required(edit));
+                added = Insert(syntax, text, module, Required(edit));
                 break;
             case EditKind.Remove:
                 Remove(syntax, text, module, keepBranch: true);
@@ -234,7 +257,7 @@ public static class SourceEditor
             default:
                 throw new EditException($"There's no edit called {edit.Kind}.");
         }
-        return text.ToString();
+        return new EditedText(text.ToString(), added);
     }
 
     private static void Set(PipelineSyntax syntax, Text text, ModuleSyntax module, Line line, string? name, string value)
@@ -321,21 +344,22 @@ public static class SourceEditor
             text.Insert(line.Number, line.ParametersEnd, $" as {name}");
     }
 
-    private static void Add(PipelineSyntax syntax, Text text, ModuleSyntax module, string newLine)
+    // Each returns the line the new module is written on.
+    private static int Add(PipelineSyntax syntax, Text text, ModuleSyntax module, string newLine)
     {
         var indent = module.Children.Count > 0
             ? text.IndentOf(module.Children[0].VerbSpan.Line)
             : text.IndentOf(module.VerbSpan.Line) + Unit(syntax, text);
-        text.InsertLine(LastLine(module) + 1, indent + newLine.Trim());
+        return text.InsertLine(LastLine(module) + 1, indent + newLine.Trim());
     }
 
-    private static void Insert(PipelineSyntax syntax, Text text, ModuleSyntax module, string newLine)
+    private static int Insert(PipelineSyntax syntax, Text text, ModuleSyntax module, string newLine)
     {
         var unit = Unit(syntax, text);
         var ownEnd = OwnLastLine(module);
         if (module.Children.Count > 0)
             text.Indent(ownEnd + 1, LastLine(module), unit); // with any comments above the first of them
-        text.InsertLine(ownEnd + 1, text.IndentOf(module.VerbSpan.Line) + unit + newLine.Trim());
+        return text.InsertLine(ownEnd + 1, text.IndentOf(module.VerbSpan.Line) + unit + newLine.Trim());
     }
 
     private static void Remove(PipelineSyntax syntax, Text text, ModuleSyntax module, bool keepBranch)
@@ -347,13 +371,23 @@ public static class SourceEditor
         {
             var by = text.IndentOf(module.Children[0].VerbSpan.Line).Length - text.IndentOf(first).Length;
             text.Outdent(ownEnd + 1, last, by);
-            text.RemoveLines(first, ownEnd);
+            text.RemoveLines(CommentAbove(text, first), ownEnd);
         }
         else
         {
-            text.RemoveLines(first, keepBranch ? ownEnd : last);
+            text.RemoveLines(CommentAbove(text, first), keepBranch ? ownEnd : last);
         }
         _ = syntax;
+    }
+
+    // Where the comment written right above a line starts, with no blank line between, which describes what's on the
+    // line, so it goes with it (Q201); or the line itself if there's none. A comment with a blank line after it stays.
+    private static int CommentAbove(Text text, int line)
+    {
+        var first = line;
+        while (first > 1 && text.LineAt(first - 1).TrimStart().StartsWith("//", StringComparison.Ordinal))
+            first--;
+        return first;
     }
 
     // Edits to the parts of a file above its modules: defaults, constants and plugins (Q125). Each keeps the file's
@@ -675,7 +709,13 @@ public static class SourceEditor
 
         public void Remove(int number, int from, int to) => Replace(number, from, to, "");
 
-        public void InsertLine(int number, string line) => _lines.Insert(Math.Min(number - 1, _lines.Count), line);
+        // Returns the line it's at, counting from 1.
+        public int InsertLine(int number, string line)
+        {
+            var at = Math.Min(number - 1, _lines.Count);
+            _lines.Insert(at, line);
+            return at + 1;
+        }
 
         public void RemoveLines(int first, int last) => _lines.RemoveRange(first - 1, last - first + 1);
 

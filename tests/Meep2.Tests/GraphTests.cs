@@ -412,4 +412,36 @@ public class GraphTests
     {
         protected override ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken) => ValueTask.CompletedTask;
     }
+
+    [Test]
+    public async Task The_daemons_edits_can_name_modules_by_key()
+    {
+        await using var lab = await DaemonLab.StartAsync();
+        var file = lab.Write("chain.meep", "Interval 20ms\n    WriteLine \"{msg}\"\n");
+        await lab.Client.StartAsync(file);
+
+        // After a reload with a Where inserted, the daemon's keys aren't the order of the file: WriteLine is m2.
+        await File.WriteAllTextAsync(file, "Interval 20ms\n    Where msg.Count >= 0\n        WriteLine \"{msg}\"\n");
+        await lab.Client.ReloadAsync("chain");
+
+        // m2 is WriteLine, and still is after the insert renumbers it; +0 is the Where the first edit inserted.
+        var result = await lab.Client.EditAsync("chain", new EditRequest([
+            new EditItem("m3", "insert", null, "Where msg.Count < 100"),
+            new EditItem("m2", "set", null, "\"{msg.Count}\""),
+            new EditItem("+0", "set", null, "msg.Count < 50"),
+            new EditItem("m3", "set-modifier", "buffer", "5")], Save: false));
+        var graph = await lab.Client.GraphAsync("chain");
+        var refused = await Assert.That(async () => { await lab.Client.EditAsync("chain", new EditRequest([new EditItem("m9", "remove")], Save: false)); }).Throws<DaemonException>();
+
+        await Assert.That(result.Text).IsEqualTo("""
+            Interval 20ms
+                Where msg.Count >= 0 @buffer=5
+                    Where msg.Count < 50
+                        WriteLine "{msg.Count}"
+
+            """);
+        await Assert.That(graph.Modules.Select(m => $"{m.Key} {m.Module}")).IsEquivalentTo(["m1 Interval #1", "m3 Where #2", "m4 Where #3", "m2 WriteLine #4"]);
+        await Assert.That(refused!.Status).IsEqualTo(400);
+        await Assert.That(refused.Message).StartsWith("The edit (remove m9) can't be made. There's no module with the key m9. The keys are m1 (Interval #1), m3 (Where #2), m4 (Where #3), m2 (WriteLine #4).");
+    }
 }

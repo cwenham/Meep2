@@ -47,14 +47,30 @@ public sealed class PipelineDraft
     /// <param name="registry">The verbs to load it with.</param>
     public DraftUpdate Update(PipelineSyntax syntax, ModuleRegistry registry)
     {
+        var (update, next) = Try(syntax, registry);
+        if (next is not null)
+            _last = next;
+        return update;
+    }
+
+    /// <summary>
+    /// Works out the shape new text would have, with the keys <see cref="Update"/> would give each module if it were
+    /// given this text now, without changing anything. For showing an edit before it's made, and for knowing the key
+    /// a module an edit adds will have.
+    /// </summary>
+    /// <param name="syntax">The text, parsed.</param>
+    /// <param name="registry">The verbs to load it with.</param>
+    public DraftUpdate Preview(PipelineSyntax syntax, ModuleRegistry registry) => Try(syntax, registry).Update;
+
+    private (DraftUpdate Update, Keyed? Next) Try(PipelineSyntax syntax, ModuleRegistry registry)
+    {
         ArgumentNullException.ThrowIfNull(syntax);
         ArgumentNullException.ThrowIfNull(registry);
         var (modules, diagnostics) = new PipelineLoader(registry).Define(syntax);
         if (modules is null)
-            return new DraftUpdate(false, _last?.Shape, diagnostics, s_none);
+            return (new DraftUpdate(false, _last?.Shape, diagnostics, s_none), null);
         var (next, renamed) = Key(syntax, modules);
-        _last = next;
-        return new DraftUpdate(true, next.Shape, diagnostics, renamed);
+        return (new DraftUpdate(true, next.Shape, diagnostics, renamed), next);
     }
 
     /// <summary>

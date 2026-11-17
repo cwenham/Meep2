@@ -40,6 +40,33 @@ public class DaemonTests
     }
 
     [Test]
+    public async Task A_pipeline_says_whether_the_daemon_watches_its_file()
+    {
+        await using var lab = await DaemonLab.StartAsync();
+
+        var watched = await lab.Client.StartAsync(lab.Write("watched.meep", Ticker), developerMode: false, watch: true);
+        var plain = await lab.Client.StartAsync(lab.Write("plain.meep", Ticker));
+        var listed = await lab.Client.ListAsync();
+        var detail = await lab.Client.GetAsync("watched");
+        var plainDetail = await lab.Client.GetAsync("plain");
+        // One that may end before starting it returns, so it's only looked at once it has.
+        await lab.Client.StartAsync(lab.Write("brief.meep", "Interval 10ms count=2\n    WriteLine \"{msg}\"\n"), developerMode: false, watch: true);
+        var finished = await lab.WaitFor("brief", "finished");
+        var finishedDetail = await lab.Client.GetAsync("brief");
+
+        await Assert.That(watched.Watching).IsTrue();
+        await Assert.That(plain.Watching).IsFalse();
+        await Assert.That(listed.Single(p => p.Name == "watched").Watching).IsTrue();
+        await Assert.That(listed.Single(p => p.Name == "plain").Watching).IsFalse();
+        await Assert.That(detail.Watching).IsTrue();
+        await Assert.That(plainDetail.Watching).IsFalse();
+
+        // Once it has ended, nothing is watched, even if it ended before it was.
+        await Assert.That(finished.Watching).IsFalse();
+        await Assert.That(finishedDetail.Watching).IsFalse();
+    }
+
+    [Test]
     public async Task A_pipeline_that_doesnt_load_comes_back_with_its_errors()
     {
         await using var lab = await DaemonLab.StartAsync();

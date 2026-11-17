@@ -18,8 +18,9 @@ namespace Meep2.Cli;
 /// <c>meep lsp</c>: a Language Server Protocol server for Meeplang, over standard input and output, for the VSCode
 /// extension and any other editor that speaks LSP (step 9). It checks a file as it's edited with Meeplang's own parser
 /// and loader, so an editor shows the same mistakes <c>meep run</c> would, and offers completions, hovers and semantic
-/// tokens. For tools that draw pipelines, it adds <c>meep/graph</c>, <c>meep/setBase</c> and <c>meep/verbs</c>:
-/// see <see cref="Graph"/>, <see cref="SetBaseAsync"/> and <see cref="Verbs"/>.
+/// tokens. For tools that draw pipelines, it adds <c>meep/graph</c>, <c>meep/setBase</c>, <c>meep/verbs</c> and
+/// <c>meep/applyEdits</c>: see <see cref="Graph"/>, <see cref="SetBaseAsync"/>, <see cref="Verbs"/> and
+/// <see cref="ApplyEditsAsync"/>.
 /// </summary>
 /// <remarks>
 /// A file is loaded against the core modules and the plugins its <c>#plugin</c> lines name, so wrong verbs, parameters
@@ -35,6 +36,11 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
     private static readonly string[] s_modifiers = ["buffer", "bypass", "errors", "no-errors", "expires", "accept-expired", "on-error"];
     private static readonly string[] s_defaults = ["buffer", "expires", "on-error", "keep-finished"];
     private static readonly string[] s_keywords = ["defaults", "const", "template", "#include", "#plugin"];
+
+    // LSP's error codes.
+    private const int InvalidParams = -32602;
+    private const int ContentModified = -32801;
+    private const int RequestFailed = -32803;
 
     private readonly Dictionary<string, Document> _documents = new(StringComparer.Ordinal);
     private readonly ModuleRegistry _registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly);
@@ -76,7 +82,7 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
                             },
                             ["experimental"] = new JsonObject
                             {
-                                ["meep"] = new JsonObject { ["graph"] = true, ["setBase"] = true, ["verbs"] = true },
+                                ["meep"] = new JsonObject { ["graph"] = true, ["setBase"] = true, ["verbs"] = true, ["applyEdits"] = true },
                             },
                         },
                         ["serverInfo"] = new JsonObject { ["name"] = "meep" },
@@ -131,7 +137,17 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
                     }
                     catch (LspException exception)
                     {
-                        await RespondErrorAsync(id!, -32602, exception.Message, cancellationToken).ConfigureAwait(false);
+                        await RespondErrorAsync(id!, exception.Code, exception.Message, cancellationToken, exception.Details).ConfigureAwait(false);
+                    }
+                    break;
+                case "meep/applyEdits":
+                    try
+                    {
+                        await RespondAsync(id, await ApplyEditsAsync(parameters!, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (LspException exception)
+                    {
+                        await RespondErrorAsync(id!, exception.Code, exception.Message, cancellationToken, exception.Details).ConfigureAwait(false);
                     }
                     break;
                 case "meep/verbs":
@@ -431,7 +447,7 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
     // Keeps a document's new graph: its version counts up when anything in it changes, as the daemon's does.
     private static void Record(Document document, PipelineShape shape, IReadOnlyDictionary<string, string> renamed, int builtFrom, string text)
     {
-        var graph = Graphs.Describe(document.BaseName ?? System.IO.Path.GetFileNameWithoutExtension(document.Path), document.Path, shape, version: 0);
+        var graph = GraphOf(document, shape);
         var json = JsonSerializer.Serialize(graph, DaemonJson.Default.PipelineGraph);
         if (json != document.GraphJson)
         {
@@ -443,6 +459,10 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
         document.GraphFrom = builtFrom;
         document.GraphText = text;
     }
+
+    // A shape as the daemon's graph, named as the document's graph is, before it's given a version.
+    private static PipelineGraph GraphOf(Document document, PipelineShape shape) =>
+        Graphs.Describe(document.BaseName ?? System.IO.Path.GetFileNameWithoutExtension(document.Path), document.Path, shape, version: 0);
 
     /// <summary>
     /// <c>meep/graph</c>: an open document's pipeline as a graph, the same <see cref="PipelineGraph"/> the daemon's
@@ -631,6 +651,117 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
     private JsonNode Verbs(JsonNode? parameters) =>
         new JsonObject { ["verbs"] = JsonSerializer.SerializeToNode(VerbCatalogue.Describe(RegistryFor(parameters)), LspJson.Default.IReadOnlyListVerbEntry) };
 
+    // The key a document's edits keep the plugins of their texts loaded under, while they're worked out.
+    private const string EditsSuffix = "#edits";
+
+    /// <summary>
+    /// <c>meep/applyEdits</c>: makes edits to an open document's text, as <c>POST /pipelines/{name}/edits</c> takes
+    /// them, with <see cref="SourceEditor"/>, and answers with the changes to the text that make them, for the client
+    /// to apply. It changes nothing itself: the client applies the changes, as one step it can undo, and sends
+    /// <c>didChange</c> as usual.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Takes <c>{ textDocument: { uri, version }, edits: [ { module, kind, name, value } ], preview }</c>. The version
+    /// must be the server's latest, and the text must load as it is. A module is named by its key in
+    /// <c>meep/graph</c> (<c>m3</c>), its name, or its number; see <see cref="DraftEditor"/>. The edits are made in
+    /// order, as one: if one can't be made, or the text they leave doesn't load, none are, and the error says which
+    /// edit and why (<c>data.edit</c> counts from 0).
+    /// </para>
+    /// <para>
+    /// The answer is an LSP <c>TextDocumentEdit</c>, <c>{ textDocument, edits }</c>, whose <c>TextEdit</c>s change
+    /// that version of the text as little as they can, with <c>added</c>: for each module an <c>add</c> or
+    /// <c>insert</c> writes, <c>{ edit, key }</c>, the key the graph gives it once the client sends the new text. With
+    /// <c>preview: true</c>, it also has <c>graph</c>, the graph the text will have then, as <c>meep/graph</c> will
+    /// give it, and <c>renamed</c> as <c>meep/graph</c> has it.
+    /// </para>
+    /// </remarks>
+    private async Task<JsonNode> ApplyEditsAsync(JsonNode parameters, CancellationToken cancellationToken)
+    {
+        var uri = parameters["textDocument"]?["uri"]?.GetValue<string>() ?? throw new LspException("textDocument.uri is needed: the document to edit.");
+        if (!_documents.TryGetValue(uri, out var document))
+            throw new LspException($"{uri} isn't open.");
+        if (parameters["textDocument"]!["version"] is not JsonValue versionValue || !versionValue.TryGetValue<int>(out var version))
+            throw new LspException("textDocument.version is needed: the version of the text the edits are for.");
+        if (version != document.Version)
+            throw new LspException($"The edits are for version {version} of the text, and the server has version {document.Version}. Nothing was changed. Send your changes to the text first, then ask again with its version.", ContentModified, new JsonObject { ["version"] = document.Version });
+        if (parameters["edits"] is not JsonArray list || list.Count == 0)
+            throw new LspException("edits is needed: a list of edits, such as [{\"module\": \"m3\", \"kind\": \"set\", \"name\": \"timeout\", \"value\": \"5s\"}].");
+        var edits = new List<SourceEdit>();
+        for (var i = 0; i < list.Count; i++)
+        {
+            try
+            {
+                var item = list[i]?.Deserialize(DaemonJson.Default.EditItem) ?? throw new JsonException("It's empty.");
+                edits.Add(Reloading.EditOf(item));
+            }
+            catch (Exception exception) when (exception is JsonException or DaemonException or InvalidOperationException)
+            {
+                var which = list.Count == 1 ? "The edit" : $"Edit {i + 1} of {list.Count}";
+                throw new LspException($"{which} isn't one meep lsp can make: {exception.Message} Nothing was changed.", InvalidParams, new JsonObject { ["edit"] = i });
+            }
+        }
+        if (!document.Loaded || document.GraphFrom != document.Version || document.Syntax is not { } syntax)
+        {
+            var problem = document.Problems.FirstOrDefault(p => p.Span.File is null) ?? document.Problems.FirstOrDefault();
+            var why = problem is null ? "" : $" (line {problem.Span.Line}: {problem.Message})";
+            throw new LspException($"The text doesn't load as it is{why}, so its modules can't be found. Nothing was changed. Edits can be made once it loads.", RequestFailed, new JsonObject { ["edit"] = null });
+        }
+
+        // Each text the edits make is loaded with the document's verbs while its #plugin lines are the same.
+        var scratch = uri + EditsSuffix;
+        var plugins = Plugins(syntax);
+        async Task<(ModuleRegistry?, IReadOnlyList<Diagnostic>)> RegistryOf(PipelineSyntax text, CancellationToken token) =>
+            Plugins(text) == plugins && document.Registry is { } registry
+                ? (registry, [])
+                : await RegistryForAsync(scratch, text, token).ConfigureAwait(false);
+        DraftEdits result;
+        try
+        {
+            result = await DraftEditor.ApplyAsync(document.Draft, syntax, edits, text => Parse(document.Path, text), RegistryOf, cancellationToken).ConfigureAwait(false);
+        }
+        catch (DraftEditException exception)
+        {
+            throw new LspException(exception.Message, RequestFailed, new JsonObject { ["edit"] = exception.Edit < 0 ? null : exception.Edit });
+        }
+        finally
+        {
+            Unload(scratch);
+        }
+
+        var changes = new JsonArray();
+        foreach (var change in TextChanges.Between(document.Text, result.Syntax.Source.Text))
+        {
+            changes.Add(new JsonObject
+            {
+                ["range"] = new JsonObject
+                {
+                    ["start"] = new JsonObject { ["line"] = change.StartLine, ["character"] = change.StartCharacter },
+                    ["end"] = new JsonObject { ["line"] = change.EndLine, ["character"] = change.EndCharacter },
+                },
+                ["newText"] = change.NewText,
+            });
+        }
+        var answer = new JsonObject
+        {
+            ["textDocument"] = new JsonObject { ["uri"] = uri, ["version"] = version },
+            ["edits"] = changes,
+            ["added"] = new JsonArray([.. result.Added.Select(a => (JsonNode)new JsonObject { ["edit"] = a.Edit, ["key"] = a.Key })]),
+        };
+        if (parameters["preview"] is JsonValue previewValue && previewValue.TryGetValue<bool>(out var preview) && preview)
+        {
+            // The version the graph will have: the same if nothing in it changes, as Record counts.
+            var graph = GraphOf(document, result.Update.Shape!);
+            var unchanged = JsonSerializer.Serialize(graph, DaemonJson.Default.PipelineGraph) == document.GraphJson;
+            answer["graph"] = JsonSerializer.SerializeToNode(graph with { Version = unchanged ? document.GraphVersion : document.GraphVersion + 1 }, DaemonJson.Default.PipelineGraph);
+            if (result.Update.Renamed.Count > 0)
+                answer["renamed"] = new JsonObject([.. result.Update.Renamed.Select(r => KeyValuePair.Create(r.Key, (JsonNode?)r.Value))]);
+        }
+        return answer;
+
+        static string Plugins(PipelineSyntax text) => string.Join("\n", text.Plugins.Select(p => $"{p} as {p.Alias}"));
+    }
+
     // textDocument/semanticTokens/full, and /full/delta when the client has the last result: Meep's parser's colours.
     private JsonNode? SemanticTokens(JsonNode parameters, string? previous)
     {
@@ -689,8 +820,13 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
     private Task RespondAsync(JsonNode? id, JsonNode? result, CancellationToken cancellationToken) =>
         WriteAsync(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id?.DeepClone(), ["result"] = result }, cancellationToken);
 
-    private Task RespondErrorAsync(JsonNode id, int code, string message, CancellationToken cancellationToken) =>
-        WriteAsync(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id.DeepClone(), ["error"] = new JsonObject { ["code"] = code, ["message"] = message } }, cancellationToken);
+    private Task RespondErrorAsync(JsonNode id, int code, string message, CancellationToken cancellationToken, JsonNode? data = null)
+    {
+        var error = new JsonObject { ["code"] = code, ["message"] = message };
+        if (data is not null)
+            error["data"] = data.DeepClone();
+        return WriteAsync(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id.DeepClone(), ["error"] = error }, cancellationToken);
+    }
 
     private Task NotifyAsync(string method, JsonNode parameters, CancellationToken cancellationToken) =>
         WriteAsync(new JsonObject { ["jsonrpc"] = "2.0", ["method"] = method, ["params"] = parameters }, cancellationToken);
@@ -784,8 +920,13 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
         public (string Id, int[] Data)? Tokens { get; set; }
     }
 
-    // A request that can't be answered; its message goes back to the client.
-    private sealed class LspException(string message) : Exception(message);
+    // A request that can't be answered; its message goes back to the client, with LSP's code for why, and details.
+    private sealed class LspException(string message, int code = InvalidParams, JsonNode? details = null) : Exception(message)
+    {
+        public int Code { get; } = code;
+
+        public JsonNode? Details { get; } = details;
+    }
 }
 
 [JsonSerializable(typeof(IReadOnlyList<VerbEntry>))]

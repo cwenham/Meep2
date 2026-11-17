@@ -160,6 +160,54 @@ public class EditorTests
     }
 
     [Test]
+    public async Task Removing_a_module_takes_the_comment_right_above_it_but_not_one_a_blank_line_ends()
+    {
+        const string Text = """
+            // The stop outside.
+
+            // Every half minute,
+            // a hundred times.
+            Interval 30s count=100
+                Fetch "https://example.com/departures.json" as Departures
+                    // Only buses that are close.
+                    Where msg.minutesAway < 30
+                        WriteLine "{msg.route}"   // to the log
+
+                    // Late ones.
+
+                    Where msg.minutesAway > 60
+                        WriteLine "late"
+            """;
+
+        var where = Edit(Text, new SourceEdit("Where #3", EditKind.Remove));
+        var branch = Edit(Text, new SourceEdit("Where #3", EditKind.RemoveBranch));
+        var late = Edit(Text, new SourceEdit("Where #5", EditKind.RemoveBranch));
+        var interval = Edit(Text, new SourceEdit("Interval", EditKind.RemoveBranch));
+
+        await Assert.That(where).IsEqualTo(Text.Replace("""
+                    // Only buses that are close.
+                    Where msg.minutesAway < 30
+                        WriteLine "{msg.route}"   // to the log
+            """, """
+                    WriteLine "{msg.route}"   // to the log
+            """, StringComparison.Ordinal));
+        await Assert.That(branch).IsEqualTo(Text.Replace("""
+                    // Only buses that are close.
+                    Where msg.minutesAway < 30
+                        WriteLine "{msg.route}"   // to the log
+
+            """, "", StringComparison.Ordinal));
+
+        // A comment with a blank line after it stays. A block of comment lines right above goes whole.
+        await Assert.That(late).IsEqualTo(Text.Replace("""
+
+                    Where msg.minutesAway > 60
+                        WriteLine "late"
+            """, "", StringComparison.Ordinal));
+        await Assert.That(interval).IsEqualTo("// The stop outside.\n");
+    }
+
+    [Test]
     public async Task New_lines_follow_the_files_own_indentation()
     {
         const string TwoSpaces = "Interval 1s\n  WriteLine \"{msg}\"\n";

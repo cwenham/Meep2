@@ -21,6 +21,7 @@ public sealed class HostedPipeline
     private PipelineDetail? _final;
     private readonly SemaphoreSlim _reloading = new(1, 1);
     private PipelineWatcher? _watcher;
+    private bool _ending; // once set, nothing more is watched
     private readonly List<(string Edit, string? Commit)> _unsaved = [];
 
     // The graph's version, the graph it's the version of (as JSON, without the version), and the last change notice.
@@ -354,8 +355,19 @@ public sealed class HostedPipeline
     }
 
     /// <summary>Reloads the pipeline whenever its file changes, once the changes settle, telling <paramref name="log"/> what happened.</summary>
-    internal void Watch(Action<string> log) =>
-        _watcher = new PipelineWatcher(Path, Name, token => ReloadAsync(force: false, token), log, () => Live?.Syntax.Included.Select(i => i.Source.Path) ?? []);
+    internal void Watch(Action<string> log)
+    {
+        var watcher = new PipelineWatcher(Path, Name, token => ReloadAsync(force: false, token), log, () => Live?.Syntax.Included.Select(i => i.Source.Path) ?? []);
+        lock (_lock)
+        {
+            if (!_ending)
+            {
+                _watcher = watcher;
+                return;
+            }
+        }
+        watcher.Dispose(); // it ended before it could be watched
+    }
 
     /// <summary>A change in a sentence: what was added, removed, reconfigured and replaced.</summary>
     internal static string Summary(PipelineChangeReport report)
@@ -375,8 +387,13 @@ public sealed class HostedPipeline
 
     private void StopWatching()
     {
-        _watcher?.Dispose();
-        _watcher = null;
+        PipelineWatcher? watcher;
+        lock (_lock)
+        {
+            _ending = true;
+            (watcher, _watcher) = (_watcher, null);
+        }
+        watcher?.Dispose();
     }
 
     /// <summary>Records how it ended, with its final counts.</summary>
@@ -390,14 +407,14 @@ public sealed class HostedPipeline
             (_state, _reason) = _stopRequested ? (PipelineStates.Stopped, "it was asked to stop")
                 : _failure is not null ? (PipelineStates.Failed, _failure)
                 : (PipelineStates.Finished, "its sources finished");
-            _final = final with { State = _state, Ended = Ended, Reason = _reason, Restarts = Restarts, GraphVersion = GraphVersion };
+            _final = final with { State = _state, Ended = Ended, Reason = _reason, Restarts = Restarts, GraphVersion = GraphVersion, Watching = false };
         }
     }
 
     internal PipelineSummary Summary()
     {
         lock (_lock)
-            return new(Name, Path, _state, Started, Warnings) { Ended = Ended, Reason = _reason, Restarts = Restarts };
+            return new(Name, Path, _state, Started, Warnings) { Ended = Ended, Reason = _reason, Restarts = Restarts, Watching = Watching };
     }
 
     internal PipelineDetail Detail()
@@ -431,6 +448,7 @@ public sealed class HostedPipeline
                 Restarts = Restarts,
                 GraphVersion = GraphVersion,
                 Links = links,
+                Watching = Watching,
             };
         }
     }
