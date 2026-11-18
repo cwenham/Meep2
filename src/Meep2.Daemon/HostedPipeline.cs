@@ -32,8 +32,12 @@ public sealed class HostedPipeline
     private (GraphNotice? Notice, int Serial) _notice;
     private TaskCompletionSource _noticed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-    internal HostedPipeline(string name, PipelineAddress address, ModuleRegistry registry, PluginOptions plugins)
+    // Tells the daemon its state or graph changed, for subscriptions to send straight away.
+    private readonly Action? _changed;
+
+    internal HostedPipeline(string name, PipelineAddress address, ModuleRegistry registry, PluginOptions plugins, Action? changed = null)
     {
+        _changed = changed;
         Name = name;
         Address = address;
         Path = address.ToString();
@@ -232,6 +236,7 @@ public sealed class HostedPipeline
             _noticed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         }
         noticed.TrySetResult();
+        _changed?.Invoke();
     }
 
     /// <summary>The last change to the graph that those watching were told about, and a number that counts them.</summary>
@@ -264,6 +269,7 @@ public sealed class HostedPipeline
             _state = PipelineStates.Restarting;
             _reason = $"{restart.Reason}. It starts again at {DateTimeOffset.Now.Add(restart.Delay):HH:mm:ss}";
         }
+        _changed?.Invoke();
     }
 
     /// <summary>Records why it failed, as the host reported it.</summary>
@@ -409,12 +415,13 @@ public sealed class HostedPipeline
                 : (PipelineStates.Finished, "its sources finished");
             _final = final with { State = _state, Ended = Ended, Reason = _reason, Restarts = Restarts, GraphVersion = GraphVersion, Watching = false };
         }
+        _changed?.Invoke();
     }
 
     internal PipelineSummary Summary()
     {
         lock (_lock)
-            return new(Name, Path, _state, Started, Warnings) { Ended = Ended, Reason = _reason, Restarts = Restarts, Watching = Watching };
+            return new(Name, Path, _state, Started, Warnings) { Ended = Ended, Reason = _reason, Restarts = Restarts, Watching = Watching, GraphVersion = GraphVersion };
     }
 
     internal PipelineDetail Detail()

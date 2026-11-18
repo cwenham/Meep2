@@ -28,7 +28,7 @@ internal static class DaemonCommands
             await error.WriteLineAsync(exception.Message).ConfigureAwait(false);
             return 2;
         }
-        using var telemetry = Telemetry.Start(settings.Otlp ?? config.Otlp, settings.Sample ?? config.Sample);
+        using var telemetry = Telemetry.Start(settings.Otlp ?? config.Otlp, settings.Sample ?? config.Sample, HostIdentity.IdOf(plugins.Home));
         await using var daemon = new MeepDaemon(new DaemonOptions
         {
             Plugins = plugins,
@@ -124,6 +124,36 @@ internal static class DaemonCommands
             await error.WriteLineAsync(exception.Message).ConfigureAwait(false);
             return 2;
         }
+    }
+
+    // meep daemon socket: where the daemon's control socket is, in full, then its ID, a line each, so that
+    // ssh host meep daemon socket can come before forwarding it with ssh -L (Q209). The ID is the running daemon's,
+    // or the one it will take when it starts; whether it's running goes to standard error.
+    public static async Task<int> SocketAsync(PluginOptions plugins, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    {
+        var socket = Path.GetFullPath(DaemonOptions.DefaultSocket(plugins.Home));
+        string id;
+        string? note = null;
+        using (var client = new DaemonClient(socket, Environment.GetEnvironmentVariable("MEEP_TOKEN") is { Length: > 0 } token ? token : null))
+        {
+            try
+            {
+                var info = await client.InfoAsync(cancellationToken).ConfigureAwait(false);
+                id = info.Id ?? HostIdentity.IdOf(plugins.Home);
+            }
+            catch (DaemonException exception)
+            {
+                id = HostIdentity.IdOf(plugins.Home);
+                note = exception.Status == 0
+                    ? "No daemon is running there now; the ID is the one it will take when it starts."
+                    : $"The daemon is running, but wouldn't say who it is: {exception.Message}";
+            }
+        }
+        await output.WriteLineAsync(socket).ConfigureAwait(false);
+        await output.WriteLineAsync(id).ConfigureAwait(false);
+        if (note is not null)
+            await error.WriteLineAsync(note).ConfigureAwait(false);
+        return 0;
     }
 
     // The commands that ask the daemon to do something: they connect, ask, and report.

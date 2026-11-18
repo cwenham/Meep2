@@ -32,6 +32,14 @@ public abstract class Outlet
     /// </summary>
     public abstract bool Emit(Message message, Lease lease);
 
+    /// <summary>
+    /// Counts bytes the module read from the network or wrote to it, as <see cref="ModuleContext.CountBytes"/> does,
+    /// for what arrives on a connection it opened.
+    /// </summary>
+    public virtual void CountBytes(long received, long sent)
+    {
+    }
+
     /// <summary>Emits an error. False if the pipeline has finished.</summary>
     public bool EmitError(string error, Exception? exception = null) =>
         Emit(new ErrorMessage { Error = error, Exception = exception });

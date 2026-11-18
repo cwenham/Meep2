@@ -87,6 +87,9 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
     private long _restarts;
     private long _expired;
     private long _refused;
+    private long _bytesReceived;
+    private long _bytesSent;
+    private volatile string? _listening;
     private readonly Lock _tapping = new();
     private volatile DebugTap[]? _taps;
 
@@ -109,6 +112,33 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
     }
 
     public ModuleInfo Info => Spec.Info;
+
+    /// <summary>
+    /// The key tools know the module by, such as <c>m3</c>, which lasts while its number changes, or null if nothing has
+    /// given it one (<see cref="Pipeline.NameModules"/>). Put on its telemetry as <c>meep.module.key</c>.
+    /// </summary>
+    public string? Key { get; set; }
+
+    /// <summary>How long the module takes to handle each message (<see cref="HandlingTimes"/>).</summary>
+    public TimingRecorder Timing { get; } = new();
+
+    /// <summary>Bytes the module has read from the network and written to it (<see cref="ModuleContext.CountBytes"/>).</summary>
+    public ModuleTraffic Traffic => new(Interlocked.Read(ref _bytesReceived), Interlocked.Read(ref _bytesSent));
+
+    /// <summary>Where the module says it's listening, or null (<see cref="ModuleContext.Listening"/>).</summary>
+    public string? ListeningAt
+    {
+        get => _listening;
+        set => _listening = value;
+    }
+
+    public void CountBytes(long received, long sent)
+    {
+        if (received > 0)
+            Interlocked.Add(ref _bytesReceived, received);
+        if (sent > 0)
+            Interlocked.Add(ref _bytesSent, sent);
+    }
 
     /// <summary>The module as people see it, as in "Fetch #2", kept so metrics don't make it again for each message.</summary>
     public string Label { get; private set; } = spec.Info.ToString();

@@ -67,6 +67,7 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
             .ConfigureAwait(false);
         lock (_changing)
             _listening = new Listening(address, endpoint, route, context, cancellationToken);
+        context.Listening(Where(address, endpoint));
         try
         {
             await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
@@ -119,9 +120,14 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
             var replaced = listening.Route;
             _listening = listening with { Address = address, Route = route };
             _ = replaced.DisposeAsync().AsTask();
+            listening.Context.Listening(Where(address, listening.Endpoint));
             return true;
         }
     }
+
+    // Where it's listening, as it tells the runtime: the address it's bound to, and its path.
+    internal static string Where(HttpAddress address, IPEndPoint endpoint, bool webSocket = false) =>
+        $"{(webSocket ? address.Secure ? "wss" : "ws" : address.Secure ? "https" : "http")}://{endpoint}{address.Path}";
 
     // Where it's listening, and what for: kept so new parameters can move it to another path.
     private sealed record Listening(HttpAddress Address, IPEndPoint Endpoint, HttpServer.Route Route, ModuleContext Context, CancellationToken Stopping);
@@ -133,7 +139,8 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
         var request = http.Request;
         var url = request.GetDisplayUrl();
         var parameters = _parameters;
-        var lease = new HttpRequestLease(http, url, parameters.DefaultStatus, parameters.DefaultReply);
+        var lease = new HttpRequestLease(http, url, parameters.DefaultStatus, parameters.DefaultReply, context);
+        var requestBody = new CountingStream(request.Body, context.CountBytes);
         try
         {
             ReadOnlyMemory<byte> body = default;
@@ -141,13 +148,13 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
             StreamedBody? streamed = null;
             if (parameters.Stream)
             {
-                streamed = new StreamedBody(request.Body, "request body");
+                streamed = new StreamedBody(requestBody, "request body");
             }
             else
             {
                 try
                 {
-                    body = await Bodies.ReadAsync(request.Body, request.ContentLength ?? -1, parameters.MaxSize, cancellationToken).ConfigureAwait(false);
+                    body = await Bodies.ReadAsync(requestBody, request.ContentLength ?? -1, parameters.MaxSize, cancellationToken).ConfigureAwait(false);
                 }
                 catch (BodyTooLargeException)
                 {
@@ -227,7 +234,8 @@ public sealed record HttpListenParameters
 }
 
 /// <summary>A request from <see cref="HttpListen"/> waiting for its answer.</summary>
-internal sealed class HttpRequestLease(HttpContext http, string url, int defaultStatus, string defaultReply) : Lease
+/// <remarks>The bytes of its answer are counted for the Listen, whichever module sends it.</remarks>
+internal sealed class HttpRequestLease(HttpContext http, string url, int defaultStatus, string defaultReply, ModuleContext listen) : Lease
 {
     private readonly Lock _answering = new();
     private Task? _answer;
@@ -261,10 +269,11 @@ internal sealed class HttpRequestLease(HttpContext http, string url, int default
         {
             response.ContentLength = body.Length;
             await response.Body.WriteAsync(body, cancellationToken).ConfigureAwait(false);
+            listen.CountBytes(0, body.Length);
         }
         else
         {
-            await stream.CopyToAsync(response.Body, cancellationToken).ConfigureAwait(false);
+            await stream.CopyToAsync(new CountingStream(response.Body, listen.CountBytes), cancellationToken).ConfigureAwait(false);
         }
         await response.CompleteAsync().ConfigureAwait(false);
     }

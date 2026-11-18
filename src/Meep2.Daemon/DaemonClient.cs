@@ -308,7 +308,33 @@ public sealed class DaemonSocket : IAsyncDisposable
             writer.WriteBoolean("cancel", true);
         }, cancellationToken);
 
-    /// <summary>The next frame from the daemon, or null once the connection has closed.</summary>
+    /// <summary>Changes a subscription the daemon is sending, by a merge patch to what it asked for.</summary>
+    public Task ChangeAsync(string id, JsonElement patch, CancellationToken cancellationToken = default) =>
+        SendFrameAsync(writer =>
+        {
+            writer.WriteString("id", id);
+            writer.WritePropertyName("change");
+            patch.WriteTo(writer);
+        }, cancellationToken);
+
+    /// <summary>Asks a subscription to send everything whole in its next update.</summary>
+    public Task ResendAsync(string id, CancellationToken cancellationToken = default) =>
+        SendFrameAsync(writer =>
+        {
+            writer.WriteString("id", id);
+            writer.WriteBoolean("resend", true);
+        }, cancellationToken);
+
+    /// <summary>
+    /// The size in bytes of the last frame <see cref="ReceiveAsync"/> returned, as it came, and whether it was binary:
+    /// CBOR, from a subscription that asked for it.
+    /// </summary>
+    public (int Bytes, bool Binary) Last { get; private set; }
+
+    /// <summary>
+    /// The next frame from the daemon, or null once the connection has closed. A binary frame, from a subscription that
+    /// asked for CBOR, comes back as the same JSON.
+    /// </summary>
     public async Task<JsonElement?> ReceiveAsync(CancellationToken cancellationToken = default)
     {
         var buffer = new System.Buffers.ArrayBufferWriter<byte>();
@@ -328,6 +354,9 @@ public sealed class DaemonSocket : IAsyncDisposable
             buffer.Advance(result.Count);
         }
         while (!result.EndOfMessage);
+        Last = (buffer.WrittenCount, result.MessageType == WebSocketMessageType.Binary);
+        if (result.MessageType == WebSocketMessageType.Binary)
+            return Subscriptions.Envelope.ToJson(buffer.WrittenMemory);
         using var document = JsonDocument.Parse(buffer.WrittenMemory);
         return document.RootElement.Clone();
     }

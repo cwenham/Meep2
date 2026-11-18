@@ -12,6 +12,7 @@ using Meep2.Meeplang.Hosting;
 using Meep2.Meeplang.Loading;
 using Meep2.Modules;
 using Meep2.Plugins;
+using Meep2.Daemon.Subscriptions;
 using Meep2.Runtime;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
@@ -53,15 +54,25 @@ namespace Meep2.Daemon;
 /// <item><c>POST /pipelines/{name}/modules/{module}/inject</c>: sends text, or JSON, into a module (inject).</item>
 /// <item><c>POST /pipelines</c>, <c>DELETE /pipelines/{name}</c>, <c>POST /stop</c>: start and stop pipelines, and the daemon (control).</item>
 /// <item><c>GET /ws</c>: a WebSocket that carries all of the above, both ways, over one connection (Q108). See <see cref="SocketSession"/>.</item>
+/// <item>
+/// <c>POST /subscribe</c>, over <c>/ws</c> only: the pipelines, their counts, handling times, bytes and the host's
+/// runtime, each at a rate of its own, sending only what changed, changed as it goes (observe). See
+/// <see cref="Subscription"/>.
+/// </item>
 /// </list>
 /// <para>
 /// A pipeline that ends on its own stays listed for as long as its file's <c>keep-finished</c> says, 24 hours unless
 /// it says otherwise, with its final counts and why it stopped (Q111). One that someone stops leaves the list.
 /// </para>
 /// </remarks>
-public sealed class MeepDaemon : IAsyncDisposable
+public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
 {
     private const string PeerKey = "meep.peer";
+
+    private readonly Lazy<RuntimeMetrics> _runtime = new(() => new RuntimeMetrics());
+    private readonly Lock _signalling = new();
+    private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private HostInfo? _identity;
 
     private readonly DaemonOptions _options;
     private readonly ConcurrentDictionary<string, HostedPipeline> _pipelines = new(StringComparer.Ordinal);
@@ -99,12 +110,44 @@ public sealed class MeepDaemon : IAsyncDisposable
     private static string Version =>
         typeof(MeepDaemon).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0] ?? "?";
 
+    /// <summary>The daemon's lasting ID, kept in <c>daemon/id</c> in Meep's folder (<see cref="HostIdentity"/>).</summary>
+    public string Id => ((ISubscriptionHost)this).Identity.Id;
+
+    HostInfo ISubscriptionHost.Identity =>
+        _identity ??= new HostInfo(HostIdentity.IdOf(_options.Plugins.Home), [Environment.MachineName], HostIdentity.Addresses(), Version, Environment.ProcessId);
+
+    IReadOnlyCollection<HostedPipeline> ISubscriptionHost.Listed => Pipelines;
+
+    RuntimeMetrics ISubscriptionHost.Runtime => _runtime.Value;
+
+    Task ISubscriptionHost.Changed
+    {
+        get
+        {
+            lock (_signalling)
+                return _changed.Task;
+        }
+    }
+
+    // A pipeline's graph or state changed: subscriptions look again straight away.
+    private void Signal()
+    {
+        TaskCompletionSource changed;
+        lock (_signalling)
+        {
+            changed = _changed;
+            _changed = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
+        changed.TrySetResult();
+    }
+
     /// <summary>Opens the control socket.</summary>
     /// <exception cref="DaemonException">Another daemon is using the socket, or its path is too long.</exception>
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         var socket = Path.GetFullPath(SocketPath);
         PrepareSocket(socket);
+        _identity = new HostInfo(HostIdentity.IdOf(_options.Plugins.Home), await HostIdentity.NamesAsync(cancellationToken).ConfigureAwait(false), HostIdentity.Addresses(), Version, Environment.ProcessId);
 
         var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions());
         builder.WebHost.UseKestrelCore();
@@ -173,6 +216,8 @@ public sealed class MeepDaemon : IAsyncDisposable
             await _app.DisposeAsync().ConfigureAwait(false);
         }
         TryDelete(SocketPath);
+        if (_runtime.IsValueCreated)
+            _runtime.Value.Dispose();
         _stopRequested.TrySetResult();
         Log("meep daemon has stopped");
     }
@@ -231,7 +276,7 @@ public sealed class MeepDaemon : IAsyncDisposable
         var registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly);
         registry.Add<WriteLine, WriteLineParameters>("WriteLine", parameters => new WriteLine(parameters, _options.Output));
         var plugins = _options.Plugins with { DeveloperMode = _options.Plugins.DeveloperMode || developerMode };
-        var hosted = new HostedPipeline(name, address, registry, plugins);
+        var hosted = new HostedPipeline(name, address, registry, plugins, Signal);
         while (!_pipelines.TryAdd(name, hosted))
         {
             if (_pipelines.TryGetValue(name, out var existing) && existing.Ended is null)
@@ -347,6 +392,21 @@ public sealed class MeepDaemon : IAsyncDisposable
         await hosted.Finished.ConfigureAwait(false);
     }
 
+    // Where the running pipelines' Listens are bound now.
+    private List<ListenInfo> Listening()
+    {
+        var listening = new List<ListenInfo>();
+        foreach (var hosted in _pipelines.Values.OrderBy(p => p.Name, StringComparer.Ordinal))
+        {
+            if (hosted.Ended is not null || hosted.Pipeline is not { } pipeline || hosted.Live is not { } live)
+                continue;
+            var keys = live.ModuleKeys();
+            foreach (var at in pipeline.GetListening())
+                listening.Add(new ListenInfo(hosted.Name, keys.GetValueOrDefault(at.Module) ?? "", at.Module.ToString(), at.Address));
+        }
+        return listening;
+    }
+
     // Takes pipelines off the list once they've been listed for as long as their files ask.
     private void Prune()
     {
@@ -411,6 +471,8 @@ public sealed class MeepDaemon : IAsyncDisposable
                         await WriteAsync(context, answer.Body).ConfigureAwait(false);
                     }
                     break;
+                case SubscribeReply:
+                    throw new DaemonException(400, "A subscription needs a WebSocket, so it can be changed as it goes. Connect to /ws and send {\"id\": 1, \"method\": \"POST\", \"path\": \"/subscribe\", \"json\": {…}}.");
                 case Events events:
                     await StartEventsAsync(context).ConfigureAwait(false);
                     await foreach (var e in events.Stream(context.RequestAborted).ConfigureAwait(false))
@@ -480,7 +542,20 @@ public sealed class MeepDaemon : IAsyncDisposable
         {
             case ("GET", []):
                 Require(capabilities, Capabilities.None);
-                return Answer.Json(200, new DaemonInfo(Version, Environment.ProcessId, SocketPath, CapabilityNames.Of(capabilities), [.. _pipelines.Keys.Order()]), DaemonJson.Default.DaemonInfo);
+            {
+                var identity = ((ISubscriptionHost)this).Identity;
+                return Answer.Json(200, new DaemonInfo(Version, Environment.ProcessId, SocketPath, CapabilityNames.Of(capabilities), [.. _pipelines.Keys.Order()])
+                {
+                    Id = identity.Id,
+                    Names = identity.Names,
+                    Addresses = identity.Addresses,
+                    Listening = Listening(),
+                    Clock = HostIdentity.Microseconds(DateTimeOffset.UtcNow),
+                }, DaemonJson.Default.DaemonInfo);
+            }
+            case ("POST", ["subscribe"]):
+                Require(capabilities, Capabilities.Observe);
+                return new SubscribeReply(new Subscription(SubscriptionPlan.Parse(request.Json), this));
             case ("POST", ["stop"]):
                 Require(capabilities, Capabilities.Control);
                 _ = Task.Run(StopAsync);

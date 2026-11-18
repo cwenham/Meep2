@@ -263,7 +263,8 @@ public class WriteBackTests
         var file = home.Write("ticker.meep", Ticker);
         using var stopDaemon = new CancellationTokenSource();
         var daemon = MeepCommand.RunAsync(["daemon", file], TextWriter.Synchronized(new SharedText()), TextWriter.Synchronized(new SharedText()), options, stopDaemon.Token);
-        await Wait.Until(async () => (await Cli(options, "list")).Output.Contains("running", StringComparison.Ordinal));
+        // The pipeline's own line, not "Nothing is running.", which the daemon says before it has started it.
+        await Wait.Until(async () => (await Cli(options, "list")).Output.Split('\n').Any(line => line.StartsWith("ticker", StringComparison.Ordinal) && line.Contains("running", StringComparison.Ordinal)));
 
         var edit = await Cli(options, "edit", "ticker", "Interval", "set", "@expires=5s", "--no-save");
         var named = await Cli(options, "edit", "ticker", "WriteLine", "rename", "Printer", "--no-save");

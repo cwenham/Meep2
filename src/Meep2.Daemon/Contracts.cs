@@ -4,7 +4,30 @@ using Meep2.Runtime;
 namespace Meep2.Daemon;
 
 /// <summary>What the daemon says about itself, and what the asking client may do.</summary>
-public sealed record DaemonInfo(string Version, int ProcessId, string Socket, IReadOnlyList<string> Capabilities, IReadOnlyList<string> Pipelines);
+public sealed record DaemonInfo(string Version, int ProcessId, string Socket, IReadOnlyList<string> Capabilities, IReadOnlyList<string> Pipelines)
+{
+    /// <summary>The daemon's lasting ID, made the first time it ran and kept in <c>daemon/id</c> in Meep's folder.</summary>
+    public string? Id { get; init; }
+
+    /// <summary>The machine's names: its own name, its host name, and that name in full as DNS knows it.</summary>
+    public IReadOnlyList<string>? Names { get; init; }
+
+    /// <summary>The machine's addresses on the networks it's connected to, without loopback and link-local ones.</summary>
+    public IReadOnlyList<string>? Addresses { get; init; }
+
+    /// <summary>Where its pipelines' Listens are bound now.</summary>
+    public IReadOnlyList<ListenInfo>? Listening { get; init; }
+
+    /// <summary>The daemon's clock as it answered, in microseconds since 1970 (UTC), for a client to estimate the offset between its clock and the daemon's.</summary>
+    public long Clock { get; init; }
+}
+
+/// <summary>Where a Listen is bound.</summary>
+/// <param name="Pipeline">Its pipeline.</param>
+/// <param name="Module">Its key in the pipeline's graph.</param>
+/// <param name="Label">How it's shown: its name, or its verb and number.</param>
+/// <param name="Address">Where it's bound, as in <c>http://0.0.0.0:8080/hooks/</c> or <c>tcp://127.0.0.1:9000</c>.</param>
+public sealed record ListenInfo(string Pipeline, string Module, string Label, string Address);
 
 /// <summary>Asks the daemon to start a pipeline.</summary>
 /// <param name="Path">
@@ -93,6 +116,12 @@ public sealed record SourceText(string Path, string Text, bool Edited);
 /// <param name="Warnings">Warnings from loading it.</param>
 public sealed record PipelineSummary(string Name, string Path, string State, DateTimeOffset Started, IReadOnlyList<string> Warnings)
 {
+    /// <summary>
+    /// The version of its graph (<see cref="PipelineGraph.Version"/>), so a client can tell from the list when to ask
+    /// for the graph again. Null until it has loaded.
+    /// </summary>
+    public int? GraphVersion { get; init; }
+
     /// <summary>When it ended, if it has.</summary>
     public DateTimeOffset? Ended { get; init; }
 
@@ -314,6 +343,7 @@ public sealed record Problem(string Error, IReadOnlyList<string>? Details = null
 public sealed record Injected(Guid Id, string Type, string Module);
 
 [JsonSerializable(typeof(DaemonInfo))]
+[JsonSerializable(typeof(ListenInfo))]
 [JsonSerializable(typeof(StartRequest))]
 [JsonSerializable(typeof(PipelineSummary))]
 [JsonSerializable(typeof(IReadOnlyList<PipelineSummary>))]

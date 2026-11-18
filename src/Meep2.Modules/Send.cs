@@ -573,9 +573,12 @@ public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Messa
         timeout.CancelAfter(parameters.Timeout);
         try
         {
-            using var content = await ContentAsync(message, text, contentType, timeout.Token).ConfigureAwait(false);
+            using var content = await ContentAsync(message, text, contentType, context, timeout.Token).ConfigureAwait(false);
+            var length = content is StreamContent ? 0 : content.Headers.ContentLength ?? 0; // a stream is counted as it's read
             using var response = await HttpFetch.Client.PostAsync(uri, content, timeout.Token).ConfigureAwait(false);
+            context.CountBytes(0, length);
             var body = await HttpFetch.ReadBodyAsync(response.Content, url, parameters.MaxSize, timeout.Token).ConfigureAwait(false);
+            context.CountBytes(body.Length, 0);
             var decoded = HttpFetch.Decode(body, response.Content.Headers.ContentType);
             var status = (int)response.StatusCode;
             if (!response.IsSuccessStatusCode)
@@ -614,14 +617,14 @@ public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Messa
         }
     }
 
-    private static async Task<HttpContent> ContentAsync(Message message, string? text, string? contentType, CancellationToken cancellationToken)
+    private static async Task<HttpContent> ContentAsync(Message message, string? text, string? contentType, ModuleContext context, CancellationToken cancellationToken)
     {
         if (text is not null)
             return WithType(new ByteArrayContent(Encoding.UTF8.GetBytes(text)), contentType ?? Bodies.PlainText);
         switch (message)
         {
             case IHasBody { IsStreamed: true } streamed:
-                return WithType(new StreamContent(streamed.OpenBody()), contentType ?? streamed.ContentType);
+                return WithType(new StreamContent(new CountingStream(streamed.OpenBody(), (read, _) => context.CountBytes(0, read))), contentType ?? streamed.ContentType);
             case IHasBody body:
                 return WithType(new ReadOnlyMemoryContent(await Frames.BytesOfAsync(body, cancellationToken).ConfigureAwait(false)), contentType ?? body.ContentType);
             case JsonMessage json:
@@ -694,7 +697,7 @@ internal sealed class Connections : IAsyncDisposable
         limit.CancelAfter(timeout);
         try
         {
-            await client.SendAsync(message, text, end, tries, retryDelay, limit.Token).ConfigureAwait(false);
+            context.CountBytes(0, await client.SendAsync(message, text, end, tries, retryDelay, limit.Token).ConfigureAwait(false));
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

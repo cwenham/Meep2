@@ -429,7 +429,7 @@ internal sealed class InflectionNode : Node
                 var outcome = MessageOutcome.Completed;
                 Exception? failure = null;
                 var span = Telemetry.Tracing ? Telemetry.StartHandling(this, slot.Spec.Info, message) : null;
-                var started = Telemetry.Duration.Enabled ? Stopwatch.GetTimestamp() : 0;
+                var started = Stopwatch.GetTimestamp();
                 _context.Begin(message, slot.Spec.Info, arrival.Input);
                 try
                 {
@@ -463,8 +463,10 @@ internal sealed class InflectionNode : Node
                 {
                     _context.End();
                     ResetExpiry(cancellationToken);
-                    if (started != 0)
-                        Telemetry.Duration.Record(Stopwatch.GetElapsedTime(started).TotalSeconds, new TagList { { "meep.pipeline", Pipeline.Name }, { "meep.module", Label } });
+                    var took = Stopwatch.GetTimestamp() - started;
+                    Timing.Record(took);
+                    if (Telemetry.Duration.Enabled)
+                        Telemetry.RecordDuration(this, took);
                     if (span is not null)
                         Telemetry.EndHandling(this, span, outcome, failure);
                     Pipeline.Release(message, outcome);

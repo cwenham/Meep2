@@ -37,6 +37,9 @@ internal sealed record Answer(int Status, Action<Utf8JsonWriter>? Body) : ApiRep
 /// <summary>Events until the stream ends or the client stops listening. The last is called end, unless the client stopped it.</summary>
 internal sealed record Events(Func<CancellationToken, IAsyncEnumerable<ApiEvent>> Stream) : ApiReply;
 
+/// <summary>A subscription (<c>POST /subscribe</c>), which only a WebSocket can carry.</summary>
+internal sealed record SubscribeReply(Subscriptions.Subscription Subscription) : ApiReply;
+
 /// <summary>One event in a stream: its name, and its data as JSON.</summary>
 internal readonly record struct ApiEvent(string Name, Action<Utf8JsonWriter> Data);
 
@@ -59,6 +62,12 @@ internal readonly record struct ApiEvent(string Name, Action<Utf8JsonWriter> Dat
 /// stops a stream with <c>{"id": 1, "cancel": true}</c>, and the daemon then sends an end whose reason is
 /// <c>cancelled</c>.
 /// </para>
+/// <para>
+/// A subscription (<c>{"id": "s", "method": "POST", "path": "/subscribe", "json": {…}}</c>) is a stream that the client
+/// changes as it goes, with <c>{"id": "s", "change": {…}}</c>, a merge patch to what it asked for, and
+/// <c>{"id": "s", "resend": true}</c>, to have everything sent whole again. One that asked for CBOR sends its events as
+/// binary frames, each a CBOR map with the same id, event and data. See <see cref="Subscriptions.Subscription"/>.
+/// </para>
 /// </remarks>
 internal sealed class SocketSession(
     WebSocket socket,
@@ -69,8 +78,13 @@ internal sealed class SocketSession(
     /// <summary>The longest frame a client may send.</summary>
     public const int MaxFrame = 1 << 20;
 
-    private readonly Channel<byte[]> _outgoing = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
+    private readonly Channel<Outgoing> _outgoing = Channel.CreateUnbounded<Outgoing>(new UnboundedChannelOptions { SingleReader = true });
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _streams = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Subscriptions.Subscription> _subscriptions = new(StringComparer.Ordinal);
+
+    // Changes that came for a request before it turned out to be a subscription and started, applied once it has.
+    private readonly Dictionary<string, List<JsonElement>> _early = new(StringComparer.Ordinal);
+    private readonly Lock _subscribing = new();
     private readonly ConcurrentDictionary<Task, bool> _working = new();
 
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -147,25 +161,70 @@ internal sealed class SocketSession(
                 stream.Cancel();
             return;
         }
-        var work = Task.Run(() => AnswerAsync(id, request));
+        if (request.TryGetProperty("change", out _) || request.TryGetProperty("resend", out _))
+        {
+            Subscriptions.Subscription? subscription;
+            lock (_subscribing)
+            {
+                if (!_subscriptions.TryGetValue(id, out subscription) && _streams.ContainsKey(id))
+                {
+                    // Sent straight after the subscription, which hasn't started yet.
+                    if (!_early.TryGetValue(id, out var early))
+                        _early[id] = early = [];
+                    early.Add(request);
+                    return;
+                }
+            }
+            if (subscription is null)
+                Reply(id, 404, problem(new DaemonException(404, $"There's no subscription {id} on this connection to change. Start one with {{\"id\": {id}, \"method\": \"POST\", \"path\": \"/subscribe\", \"json\": {{…}}}}.")));
+            else
+                Apply(subscription, request);
+            return;
+        }
+
+        // The id is taken as the frame is read, so a frame after it for the same id finds it.
+        var aborted = new CancellationTokenSource();
+        if (!_streams.TryAdd(id, aborted))
+        {
+            aborted.Dispose();
+            Reply(id, 409, problem(new DaemonException(409, $"Request {id} is still going. Give each request its own id.")));
+            return;
+        }
+        var work = Task.Run(() => AnswerAsync(id, request, aborted));
         _working.TryAdd(work, true);
         _ = work.ContinueWith(done => _working.TryRemove(done, out _), TaskScheduler.Default);
     }
 
-    private async Task AnswerAsync(string id, JsonElement frame)
+    // A change or resend for a running subscription. One that isn't a plan is refused with a problem event.
+    private static void Apply(Subscriptions.Subscription subscription, JsonElement request)
     {
-        using var aborted = new CancellationTokenSource();
-        if (!_streams.TryAdd(id, aborted))
+        try
         {
-            Reply(id, 409, problem(new DaemonException(409, $"Request {id} is still going. Give each request its own id.")));
-            return;
+            if (request.TryGetProperty("change", out var change))
+                subscription.Change(change);
+            if (request.TryGetProperty("resend", out var resend) && resend.ValueKind == JsonValueKind.True)
+                subscription.Resend();
         }
+        catch (DaemonException exception)
+        {
+            subscription.Refused(exception.Message);
+        }
+    }
+
+    private async Task AnswerAsync(string id, JsonElement frame, CancellationTokenSource aborted)
+    {
+        using var owned = aborted;
         try
         {
             var reply = await route(Read(frame, aborted.Token)).ConfigureAwait(false);
             if (reply is Answer answer)
             {
                 Reply(id, answer.Status, answer.Body);
+                return;
+            }
+            if (reply is SubscribeReply subscribe)
+            {
+                await SubscribeAsync(id, subscribe.Subscription, aborted).ConfigureAwait(false);
                 return;
             }
             var events = (Events)reply;
@@ -195,7 +254,61 @@ internal sealed class SocketSession(
         finally
         {
             _streams.TryRemove(id, out _);
+            lock (_subscribing)
+                _early.Remove(id); // for a request that wasn't a subscription after all
         }
+    }
+
+    // Runs a subscription until the client cancels it or goes.
+    private async Task SubscribeAsync(string id, Subscriptions.Subscription subscription, CancellationTokenSource aborted)
+    {
+        List<JsonElement>? early;
+        lock (_subscribing)
+        {
+            _subscriptions[id] = subscription;
+            _early.Remove(id, out early);
+        }
+        foreach (var request in early ?? [])
+            Apply(subscription, request);
+        try
+        {
+            await subscription.RunAsync(
+                (name, data) => subscription.Cbor
+                    ? QueueAsync(Subscriptions.Envelope.Cbor(id, name, data), WebSocketMessageType.Binary)
+                    : QueueAsync(Subscriptions.Envelope.Json(id, name, data), WebSocketMessageType.Text),
+                aborted.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // Cancelled by the client, or the connection is closing or failed.
+        }
+        finally
+        {
+            lock (_subscribing)
+                _subscriptions.Remove(id);
+        }
+        if (aborted.IsCancellationRequested)
+        {
+            var end = (Action<Subscriptions.UpdateWriter>)(writer =>
+            {
+                writer.StartMap(1);
+                writer.Property("reason", "cancelled");
+                writer.EndMap();
+            });
+            _outgoing.Writer.TryWrite(subscription.Cbor
+                ? new Outgoing(Subscriptions.Envelope.Cbor(id, "end", end), WebSocketMessageType.Binary, null)
+                : new Outgoing(Subscriptions.Envelope.Json(id, "end", end), WebSocketMessageType.Text, null));
+        }
+    }
+
+    // Queues a frame, completing with its size once it's on the socket, so a subscription doesn't run ahead of it.
+    private async Task<int> QueueAsync(byte[] frame, WebSocketMessageType type)
+    {
+        var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (!_outgoing.Writer.TryWrite(new Outgoing(frame, type, sent)))
+            throw new OperationCanceledException("The connection is closing.");
+        await sent.Task.ConfigureAwait(false);
+        return frame.Length;
     }
 
     // A frame as a request, with the client's capabilities.
@@ -253,26 +366,36 @@ internal sealed class SocketSession(
             rest(writer);
             writer.WriteEndObject();
         }
-        _outgoing.Writer.TryWrite(buffer.WrittenSpan.ToArray());
+        _outgoing.Writer.TryWrite(new Outgoing(buffer.WrittenSpan.ToArray(), WebSocketMessageType.Text, null));
     }
 
-    // One sender, so frames never interleave.
+    // One sender, so frames never interleave. Once the socket fails, what's queued is let go, so nothing waits on it.
     private async Task SendAllAsync(CancellationToken cancellationToken)
     {
-        try
+        var failed = false;
+        await foreach (var frame in _outgoing.Reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
         {
-            await foreach (var frame in _outgoing.Reader.ReadAllAsync(CancellationToken.None).ConfigureAwait(false))
+            if (failed || socket.State != WebSocketState.Open)
             {
-                if (socket.State != WebSocketState.Open)
-                    continue;
-                await socket.SendAsync(frame, WebSocketMessageType.Text, endOfMessage: true, cancellationToken).ConfigureAwait(false);
+                frame.Sent?.TrySetCanceled();
+                continue;
+            }
+            try
+            {
+                await socket.SendAsync(frame.Data, frame.Type, endOfMessage: true, cancellationToken).ConfigureAwait(false);
+                frame.Sent?.TrySetResult();
+            }
+            catch (Exception exception) when (exception is OperationCanceledException or WebSocketException or ObjectDisposedException)
+            {
+                // The connection is going; what's left can't be sent.
+                failed = true;
+                frame.Sent?.TrySetCanceled();
             }
         }
-        catch (Exception exception) when (exception is OperationCanceledException or WebSocketException)
-        {
-            // The connection is going; what's left can't be sent.
-        }
     }
+
+    /// <summary>A frame to send, and for a subscription's, what to tell once it's sent.</summary>
+    private readonly record struct Outgoing(byte[] Data, WebSocketMessageType Type, TaskCompletionSource? Sent);
 
     private async Task CloseAsync(string reason)
     {

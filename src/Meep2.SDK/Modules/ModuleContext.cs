@@ -134,6 +134,26 @@ public abstract class ModuleContext
     public virtual Outlet Outlet => throw new NotSupportedException("Only a module that handles messages has an outlet.");
 
     /// <summary>
+    /// Counts bytes the module read from the network or wrote to it, for a module that talks to other machines, as
+    /// Listen, Fetch and Send do. Count what the module itself reads and writes: the bodies of requests and replies, the
+    /// payloads of WebSocket messages, the bytes of a TCP stream. Clients use the counts to show how much goes over each
+    /// connection. Safe from any thread, at any time while the pipeline runs.
+    /// </summary>
+    /// <param name="received">Bytes read.</param>
+    /// <param name="sent">Bytes written.</param>
+    public virtual void CountBytes(long received, long sent)
+    {
+    }
+
+    /// <summary>
+    /// Says where the module is listening now, such as <c>http://0.0.0.0:8080/hooks/</c>, so tools can tell which of a
+    /// host's addresses reach it; null when it stops. A Listen says so once it's bound, and again if it moves.
+    /// </summary>
+    public virtual void Listening(string? address)
+    {
+    }
+
+    /// <summary>
     /// Things the modules of one pipeline share, by name, such as the connections a Listen has open, which Send reaches
     /// by the Listen's name. A plugin should start its names with its own, so they don't clash.
     /// </summary>

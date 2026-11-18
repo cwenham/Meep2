@@ -101,6 +101,7 @@ public sealed class WebSocketListen(WebSocketListenParameters parameters) : ASou
             context.Shared[key] = room;
         var route = await HttpServer.AddAsync(endpoint, certificate, address.Path, http => AcceptAsync(http, room, context, cancellationToken), cancellationToken, webSocket: true)
             .ConfigureAwait(false);
+        context.Listening(HttpListen.Where(address, endpoint, webSocket: true));
         try
         {
             await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
@@ -152,7 +153,7 @@ public sealed class WebSocketListen(WebSocketListenParameters parameters) : ASou
 
         var connection = http.Connection;
         var remote = connection.RemoteIpAddress is { } address ? new IPEndPoint(address, connection.RemotePort).ToString() : null;
-        var lease = new WebSocketConnectionLease(new WebSocketLink(socket, parameters.MaxQueued), url, remote);
+        var lease = new WebSocketConnectionLease(new WebSocketLink(socket, parameters.MaxQueued, context), url, remote);
         room.Connections[lease.Number] = lease;
         try
         {

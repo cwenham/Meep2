@@ -32,6 +32,8 @@ public static class MeepCommand
                                                 Run the daemon as a service that starts when you log in
           meep daemon uninstall                 Stop and remove the service
           meep daemon stop                      Stop the daemon
+          meep daemon socket                    Show the daemon's socket, in full, and its ID, a line each,
+                                                as for ssh host meep daemon socket before ssh -L
           meep daemon token <name> <capabilities>
                                                 Make a token for a client that may only observe, inject or control
           meep start [--dev] [--watch] <pipeline>
@@ -121,6 +123,8 @@ public static class MeepCommand
                 return HostSettings.Parse(rest, error) is { Detach: false } install
                     ? await DaemonCommands.InstallAsync(install, Options(), output, error, cancellationToken).ConfigureAwait(false)
                     : 2;
+            case ["daemon", "socket"]:
+                return await DaemonCommands.SocketAsync(Options(), output, error, cancellationToken).ConfigureAwait(false);
             case ["daemon", "uninstall"]:
                 return await DaemonCommands.UninstallAsync(Options(), output, error, cancellationToken).ConfigureAwait(false);
             case ["daemon", .. var rest] when rest is not ["stop"]:

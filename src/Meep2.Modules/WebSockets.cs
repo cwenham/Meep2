@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Channels;
 using Meep2.SDK.Messages;
+using Meep2.SDK.Modules;
 using Microsoft.Net.Http.Headers;
 
 namespace Meep2.Modules;
@@ -104,12 +105,17 @@ internal sealed class WebSocketLink
     private readonly Channel<Outgoing> _queue;
     private readonly Task _writer;
     private readonly TaskCompletionSource _readerDone = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly ModuleContext? _owner;
     private long _lastActivity = Environment.TickCount64;
     private int _closing;
 
-    public WebSocketLink(WebSocket socket, int queueLimit)
+    /// <param name="socket">The WebSocket.</param>
+    /// <param name="queueLimit">How many messages may wait to be sent.</param>
+    /// <param name="owner">The module whose connection it is, which counts the bytes sent and received on it, whichever module sends them.</param>
+    public WebSocketLink(WebSocket socket, int queueLimit, ModuleContext? owner = null)
     {
         _socket = socket;
+        _owner = owner;
         _queue = Channel.CreateBounded<Outgoing>(new BoundedChannelOptions(queueLimit) { SingleReader = true, FullMode = BoundedChannelFullMode.Wait });
         _writer = Task.Run(WriteAllAsync);
     }
@@ -158,6 +164,7 @@ internal sealed class WebSocketLink
                 if (result.MessageType == WebSocketMessageType.Close)
                     yield break;
                 buffer.Advance(result.Count);
+                _owner?.CountBytes(result.Count, 0);
                 Volatile.Write(ref _lastActivity, Environment.TickCount64);
                 if (buffer.WrittenCount > limit)
                     throw new FramingException($"sent a message longer than {limit} bytes, so its connection was closed");
@@ -223,6 +230,7 @@ internal sealed class WebSocketLink
                 try
                 {
                     await _socket.SendAsync(outgoing.Frame.Bytes, outgoing.Frame.Type, endOfMessage: true, CancellationToken.None).ConfigureAwait(false);
+                    _owner?.CountBytes(0, outgoing.Frame.Bytes.Length);
                     Volatile.Write(ref _lastActivity, Environment.TickCount64);
                     outgoing.Done?.TrySetResult();
                     continue;

@@ -64,25 +64,26 @@ internal abstract class SharedClient(string key, string address, int tries, Time
             _ = ShutDownAsync();
     }
 
-    /// <summary>Sends a message, connecting first if need be, and completes once it's sent.</summary>
-    public async Task SendAsync(Message message, string? text, string? end, int attempts, TimeSpan delay, CancellationToken cancellationToken)
+    /// <summary>Sends a message, connecting first if need be, and completes once it's sent, with the bytes written.</summary>
+    public async Task<long> SendAsync(Message message, string? text, string? end, int attempts, TimeSpan delay, CancellationToken cancellationToken)
     {
         await EnsureUpAsync(attempts, delay, cancellationToken).ConfigureAwait(false);
-        await WriteAsync(message, text, end, cancellationToken).ConfigureAwait(false);
+        return await WriteAsync(message, text, end, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
     /// A reply through a message's lease: sent as <see cref="SendAsync"/> sends, and with <paramref name="final"/>,
     /// the connection closes after it, until a message is next sent.
     /// </summary>
-    public async Task ReplyAsync(Message message, string? text, string? end, bool final, CancellationToken cancellationToken)
+    public async Task<long> ReplyAsync(Message message, string? text, string? end, bool final, CancellationToken cancellationToken)
     {
-        await SendAsync(message, text, end, tries, retryDelay, cancellationToken).ConfigureAwait(false);
+        var sent = await SendAsync(message, text, end, tries, retryDelay, cancellationToken).ConfigureAwait(false);
         if (final)
         {
             _closedOnPurpose = true;
             await CloseConnectionAsync().ConfigureAwait(false);
         }
+        return sent;
     }
 
     private async Task EnsureUpAsync(int attempts, TimeSpan delay, CancellationToken cancellationToken)
@@ -136,8 +137,13 @@ internal abstract class SharedClient(string key, string address, int tries, Time
         {
             await foreach (var payload in ReadAsync().ConfigureAwait(false))
             {
+                var size = SizeOf(payload);
                 foreach (var subscription in _subscriptions)
+                {
+                    // Each Send using the connection emits what arrives, so each counts it.
+                    subscription.Outlet.CountBytes(size, 0);
                     subscription.Deliver(Incoming(payload, subscription.Lease.Number));
+                }
             }
         }
         catch (FramingException exception)
@@ -198,8 +204,11 @@ internal abstract class SharedClient(string key, string address, int tries, Time
     /// <summary>Reads what the server sends until the connection ends.</summary>
     protected abstract IAsyncEnumerable<object> ReadAsync();
 
-    /// <summary>Writes a message: <paramref name="text"/>, or the message itself.</summary>
-    protected abstract Task WriteAsync(Message message, string? text, string? end, CancellationToken cancellationToken);
+    /// <summary>Writes a message: <paramref name="text"/>, or the message itself. Returns the bytes written.</summary>
+    protected abstract Task<long> WriteAsync(Message message, string? text, string? end, CancellationToken cancellationToken);
+
+    /// <summary>The bytes of something the server sent.</summary>
+    protected abstract long SizeOf(object payload);
 
     /// <summary>Closes the connection, if it's open.</summary>
     protected abstract Task CloseConnectionAsync();
@@ -250,11 +259,12 @@ internal sealed class Subscription
 /// <summary>A lease on a connection Send opened, carried by what the server sends.</summary>
 internal sealed class ClientLease(Subscription subscription) : Lease, IConnectionLease
 {
-    public Task ReplyAsync(Message message, string? text, string? end, bool final, CancellationToken cancellationToken)
+    public async Task ReplyAsync(Message message, string? text, string? end, bool final, CancellationToken cancellationToken)
     {
         if (IsClosed)
             throw new IOException($"{this} has closed");
-        return subscription.Client.ReplyAsync(message, text, end, final, cancellationToken);
+        // Counted for the Send whose connection it is, whichever module replies.
+        subscription.Outlet.CountBytes(0, await subscription.Client.ReplyAsync(message, text, end, final, cancellationToken).ConfigureAwait(false));
     }
 
     public override string ToString() => $"the connection to {subscription.Client.Address}";
@@ -296,11 +306,15 @@ internal sealed class WebSocketClient(Uri uri, SendWebSocketParameters parameter
             yield return frame;
     }
 
-    protected override async Task WriteAsync(Message message, string? text, string? end, CancellationToken cancellationToken)
+    protected override async Task<long> WriteAsync(Message message, string? text, string? end, CancellationToken cancellationToken)
     {
         var link = _link ?? throw new IOException("not connected");
-        await link.SendAsync(await Frames.ForAsync(message, text, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+        var frame = await Frames.ForAsync(message, text, cancellationToken).ConfigureAwait(false);
+        await link.SendAsync(frame, cancellationToken).ConfigureAwait(false);
+        return frame.Bytes.Length;
     }
+
+    protected override long SizeOf(object payload) => ((Frame)payload).Bytes.Length;
 
     protected override Task CloseConnectionAsync() =>
         _link?.CloseAsync(WebSocketCloseStatus.NormalClosure, "Goodbye.") ?? Task.CompletedTask;
@@ -348,7 +362,9 @@ internal sealed class TcpServerClient(string address, string host, int port, Sen
             yield return body;
     }
 
-    protected override async Task WriteAsync(Message message, string? text, string? end, CancellationToken cancellationToken)
+    protected override long SizeOf(object payload) => ((byte[])payload).Length;
+
+    protected override async Task<long> WriteAsync(Message message, string? text, string? end, CancellationToken cancellationToken)
     {
         var client = _client ?? throw new IOException("not connected");
         var bytes = Encoding.UTF8.GetBytes(string.Concat(text ?? message.ToText(), end ?? parameters.End ?? _framing.Ending));
@@ -367,6 +383,7 @@ internal sealed class TcpServerClient(string address, string host, int port, Sen
         {
             _writing.Release();
         }
+        return bytes.Length;
     }
 
     protected override Task CloseConnectionAsync()

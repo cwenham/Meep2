@@ -60,7 +60,9 @@ public sealed class LivePipeline
             return (null, diagnostics);
         var (keys, nextKey) = Keys(modules, null, null, 1);
         var state = new State(syntax, registry, modules, Fingerprints(modules.Expanded, modules), holds ?? [], keys, nextKey);
-        return (new LivePipeline(modules.Builder.Build(), state, options), diagnostics);
+        var pipeline = modules.Builder.Build();
+        pipeline.NameModules(state.ModuleKeys);
+        return (new LivePipeline(pipeline, state, options), diagnostics);
     }
 
     /// <summary>The module a module line is now, in the running pipeline.</summary>
@@ -88,8 +90,10 @@ public sealed class LivePipeline
         if (modules is null)
             throw new InvalidOperationException($"{Pipeline.Name} didn't load again, so it can't be restarted: {string.Join("; ", diagnostics.Where(d => d.IsError))}");
         var (keys, nextKey) = Keys(modules, ModuleMatcher.Match(state.Modules.Expanded, modules.Expanded), state.Keys, state.NextKey);
-        _state = state with { Modules = modules, Fingerprints = Fingerprints(modules.Expanded, modules), Keys = keys, NextKey = nextKey };
-        return Pipeline = modules.Builder.Build();
+        _state = state = new State(state.Syntax, state.Registry, modules, Fingerprints(modules.Expanded, modules), state.Holds, keys, nextKey);
+        Pipeline = modules.Builder.Build();
+        Pipeline.NameModules(state.ModuleKeys);
+        return Pipeline;
     }
 
     /// <summary>
@@ -139,6 +143,7 @@ public sealed class LivePipeline
             var previous = state.Holds;
             var (keys, nextKey) = Keys(modules, matches, state.Keys, state.NextKey);
             _state = new State(next, registry ?? state.Registry, modules, fingerprints, holds ?? state.Holds, keys, nextKey);
+            Pipeline.NameModules(_state.ModuleKeys);
             if (holds is not null)
                 Release(previous);
             return new LiveChange(true, report, matches, diagnostics) { SettingsChanged = Settings(state.Syntax) != Settings(next) };
@@ -181,17 +186,7 @@ public sealed class LivePipeline
     /// gives it now, as <see cref="Pipeline.Modules"/> and <see cref="Pipeline.GetLinkStats"/> have it. Cheaper than
     /// <see cref="Shape"/>, for putting keys on counts.
     /// </summary>
-    public IReadOnlyDictionary<ModuleInfo, string> ModuleKeys()
-    {
-        var state = _state;
-        var keys = new Dictionary<ModuleInfo, string>(state.Modules.Infos.Count, ReferenceEqualityComparer.Instance);
-        foreach (var (syntax, info) in state.Modules.Infos)
-        {
-            if (state.Keys.TryGetValue(syntax, out var key))
-                keys[info] = key;
-        }
-        return keys;
-    }
+    public IReadOnlyDictionary<ModuleInfo, string> ModuleKeys() => _state.ModuleKeys;
 
     // Each module's key: the key of the module it was matched with before the change, or a new one, never used
     // before in this pipeline. A pipeline's first keys are m1, m2 and so on, in the order it numbers its modules.
@@ -228,5 +223,23 @@ public sealed class LivePipeline
         IReadOnlyDictionary<ModuleSyntax, string> Fingerprints,
         IReadOnlyList<IDisposable> Holds,
         IReadOnlyDictionary<ModuleSyntax, string> Keys,
-        int NextKey);
+        int NextKey)
+    {
+        // Worked out once for each state, since the daemon asks for it with every update it sends. A with expression
+        // would copy it, so make a new state with its constructor instead.
+        private IReadOnlyDictionary<ModuleInfo, string>? _moduleKeys;
+
+        public IReadOnlyDictionary<ModuleInfo, string> ModuleKeys => _moduleKeys ??= MakeModuleKeys();
+
+        private Dictionary<ModuleInfo, string> MakeModuleKeys()
+        {
+            var keys = new Dictionary<ModuleInfo, string>(Modules.Infos.Count, ReferenceEqualityComparer.Instance);
+            foreach (var (syntax, info) in Modules.Infos)
+            {
+                if (Keys.TryGetValue(syntax, out var key))
+                    keys[info] = key;
+            }
+            return keys;
+        }
+    }
 }

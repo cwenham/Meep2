@@ -24,14 +24,19 @@ internal static class Telemetry
     /// <summary>Starts exporting, or returns null if there's nowhere to export to. Dispose it to send what's left.</summary>
     /// <param name="otlp">A collector's OTLP/HTTP address, such as http://localhost:4318, or null to use the standard variables.</param>
     /// <param name="sample">The share of traces to record, or null for the default.</param>
-    public static IDisposable? Start(string? otlp, double? sample = null)
+    /// <param name="instance">
+    /// The daemon's lasting ID, for the resource's <c>service.instance.id</c>, so a collector can tell which daemon
+    /// sent what; null for <c>meep run</c>, which gets a new one each time.
+    /// </param>
+    public static IDisposable? Start(string? otlp, double? sample = null, string? instance = null)
     {
         if (otlp is null && string.IsNullOrEmpty(Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT")))
             return null;
 
         var resource = ResourceBuilder.CreateDefault();
-        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("OTEL_SERVICE_NAME")))
-            resource.AddService("meep");
+        var service = Environment.GetEnvironmentVariable("OTEL_SERVICE_NAME") is { Length: > 0 } named ? named : "meep";
+        resource.AddService(service, serviceInstanceId: instance, autoGenerateServiceInstanceId: instance is null);
+        resource.AddAttributes([new KeyValuePair<string, object>("host.name", Environment.MachineName)]);
         var traces = Sdk.CreateTracerProviderBuilder()
             .SetResourceBuilder(resource)
             .AddSource(MeepTelemetry.Name)
@@ -41,7 +46,7 @@ internal static class Telemetry
         var tracing = traces.Build();
         var metrics = Sdk.CreateMeterProviderBuilder()
             .SetResourceBuilder(resource)
-            .AddMeter(MeepTelemetry.Name)
+            .AddMeter(MeepTelemetry.Name, "System.Runtime") // and .NET's own: CPU, memory, garbage collection
             .AddOtlpExporter(exporter => Configure(exporter, otlp, "v1/metrics"))
             .Build();
         return new Providers(tracing, metrics);

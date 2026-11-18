@@ -38,6 +38,8 @@ internal static class Telemetry
             "Times each module threw, and times it was restarted.");
         Meter.CreateObservableUpDownCounter("meep.module.queued", ObserveQueues, "{message}",
             "Messages waiting in each module's buffer.");
+        Meter.CreateObservableCounter("meep.module.bytes", ObserveBytes, "By",
+            "Bytes each module that talks to the network has read (network.io.direction receive) and written (transmit).");
     }
 
     /// <summary>Whether anything is collecting spans.</summary>
@@ -63,7 +65,7 @@ internal static class Telemetry
                 return;
             }
             if (span.IsAllDataRequested)
-                Describe(span, from.Pipeline, emitter, message);
+                Describe(span, from.Pipeline, emitter, from.Key, message);
             cameFrom = span.Context;
         }
         else if (message.Parent is { } parent && s_cameFrom.TryGetValue(parent, out var parentCameFrom))
@@ -84,7 +86,7 @@ internal static class Telemetry
         if (span is null || !span.Recorded)
             return;
         if (span.IsAllDataRequested)
-            Describe(span, pipeline, Pipeline.Injector, message);
+            Describe(span, pipeline, Pipeline.Injector, null, message);
         s_cameFrom.AddOrUpdate(message, new StrongBox<ActivityContext>(span.Context));
     }
 
@@ -104,7 +106,7 @@ internal static class Telemetry
         if (span is null)
             return null;
         if (span.IsAllDataRequested)
-            Describe(span, node.Pipeline, inflection, message);
+            Describe(span, node.Pipeline, inflection, node.Key, message);
         node.Handling = (message, span);
         return span;
     }
@@ -125,10 +127,21 @@ internal static class Telemetry
         node.Handling = null;
     }
 
-    private static void Describe(Activity span, Pipeline pipeline, ModuleInfo module, Message message)
+    /// <summary>Records how long a module took to handle a message, in <see cref="Stopwatch"/> ticks.</summary>
+    public static void RecordDuration(Node node, long ticks)
+    {
+        var tags = new TagList { { "meep.pipeline", node.Pipeline.Name }, { "meep.module", node.Label } };
+        if (node.Key is { } key)
+            tags.Add("meep.module.key", key);
+        Duration.Record(ticks / (double)Stopwatch.Frequency, tags);
+    }
+
+    private static void Describe(Activity span, Pipeline pipeline, ModuleInfo module, string? key, Message message)
     {
         span.SetTag("meep.pipeline", pipeline.Name);
         span.SetTag("meep.module", module.ToString());
+        if (key is not null)
+            span.SetTag("meep.module.key", key);
         span.SetTag("meep.message.type", message.GetType().Name);
         span.SetTag("meep.message.id", message.Id.ToString());
         if (message is ErrorMessage error)
@@ -192,13 +205,38 @@ internal static class Telemetry
         foreach (var pipeline in Pipeline.AllRunning)
         {
             foreach (var node in pipeline.Nodes)
-                yield return new Measurement<long>(node.Queued, new KeyValuePair<string, object?>("meep.pipeline", pipeline.Name), new KeyValuePair<string, object?>("meep.module", node.Label));
+                yield return new Measurement<long>(node.Queued, Tags(pipeline, node));
         }
     }
 
-    private static Measurement<long> Measure(long value, Pipeline pipeline, Node node, string happened) =>
-        new(value,
-            new KeyValuePair<string, object?>("meep.pipeline", pipeline.Name),
-            new KeyValuePair<string, object?>("meep.module", node.Label),
-            new KeyValuePair<string, object?>("meep.event", happened));
+    private static IEnumerable<Measurement<long>> ObserveBytes()
+    {
+        foreach (var pipeline in Pipeline.AllRunning)
+        {
+            foreach (var node in pipeline.Nodes)
+            {
+                var traffic = node.Traffic;
+                if (traffic == default)
+                    continue; // modules that don't talk to the network
+                yield return Measure(traffic.Received, pipeline, node, "receive", "network.io.direction");
+                yield return Measure(traffic.Sent, pipeline, node, "transmit", "network.io.direction");
+            }
+        }
+    }
+
+    private static Measurement<long> Measure(long value, Pipeline pipeline, Node node, string happened, string tag = "meep.event")
+    {
+        var tags = Tags(pipeline, node);
+        tags.Add(tag, happened);
+        return new(value, tags);
+    }
+
+    // Each metric's pipeline and module, and the module's key if it has one.
+    private static TagList Tags(Pipeline pipeline, Node node)
+    {
+        var tags = new TagList { { "meep.pipeline", pipeline.Name }, { "meep.module", node.Label } };
+        if (node.Key is { } key)
+            tags.Add("meep.module.key", key);
+        return tags;
+    }
 }

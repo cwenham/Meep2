@@ -182,6 +182,73 @@ public sealed class Pipeline : IAsyncDisposable
     public ModuleStats GetStats(ModuleInfo module) => NodeOf(module).GetStats();
 
     /// <summary>
+    /// How long one module has taken to handle each message since the pipeline started, as a histogram that merges
+    /// with other modules' (<see cref="HandlingTimes"/>). Sources handle no messages, so theirs stays empty.
+    /// </summary>
+    public HandlingTimes GetHandlingTimes(ModuleInfo module) => NodeOf(module).Timing.Snapshot();
+
+    /// <summary>
+    /// How long one module has spent handling messages since the pipeline started: the sum of its
+    /// <see cref="GetHandlingTimes"/>, without the work of making the histogram. Its rate of change is how busy the
+    /// module is, from 0 to 1 for each message it handles at once.
+    /// </summary>
+    public TimeSpan GetBusyTime(ModuleInfo module) => NodeOf(module).Timing.Total;
+
+    /// <summary>
+    /// Every module's counts, busy time and bytes, in one pass, in the order of <see cref="Modules"/>: what
+    /// <see cref="GetStats"/>, <see cref="GetBusyTime"/> and <see cref="GetTraffic"/> give for each, for a tool that
+    /// reads them all often.
+    /// </summary>
+    public IReadOnlyList<ModuleReading> ReadModules()
+    {
+        var layout = _layout;
+        var readings = new ModuleReading[layout.Nodes.Length];
+        for (var i = 0; i < readings.Length; i++)
+        {
+            var node = layout.Nodes[i];
+            readings[i] = new ModuleReading(layout.Modules[i], node.GetStats(), node.Traffic, node.Timing.Total, node is SourceNode);
+        }
+        return readings;
+    }
+
+    /// <summary>Whether a module is one of the pipeline's sources, which emit messages of their own.</summary>
+    public bool IsSource(ModuleInfo module) => NodeOf(module) is SourceNode;
+
+    /// <summary>
+    /// Bytes one module has read from the network and written to it since the pipeline started, as it counted them
+    /// (<see cref="ModuleContext.CountBytes"/>). Nothing for a module that doesn't talk to the network.
+    /// </summary>
+    public ModuleTraffic GetTraffic(ModuleInfo module) => NodeOf(module).Traffic;
+
+    /// <summary>Where the pipeline's modules are listening now, as each says it (<see cref="ModuleContext.Listening"/>).</summary>
+    public IReadOnlyList<ListeningAt> GetListening()
+    {
+        var layout = _layout;
+        var listening = new List<ListeningAt>();
+        for (var i = 0; i < layout.Nodes.Length; i++)
+        {
+            if (layout.Nodes[i].ListeningAt is { } address)
+                listening.Add(new ListeningAt(layout.Modules[i], address));
+        }
+        return listening;
+    }
+
+    /// <summary>
+    /// Gives modules the keys a tool knows them by, such as the daemon's graph keys, which last while their numbers
+    /// change. They go on the modules' spans and metrics as <c>meep.module.key</c>. A module not named keeps the key it
+    /// had.
+    /// </summary>
+    public void NameModules(IReadOnlyDictionary<ModuleInfo, string> keys)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        foreach (var (module, key) in keys)
+        {
+            if (_nodesByModule.TryGetValue(module, out var node))
+                node.Key = key;
+        }
+    }
+
+    /// <summary>
     /// The count for each link between the pipeline's modules since it started, grouped by the module each goes to,
     /// in the order of its inputs. A change to the running pipeline that keeps two linked modules keeps their link's
     /// count; a new link starts from zero.

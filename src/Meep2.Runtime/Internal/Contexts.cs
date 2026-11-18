@@ -34,6 +34,10 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
 
     public override Outlet Outlet => new NodeOutlet(node, Module);
 
+    public override void CountBytes(long received, long sent) => node.CountBytes(received, sent);
+
+    public override void Listening(string? address) => node.ListeningAt = address;
+
     /// <summary>Whether the module emitted the message it was given, passing it on unchanged.</summary>
     public bool PassedOn => _passedOn;
 
@@ -218,8 +222,16 @@ internal sealed class SourceContext(SourceNode node) : ModuleContext
 
     public override System.Collections.Concurrent.ConcurrentDictionary<string, object> Shared => node.Pipeline.Shared;
 
-    /// <summary>Called when the source finishes. Emitting after that is a mistake.</summary>
-    public void Close() => _closed = true;
+    public override void CountBytes(long received, long sent) => node.CountBytes(received, sent);
+
+    public override void Listening(string? address) => node.ListeningAt = address;
+
+    /// <summary>Called when the source finishes. Emitting after that is a mistake, and it's no longer listening.</summary>
+    public void Close()
+    {
+        _closed = true;
+        node.ListeningAt = null;
+    }
 
     /// <summary>Whether the source has emitted a message, other than an error, since this was last asked (Q79).</summary>
     public bool TakeEmitted()
@@ -285,6 +297,8 @@ internal sealed class SourceContext(SourceNode node) : ModuleContext
 /// </summary>
 internal sealed class NodeOutlet(InflectionNode node, ModuleInfo emitter) : Outlet
 {
+    public override void CountBytes(long received, long sent) => node.CountBytes(received, sent);
+
     public override bool Emit(Message message)
     {
         ArgumentNullException.ThrowIfNull(message);

@@ -64,6 +64,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
                 return;
             }
             var body = await ReadBodyAsync(response.Content, url, parameters.MaxSize, timeout.Token).ConfigureAwait(false);
+            context.CountBytes(body.Length, 0);
             var text = Decode(body, response.Content.Headers.ContentType);
             var status = (int)response.StatusCode;
             if (!response.IsSuccessStatusCode)
@@ -132,7 +133,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
                 Headers = Headers(response),
                 Body = default,
                 Text = "",
-                Streamed = new StreamedBody(body, "response body"),
+                Streamed = new StreamedBody(new CountingStream(body, context.CountBytes), "response body"),
             },
             lease);
     }

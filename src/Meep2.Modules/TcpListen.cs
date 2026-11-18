@@ -69,6 +69,7 @@ public sealed class TcpListen(TcpListenParameters parameters) : ASource, IChosen
             throw new InvalidOperationException($"Listen.TCP needs a tcp:// address with a port, not {start.Url}");
         var listener = new TcpListener(await Endpoints.ResolveAsync(host, cancellationToken).ConfigureAwait(false), port);
         listener.Start();
+        context.Listening($"tcp://{listener.LocalEndpoint}");
         var connections = new List<Task>();
         try
         {
@@ -98,7 +99,7 @@ public sealed class TcpListen(TcpListenParameters parameters) : ASource, IChosen
     // Emits each message from one connection, then waits until the connection's lease has closed.
     private static async Task ServeAsync(TcpClient client, TcpListenParameters parameters, Framing framing, ModuleContext context, CancellationToken cancellationToken)
     {
-        var lease = new TcpConnectionLease(client, framing.Ending);
+        var lease = new TcpConnectionLease(client, framing.Ending, context);
         var emitted = false;
         var reason = "The client closed the connection.";
         using (lease.Hold())
@@ -179,15 +180,18 @@ internal sealed class TcpConnectionLease : Lease, IConnectionLease
     private readonly TcpClient _client;
     private readonly SemaphoreSlim _writing = new(1, 1);
 
-    public TcpConnectionLease(TcpClient client, string ending)
+    /// <param name="client">The connection.</param>
+    /// <param name="ending">What ends a message on it.</param>
+    /// <param name="listen">The Listen it came to, which counts the bytes read and written on it, whichever module writes them.</param>
+    public TcpConnectionLease(TcpClient client, string ending, ModuleContext listen)
     {
         _client = client;
         Ending = ending;
-        Stream = client.GetStream();
+        Stream = new CountingStream(client.GetStream(), listen.CountBytes);
         Remote = client.Client.RemoteEndPoint?.ToString() ?? "a client";
     }
 
-    public NetworkStream Stream { get; }
+    public Stream Stream { get; }
 
     public string Remote { get; }
 

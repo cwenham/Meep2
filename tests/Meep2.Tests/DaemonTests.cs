@@ -289,6 +289,31 @@ public class DaemonTests
         await Wait.Until(() => received.Contains("/v1/traces") && received.Contains("/v1/metrics"));
     }
 
+    [Test]
+    public async Task Meep_daemon_socket_shows_the_socket_in_full_and_the_daemons_id()
+    {
+        using var home = DaemonLab.ShortFolder();
+        var options = new PluginOptions { Home = home.Path };
+        var socket = Path.GetFullPath(Path.Combine(home.Path, "daemon", "meep.sock"));
+        var before = await Cli(options, "daemon", "socket");
+
+        using var stopDaemon = new CancellationTokenSource();
+        var daemon = MeepCommand.RunAsync(["daemon"], new SharedText(), new SharedText(), options, stopDaemon.Token);
+        await Wait.Until(() => File.Exists(socket) || daemon.IsCompleted);
+        var running = await Cli(options, "daemon", "socket");
+        await Cli(options, "daemon", "stop");
+        await Wait.For(daemon);
+        var help = await Cli(options, "--help");
+
+        await Assert.That(before.Code).IsEqualTo(0);
+        await Assert.That(before.Output).IsEqualTo($"{socket}{Environment.NewLine}{HostIdentity.IdOf(home.Path)}{Environment.NewLine}");
+        await Assert.That(before.Error).Contains("No daemon is running there now");
+        await Assert.That(running.Code).IsEqualTo(0);
+        await Assert.That(running.Output).IsEqualTo(before.Output);
+        await Assert.That(running.Error).IsEqualTo("");
+        await Assert.That(help.Output).Contains("meep daemon socket");
+    }
+
     private static async Task<(int Code, string Output, string Error)> Cli(PluginOptions options, params string[] args)
     {
         var output = new SharedText();
