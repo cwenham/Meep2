@@ -73,6 +73,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     private readonly Lock _signalling = new();
     private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private HostInfo? _identity;
+    private IDisposable? _meepHosts;
 
     private readonly DaemonOptions _options;
     private readonly ConcurrentDictionary<string, HostedPipeline> _pipelines = new(StringComparer.Ordinal);
@@ -148,6 +149,9 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         var socket = Path.GetFullPath(SocketPath);
         PrepareSocket(socket);
         _identity = new HostInfo(HostIdentity.IdOf(_options.Plugins.Home), await HostIdentity.NamesAsync(cancellationToken).ConfigureAwait(false), HostIdentity.Addresses(), Version, Environment.ProcessId);
+        // Meep hosts the settings name, and those learned before, get origins from the first request (Q213).
+        Meep2.Modules.MeepHosts.Configure(_options.MeepHosts);
+        _meepHosts = Meep2.Modules.MeepHosts.Keep(_options.MeepHostsFile);
 
         var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions());
         builder.WebHost.UseKestrelCore();
@@ -226,6 +230,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     public async ValueTask DisposeAsync()
     {
         await StopAsync().ConfigureAwait(false);
+        _meepHosts?.Dispose();
         _stopping.Dispose();
     }
 
@@ -289,6 +294,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         var ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         var hostedOptions = new PipelineOptions
         {
+            HostId = ((ISubscriptionHost)this).Identity.Id,
             UnhandledError = e => Log(e.AnsweredBy is { } answerer
                 ? $"[{name}] error from {e.EmittedBy?.ToString() ?? "the pipeline"}, answered by {answerer}: {e.Error}"
                 : $"[{name}] error from {e.EmittedBy?.ToString() ?? "the pipeline"}: {e.Error}"),
@@ -405,6 +411,36 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
                 listening.Add(new ListenInfo(hosted.Name, keys.GetValueOrDefault(at.Module) ?? "", at.Module.ToString(), at.Address));
         }
         return listening;
+    }
+
+    /// <summary>
+    /// Where the running pipelines' Fetches and Sends send, as their addresses say: those that reach the network, by
+    /// an address fixed when the pipeline started or worked out for each message.
+    /// </summary>
+    internal static List<SendInfo> Sending(IEnumerable<HostedPipeline> pipelines)
+    {
+        var sending = new List<SendInfo>();
+        foreach (var hosted in pipelines.OrderBy(p => p.Name, StringComparer.Ordinal))
+        {
+            if (hosted.Ended is not null || hosted.Pipeline is not { } pipeline || hosted.Live is not { } live)
+                continue;
+            var keys = live.ModuleKeys();
+            foreach (var to in pipeline.GetSending())
+            {
+                var endpoint = to.Computed ? Peers.EndpointOfTemplate(to.Address) : Peers.EndpointOf(to.Address);
+                if (!to.Computed && endpoint is null)
+                    continue; // a file, or a Listen's name, rather than somewhere on the network
+                if (to.Computed && endpoint is null && to.Address.TrimStart('"') is var written
+                    && (written.StartsWith('/') || written.StartsWith('~') || written.StartsWith('.') || written.StartsWith("file:", StringComparison.OrdinalIgnoreCase)))
+                    continue;
+                sending.Add(new SendInfo(hosted.Name, keys.GetValueOrDefault(to.Module) ?? "", to.Module.ToString(), to.Address)
+                {
+                    Computed = to.Computed,
+                    Endpoint = endpoint,
+                });
+            }
+        }
+        return sending;
     }
 
     // Takes pipelines off the list once they've been listed for as long as their files ask.
@@ -550,6 +586,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
                     Names = identity.Names,
                     Addresses = identity.Addresses,
                     Listening = Listening(),
+                    Sending = Sending(_pipelines.Values),
                     Clock = HostIdentity.Microseconds(DateTimeOffset.UtcNow),
                 }, DaemonJson.Default.DaemonInfo);
             }

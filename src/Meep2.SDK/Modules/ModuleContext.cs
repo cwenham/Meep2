@@ -154,6 +154,49 @@ public abstract class ModuleContext
     }
 
     /// <summary>
+    /// The lasting ID of the Meep host the module runs in, such as the daemon's, or null if nothing has given it one.
+    /// A Listen answers another Meep with it (<see cref="Peers.HostHeader"/>).
+    /// </summary>
+    public virtual string? HostId => null;
+
+    /// <summary>
+    /// Where messages the module sends come from, for another Meep host to count them by (<see cref="Peers"/>): its
+    /// host's ID, its pipeline and its key, each escaped as in a URL. Null when the module has no key, as in a pipeline
+    /// built without Meeplang, or its host has no ID.
+    /// </summary>
+    public virtual string? Origin => null;
+
+    /// <summary>
+    /// The W3C <c>traceparent</c> for a request made while handling the message being handled, naming the module's own
+    /// span, so the host that receives it can continue the trace (<see cref="ContinueTrace"/>). While tracing, a
+    /// message whose trace isn't recorded gets one that says so, so the other host doesn't record its part either.
+    /// Null when nothing is tracing.
+    /// </summary>
+    public virtual string? TraceParent => null;
+
+    /// <summary>
+    /// Says a message a source is about to emit continues a trace begun elsewhere, as a request from another Meep
+    /// host does, by its W3C <c>traceparent</c>. Its span then has that one as its parent, so a collector joins the
+    /// two hosts' spans into one trace. Call it before emitting the message. Does nothing unless tracing.
+    /// </summary>
+    public virtual void ContinueTrace(Message message, string traceParent)
+    {
+    }
+
+    /// <summary>
+    /// The counts for messages arriving from one place, for a module that receives them over the network, as Listen
+    /// does: <c>meep://</c> and the origin another Meep host gave (<see cref="Peers.OriginIn"/>), or else the client's
+    /// address (<see cref="Peers.ClientOf"/>).
+    /// </summary>
+    public virtual Tally Arrival(string from) => Tally.None;
+
+    /// <summary>
+    /// The counts for messages going to one place, for a module that sends them over the network, as Fetch and Send
+    /// do: where it connected, as <see cref="Peers.EndpointOf(Uri)"/> writes it.
+    /// </summary>
+    public virtual Tally Destination(string endpoint) => Tally.None;
+
+    /// <summary>
     /// Things the modules of one pipeline share, by name, such as the connections a Listen has open, which Send reaches
     /// by the Listen's name. A plugin should start its names with its own, so they don't clash.
     /// </summary>

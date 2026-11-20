@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -16,8 +17,11 @@ namespace Meep2.Modules;
 /// </remarks>
 [Verb("Fetch", Inflection = "HTTP")]
 [Emits(typeof(HttpResponse))]
-public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>, IChosenByParameters<FetchParameters>
+public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>, IChosenByParameters<FetchParameters>, ISendsTo
 {
+    /// <inheritdoc/>
+    public Computed<string> Address => parameters.Url;
+
     /// <summary>Takes http and https addresses.</summary>
     public static string? WhyNot(FetchParameters parameters, Message message)
     {
@@ -52,19 +56,27 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(parameters.Timeout);
         HttpResponseMessage? response = null;
+        HttpResponseMessage? answer = null; // kept when the lease takes the response, for counting a failure after
+        var endpoint = Peers.EndpointOf(uri!);
+        var tally = endpoint is null ? Tally.None : context.Destination(endpoint);
         try
         {
-            response = await Client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+            var reached = await SendAsync(HttpMethod.Get, uri!, null, HttpCompletionOption.ResponseHeadersRead, context, timeout.Token).ConfigureAwait(false);
+            response = answer = reached.Response;
+            tally = reached.Counted(endpoint, tally, context);
+            tally.Count(sent: 1, received: 1);
+            tally.Status((int)response.StatusCode);
             if (parameters.Stream && response.IsSuccessStatusCode)
             {
                 // From here the lease owns the response, and disposes it when it closes.
                 var streamed = response;
                 response = null;
-                await EmitStreamedAsync(streamed, url, context, timeout.Token).ConfigureAwait(false);
+                await EmitStreamedAsync(streamed, url, context, tally, timeout.Token).ConfigureAwait(false);
                 return;
             }
             var body = await ReadBodyAsync(response.Content, url, parameters.MaxSize, timeout.Token).ConfigureAwait(false);
             context.CountBytes(body.Length, 0);
+            tally.Count(bytesReceived: body.Length);
             var text = Decode(body, response.Content.Headers.ContentType);
             var status = (int)response.StatusCode;
             if (!response.IsSuccessStatusCode)
@@ -92,14 +104,17 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            Failed(answer, tally);
             context.EmitError($"{url} didn't answer within {Describe(parameters.Timeout)}");
         }
         catch (HttpRequestException exception)
         {
+            Failed(answer, tally);
             context.EmitError($"Couldn't fetch {url}: {exception.Message}", exception);
         }
         catch (TooLargeException exception)
         {
+            Failed(answer, tally);
             context.EmitError(exception.Message, exception);
         }
         finally
@@ -108,9 +123,84 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         }
     }
 
+    /// <summary>The most redirects followed for one request, as <see cref="HttpClientHandler"/> follows by default.</summary>
+    private const int MaxRedirects = 50;
+
+    /// <summary>
+    /// Sends a request, saying where it comes from (<see cref="MeepHosts.Mark"/>), and follows redirects itself, as
+    /// <see cref="HttpClient"/> would (Q217): to http or https, never from https to http, a POST becoming a GET after
+    /// 301, 302 or 300, and anything but a HEAD after 303, and the body sent again after 307 or 308, unless it was
+    /// streamed. A redirect to another host or port asks it whether it's Meep, and never gives it the origin.
+    /// </summary>
+    /// <param name="method">GET or POST.</param>
+    /// <param name="uri">Where to.</param>
+    /// <param name="content">The body, or null; the caller disposes it.</param>
+    /// <param name="completion">Whether to wait for the whole response, or only its headers.</param>
+    /// <param name="context">The module sending it, for where it comes from.</param>
+    /// <param name="cancellationToken">Gives up.</param>
+    /// <param name="sending">Told the bytes of a body each time one is sent, for counting.</param>
+    internal static async Task<Reached> SendAsync(HttpMethod method, Uri uri, HttpContent? content, HttpCompletionOption completion, ModuleContext context, CancellationToken cancellationToken, Action<long>? sending = null)
+    {
+        var first = Peers.EndpointOf(uri);
+        var endpoint = first;
+        for (var hop = 0; ; hop++)
+        {
+            // Not disposed: that would dispose the body, which a 307 or 308 sends again. The caller disposes it.
+            var request = new HttpRequestMessage(method, uri) { Content = content };
+            var marked = MeepHosts.Mark(request.Headers, endpoint, uri, context, ask: endpoint != first);
+            var response = await Client.SendAsync(request, completion, cancellationToken).ConfigureAwait(false);
+            if (content is not null && content is not StreamContent)
+                sending?.Invoke(content.Headers.ContentLength ?? 0);
+            var id = MeepHosts.Answered(endpoint, response.Headers, marked);
+            var status = (int)response.StatusCode;
+            if (hop >= MaxRedirects || RedirectOf(response, uri) is not { } next || (status is 307 or 308 && content is StreamContent))
+                return new Reached(response, endpoint, id);
+            if ((status is 300 or 301 or 302 && method == HttpMethod.Post) || (status == 303 && method != HttpMethod.Get && method != HttpMethod.Head))
+            {
+                method = HttpMethod.Get;
+                content = null;
+            }
+            response.Dispose();
+            uri = next;
+            endpoint = Peers.EndpointOf(next);
+        }
+    }
+
+    // Where a redirect leads, or null for a response that isn't one this follows.
+    private static Uri? RedirectOf(HttpResponseMessage response, Uri from)
+    {
+        if ((int)response.StatusCode is not (300 or 301 or 302 or 303 or 307 or 308) || response.Headers.Location is not { } location)
+            return null;
+        if (!location.IsAbsoluteUri)
+            location = new Uri(from, location);
+        if (location.Scheme is not ("http" or "https") || (from.Scheme == "https" && location.Scheme == "http"))
+            return null;
+        return location;
+    }
+
+    /// <summary>The response a request came to, after any redirects: where, and the Meep host there, if it is one.</summary>
+    internal readonly record struct Reached(HttpResponseMessage Response, string? Endpoint, string? MeepId)
+    {
+        /// <summary>
+        /// The counts for where it came to, knowing whether it's Meep there: <paramref name="tally"/>, for
+        /// <paramref name="asked"/>, unless a redirect led somewhere else (Q217).
+        /// </summary>
+        public Tally Counted(string? asked, Tally tally, ModuleContext context)
+        {
+            if (Endpoint != asked)
+                tally = Endpoint is null ? Tally.None : context.Destination(Endpoint);
+            tally.Meep(MeepId);
+            return tally;
+        }
+    }
+
+    // A request that failed: one sent, and one failed, unless an answer had been counted already, as failed or rejected.
+    internal static void Failed(HttpResponseMessage? answered, Tally tally) =>
+        tally.Count(sent: answered is null ? 1 : 0, failed: answered is null || (int)answered.StatusCode < 400 ? 1 : 0);
+
     // Emits the response with its body unread. A lease keeps the response open until the body has been read and
     // every message made from this one has left the pipeline.
-    private static async Task EmitStreamedAsync(HttpResponseMessage response, string url, ModuleContext context, CancellationToken cancellationToken)
+    private static async Task EmitStreamedAsync(HttpResponseMessage response, string url, ModuleContext context, Tally tally, CancellationToken cancellationToken)
     {
         var lease = new OpenResponse(response);
         Stream body;
@@ -133,28 +223,44 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
                 Headers = Headers(response),
                 Body = default,
                 Text = "",
-                Streamed = new StreamedBody(new CountingStream(body, context.CountBytes), "response body"),
+                Streamed = new StreamedBody(new CountingStream(body, (received, sent) =>
+                {
+                    context.CountBytes(received, sent);
+                    tally.Count(bytesReceived: received, bytesSent: sent);
+                }), "response body"),
             },
             lease);
     }
 
     internal static async Task<byte[]> ReadBodyAsync(HttpContent content, string url, long limit, CancellationToken cancellationToken)
     {
-        if (content.Headers.ContentLength > limit)
-            throw new TooLargeException($"{url} sent {content.Headers.ContentLength} bytes, over the limit of {limit}");
+        var length = content.Headers.ContentLength;
+        if (length > limit)
+            throw new TooLargeException($"{url} sent {length} bytes, over the limit of {limit}");
 
         await using var stream = await content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
-        using var buffer = new MemoryStream();
-        var chunk = new byte[81920];
-        int read;
-        while ((read = await stream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
+        // The chunk is rented, and only copied from, so nothing keeps it once it's returned; the body is a new array.
+        var chunk = ArrayPool<byte>.Shared.Rent(length is { } known ? (int)Math.Clamp(known, 1, ChunkSize) : ChunkSize);
+        try
         {
-            if (buffer.Length + read > limit)
-                throw new TooLargeException($"{url} sent more than the limit of {limit} bytes");
-            buffer.Write(chunk, 0, read);
+            using var buffer = new MemoryStream(length is { } expected ? (int)Math.Min(expected, int.MaxValue) : 0);
+            int read;
+            while ((read = await stream.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                if (buffer.Length + read > limit)
+                    throw new TooLargeException($"{url} sent more than the limit of {limit} bytes");
+                buffer.Write(chunk, 0, read);
+            }
+            return buffer.Length == buffer.Capacity ? buffer.GetBuffer() : buffer.ToArray();
         }
-        return buffer.ToArray();
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(chunk);
+        }
     }
+
+    // The most read at once from a response's body.
+    private const int ChunkSize = 81920;
 
     internal static string Decode(byte[] body, MediaTypeHeaderValue? contentType)
     {
@@ -190,6 +296,11 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         {
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
             AutomaticDecompression = DecompressionMethods.All,
+            // Followed in SendAsync instead, so origins don't go on to wherever a redirect leads (Q217).
+            AllowAutoRedirect = false,
+            // Fetch and Send add traceparent themselves, naming their own span (MeepHosts.Mark). .NET's own would name
+            // a span of its own that no collector receives, so the other host's spans would hang from nothing.
+            ActivityHeadersPropagator = System.Diagnostics.DistributedContextPropagator.CreateNoOutputPropagator(),
         })
         {
             Timeout = Timeout.InfiniteTimeSpan,

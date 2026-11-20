@@ -140,6 +140,50 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
             Interlocked.Add(ref _bytesSent, sent);
     }
 
+    private PeerTable? _arrivals;
+    private PeerTable? _destinations;
+    private volatile OriginMade? _origin;
+
+    /// <summary>Counts by where messages arrive from, once the module has counted any (<see cref="ModuleContext.Arrival"/>).</summary>
+    public PeerTable? Arrivals => Volatile.Read(ref _arrivals);
+
+    /// <summary>Counts by where messages go, once the module has counted any (<see cref="ModuleContext.Destination"/>).</summary>
+    public PeerTable? Destinations => Volatile.Read(ref _destinations);
+
+    public Tally ArrivalFrom(string from) =>
+        (Volatile.Read(ref _arrivals) ?? Made(ref _arrivals, PeerTable.ForArrivals())).For(from);
+
+    public Tally DestinationAt(string endpoint) =>
+        (Volatile.Read(ref _destinations) ?? Made(ref _destinations, PeerTable.ForDestinations())).For(endpoint);
+
+    private static PeerTable Made(ref PeerTable? field, PeerTable made) =>
+        Interlocked.CompareExchange(ref field, made, null) ?? made;
+
+    /// <summary>
+    /// Where messages this module sends come from, for another Meep host (<see cref="ModuleContext.Origin"/>), made
+    /// once for each host ID and key it has.
+    /// </summary>
+    public string? Origin
+    {
+        get
+        {
+            var hostId = Pipeline.Options.HostId;
+            var key = Key;
+            if (hostId is null || key is null)
+                return null;
+            if (_origin is { } made && ReferenceEquals(made.HostId, hostId) && ReferenceEquals(made.Key, key))
+                return made.Origin;
+            var origin = Peers.Origin(hostId, Pipeline.Name, key);
+            _origin = new OriginMade(hostId, key, origin);
+            return origin;
+        }
+    }
+
+    private sealed record OriginMade(string HostId, string Key, string Origin);
+
+    /// <summary>The module's instances now: one for a source, one for each inflection otherwise.</summary>
+    public abstract IEnumerable<AModule> Instances { get; }
+
     /// <summary>The module as people see it, as in "Fetch #2", kept so metrics don't make it again for each message.</summary>
     public string Label { get; private set; } = spec.Info.ToString();
 

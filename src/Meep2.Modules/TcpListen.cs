@@ -70,6 +70,8 @@ public sealed class TcpListen(TcpListenParameters parameters) : ASource, IChosen
         var listener = new TcpListener(await Endpoints.ResolveAsync(host, cancellationToken).ConfigureAwait(false), port);
         listener.Start();
         context.Listening($"tcp://{listener.LocalEndpoint}");
+        var bound = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        MeepHosts.Bound(bound, context.HostId);
         var connections = new List<Task>();
         try
         {
@@ -92,6 +94,7 @@ public sealed class TcpListen(TcpListenParameters parameters) : ASource, IChosen
         }
         finally
         {
+            MeepHosts.Unbound(bound, context.HostId);
             listener.Stop();
         }
     }
@@ -113,12 +116,14 @@ public sealed class TcpListen(TcpListenParameters parameters) : ASource, IChosen
             {
                 await foreach (var body in framing.ReadAsync(lease.Stream, parameters.MaxSize, cancellationToken).ConfigureAwait(false))
                 {
+                    lease.From.Count(received: 1);
                     context.Emit(new TcpMessage(Encoding.UTF8.GetString(body)) { Body = body, RemoteAddress = lease.Remote, Connection = lease.Number }, lease);
                     emitted = true;
                 }
             }
             catch (FramingException exception)
             {
+                lease.From.Count(rejected: 1); // a message too long
                 reason = $"{lease.Remote} {exception.Message}.";
                 context.EmitError(reason);
                 await lease.CloseAsync().ConfigureAwait(false);
@@ -187,9 +192,20 @@ internal sealed class TcpConnectionLease : Lease, IConnectionLease
     {
         _client = client;
         Ending = ending;
-        Stream = new CountingStream(client.GetStream(), listen.CountBytes);
+        // TCP carries no headers, so what arrives is counted by the client's address (Peers).
+        var remote = client.Client.RemoteEndPoint as System.Net.IPEndPoint;
+        var from = listen.Arrival(remote is null ? "unknown" : Peers.ClientOf(remote.Address));
+        From = from;
+        Stream = new CountingStream(client.GetStream(), (received, sent) =>
+        {
+            listen.CountBytes(received, sent);
+            from.Count(bytesReceived: received, bytesSent: sent);
+        });
         Remote = client.Client.RemoteEndPoint?.ToString() ?? "a client";
     }
+
+    /// <summary>The counts for where the connection comes from.</summary>
+    public Tally From { get; }
 
     public Stream Stream { get; }
 
@@ -209,6 +225,7 @@ internal sealed class TcpConnectionLease : Lease, IConnectionLease
         {
             await Stream.WriteAsync(bytes, cancellationToken).ConfigureAwait(false);
             await Stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+            From.Count(sent: 1);
         }
         finally
         {

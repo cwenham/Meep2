@@ -18,6 +18,8 @@ internal sealed class SourceNode : Node
 
     public override void CreateModule() => _module = (ASource)CreateInstance(Spec.Inflections[0]);
 
+    public override IEnumerable<AModule> Instances => _module is { } module ? [module] : [];
+
     public void Start(CancellationToken cancellationToken) => _ = Task.Run(() => RunAsync(cancellationToken));
 
     /// <summary>Treats the source as finished even if it's still running, because the pipeline gave up waiting.</summary>

@@ -35,6 +35,7 @@ internal static class DaemonCommands
             Output = output,
             Log = error,
             Start = [.. config.Start, .. settings.Files.Select(file => new DaemonStart(Path.GetFullPath(file), Watch: settings.Watch))],
+            MeepHosts = config.MeepHosts,
         });
         try
         {

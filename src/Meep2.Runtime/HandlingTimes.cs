@@ -47,3 +47,30 @@ public readonly record struct ModuleReading(Meep2.SDK.Modules.ModuleInfo Module,
 /// <param name="Module">The module.</param>
 /// <param name="Address">Where, as the module says it: <c>http://0.0.0.0:8080/hooks/</c>, <c>tcp://127.0.0.1:9000</c>.</param>
 public readonly record struct ListeningAt(Meep2.SDK.Modules.ModuleInfo Module, string Address);
+
+/// <summary>
+/// A module's counts for one place at the other end of its connections (<see cref="Pipeline.GetArrivals"/>,
+/// <see cref="Pipeline.GetDestinations"/>).
+/// </summary>
+/// <param name="Place">
+/// For arrivals, <c>meep://</c> and the origin another Meep host gave, or the client's address; for destinations, the
+/// host and port connected to. <c>*</c> (or <c>meep://*</c>) for the places past the module's bound, together, and
+/// those folded there for being quiet when a new place needed the room.
+/// </param>
+/// <param name="Received">Messages that came from it.</param>
+/// <param name="Sent">Messages that went to it.</param>
+/// <param name="BytesReceived">Bytes read from it.</param>
+/// <param name="BytesSent">Bytes written to it.</param>
+/// <param name="Failed">Exchanges with it that failed: a status of 500 or more, no answer, a timeout.</param>
+/// <param name="Meep">For a destination, the ID of the Meep host there, if it is one.</param>
+public readonly record struct PeerCount(string Place, long Received, long Sent, long BytesReceived, long BytesSent, long Failed, string? Meep)
+{
+    /// <summary>Exchanges refused for the client's mistake: a status from 400 to 499, or a message too long.</summary>
+    public long Rejected { get; init; }
+}
+
+/// <summary>Where a module sends, as its parameters say (<see cref="Pipeline.GetSending"/>).</summary>
+/// <param name="Module">The module.</param>
+/// <param name="Address">The address, or, for one worked out for each message, its expression as written.</param>
+/// <param name="Computed">Whether it's worked out for each message.</param>
+public readonly record struct SendingTo(Meep2.SDK.Modules.ModuleInfo Module, string Address, bool Computed);

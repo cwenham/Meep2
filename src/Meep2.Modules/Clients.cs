@@ -31,6 +31,12 @@ internal abstract class SharedClient(string key, string address, int tries, Time
     /// <summary>The server's address, as Send was given it.</summary>
     public string Address => address;
 
+    /// <summary>The host and port it connects to, as destinations are counted (<see cref="Peers.EndpointOf(Uri)"/>).</summary>
+    public abstract string Endpoint { get; }
+
+    /// <summary>The host ID of the Meep at the other end, once the connection has learned it is one.</summary>
+    public string? MeepId { get; protected set; }
+
     /// <summary>
     /// Joins the connection to an address, making it if no Send uses it yet. Clients are told apart by
     /// <paramref name="clientKey"/>, which says what kind of connection it is and where to.
@@ -142,6 +148,7 @@ internal abstract class SharedClient(string key, string address, int tries, Time
                 {
                     // Each Send using the connection emits what arrives, so each counts it.
                     subscription.Outlet.CountBytes(size, 0);
+                    subscription.Outlet.Destination(Endpoint).Count(received: 1, bytesReceived: size);
                     subscription.Deliver(Incoming(payload, subscription.Lease.Number));
                 }
             }
@@ -264,7 +271,9 @@ internal sealed class ClientLease(Subscription subscription) : Lease, IConnectio
         if (IsClosed)
             throw new IOException($"{this} has closed");
         // Counted for the Send whose connection it is, whichever module replies.
-        subscription.Outlet.CountBytes(0, await subscription.Client.ReplyAsync(message, text, end, final, cancellationToken).ConfigureAwait(false));
+        var sent = await subscription.Client.ReplyAsync(message, text, end, final, cancellationToken).ConfigureAwait(false);
+        subscription.Outlet.CountBytes(0, sent);
+        subscription.Outlet.Destination(subscription.Client.Endpoint).Count(sent: 1, bytesSent: sent);
     }
 
     public override string ToString() => $"the connection to {subscription.Client.Address}";
@@ -274,12 +283,26 @@ internal sealed class ClientLease(Subscription subscription) : Lease, IConnectio
 }
 
 /// <summary>A WebSocket Send opened to a server.</summary>
-internal sealed class WebSocketClient(Uri uri, SendWebSocketParameters parameters)
-    : SharedClient(Key(uri), uri.OriginalString, parameters.Tries, parameters.RetryDelay)
+/// <remarks>
+/// To a host known to be Meep, each Send module has a connection of its own, which gives its origin in the handshake
+/// as <c>baggage</c> (Q216). Elsewhere a connection is shared by every Send using its address (Q156), and its
+/// handshake asks whether the other end is Meep; if the answer says so, each Send moves to a connection of its own
+/// with its next message.
+/// </remarks>
+/// <param name="uri">Where it connects.</param>
+/// <param name="parameters">The parameters of the Send that opened it.</param>
+/// <param name="hostId">The host ID of the Send that opened it, or null for none, which asks nothing.</param>
+/// <param name="origin">For a Send's own connection to a Meep host, its origin; null for a shared connection.</param>
+internal sealed class WebSocketClient(Uri uri, SendWebSocketParameters parameters, string? hostId = null, string? origin = null)
+    : SharedClient(Key(uri, origin), uri.OriginalString, parameters.Tries, parameters.RetryDelay)
 {
     private volatile WebSocketLink? _link;
 
-    public static string Key(Uri uri) => $"WebSocket {uri.AbsoluteUri}";
+    /// <summary>The key of the connection to an address: shared, or for one Send's origin alone.</summary>
+    public static string Key(Uri uri, string? origin = null) =>
+        origin is null ? $"WebSocket {uri.AbsoluteUri}" : $"WebSocket {uri.AbsoluteUri} from {origin}";
+
+    public override string Endpoint { get; } = Peers.EndpointOf(uri) ?? uri.Authority;
 
     protected override async Task OpenAsync(CancellationToken cancellationToken)
     {
@@ -287,6 +310,21 @@ internal sealed class WebSocketClient(Uri uri, SendWebSocketParameters parameter
         socket.Options.KeepAliveInterval = parameters.Ping;
         if (parameters.Ping > TimeSpan.Zero)
             socket.Options.KeepAliveTimeout = parameters.Ping;
+        var marked = MeepHosts.Marked.Nothing;
+        if (hostId is not null)
+        {
+            socket.Options.CollectHttpResponseDetails = true;
+            if (origin is not null)
+            {
+                socket.Options.SetRequestHeader("baggage", MeepHosts.BaggageOf(origin));
+                marked = MeepHosts.Marked.Origin;
+            }
+            else
+            {
+                socket.Options.SetRequestHeader(Peers.HostHeader, Peers.Ask);
+                marked = MeepHosts.Marked.Asked;
+            }
+        }
         try
         {
             await socket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
@@ -295,6 +333,15 @@ internal sealed class WebSocketClient(Uri uri, SendWebSocketParameters parameter
         {
             socket.Dispose();
             throw;
+        }
+        if (marked != MeepHosts.Marked.Nothing)
+        {
+            var answer = socket.HttpResponseHeaders is { } headers
+                && headers.FirstOrDefault(h => h.Key.Equals(Peers.HostHeader, StringComparison.OrdinalIgnoreCase)).Value is { } values
+                ? values.FirstOrDefault()
+                : null;
+            MeepId = MeepHosts.Answered(Endpoint, answer, marked);
+            socket.HttpResponseHeaders = null;
         }
         _link = new WebSocketLink(socket, parameters.MaxQueued);
     }
@@ -334,6 +381,8 @@ internal sealed class WebSocketClient(Uri uri, SendWebSocketParameters parameter
 internal sealed class TcpServerClient(string address, string host, int port, SendTcpParameters parameters)
     : SharedClient(Key(host, port), address, parameters.Tries, parameters.RetryDelay)
 {
+    public override string Endpoint { get; } = Peers.Endpoint(host, port);
+
     private readonly Framing _framing = Framing.For(parameters.End, parameters.Length);
     private readonly SemaphoreSlim _writing = new(1, 1);
     private volatile TcpClient? _client;

@@ -23,6 +23,18 @@ public sealed record DaemonOptions
     /// </summary>
     public IReadOnlyList<DaemonStart> Start { get; init; } = [];
 
+    /// <summary>
+    /// Hosts known to be Meep, from the settings file's <c>meep-hosts</c> (Q213): each a host, for any port on it, or a
+    /// host and port. Fetch and Send give them origins from the first request.
+    /// </summary>
+    public IReadOnlyList<string> MeepHosts { get; init; } = [];
+
+    /// <summary>
+    /// The file in which the Meep hosts Fetch and Send learn are remembered across restarts (Q213):
+    /// <c>daemon/meep-hosts</c> in Meep's folder.
+    /// </summary>
+    public string MeepHostsFile => Path.Combine(Plugins.Home, "daemon", "meep-hosts");
+
     /// <summary>The control socket.</summary>
     public string Socket => SocketPath ?? DefaultSocket(Plugins.Home);
 

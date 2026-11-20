@@ -102,6 +102,7 @@ public sealed class WebSocketListen(WebSocketListenParameters parameters) : ASou
         var route = await HttpServer.AddAsync(endpoint, certificate, address.Path, http => AcceptAsync(http, room, context, cancellationToken), cancellationToken, webSocket: true)
             .ConfigureAwait(false);
         context.Listening(HttpListen.Where(address, endpoint, webSocket: true));
+        MeepHosts.Bound(endpoint.Port, context.HostId);
         try
         {
             await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
@@ -112,6 +113,7 @@ public sealed class WebSocketListen(WebSocketListenParameters parameters) : ASou
         }
         finally
         {
+            MeepHosts.Unbound(endpoint.Port, context.HostId);
             // Connections finish the messages they have in the pipeline, then close.
             await route.DisposeAsync().ConfigureAwait(false);
             if (key is not null)
@@ -126,8 +128,12 @@ public sealed class WebSocketListen(WebSocketListenParameters parameters) : ASou
         var parameters = _parameters;
         var request = http.Request;
         var url = request.GetDisplayUrl();
+        // Answers another Meep before the handshake, so the answer goes with it.
+        HttpListen.LastOrigin? last = null;
+        var (tally, _) = HttpListen.Arrived(http, context, ref last);
         if (WhyRefused(request, parameters.Origins) is { } refusal)
         {
+            tally.Count(rejected: 1); // refused with 403
             http.Response.StatusCode = 403;
             http.Response.ContentType = Bodies.PlainText;
             await http.Response.WriteAsync(refusal, CancellationToken.None).ConfigureAwait(false);
@@ -153,7 +159,8 @@ public sealed class WebSocketListen(WebSocketListenParameters parameters) : ASou
 
         var connection = http.Connection;
         var remote = connection.RemoteIpAddress is { } address ? new IPEndPoint(address, connection.RemotePort).ToString() : null;
-        var lease = new WebSocketConnectionLease(new WebSocketLink(socket, parameters.MaxQueued, context), url, remote);
+        var link = new WebSocketLink(socket, parameters.MaxQueued, context) { Peer = tally };
+        var lease = new WebSocketConnectionLease(link, url, remote);
         room.Connections[lease.Number] = lease;
         try
         {
@@ -204,6 +211,7 @@ public sealed class WebSocketListen(WebSocketListenParameters parameters) : ASou
                 {
                     if (cancellationToken.IsCancellationRequested || lease.IsClosed)
                         continue; // read until the close, but take nothing more
+                    lease.Link.Peer?.Count(received: 1, bytesReceived: frame.Bytes.Length);
                     context.Emit(Received(frame, lease.Url, lease.Remote, lease.Number), lease);
                     Volatile.Write(ref emitted, true);
                 }
@@ -212,6 +220,7 @@ public sealed class WebSocketListen(WebSocketListenParameters parameters) : ASou
             }
             catch (FramingException exception)
             {
+                lease.Link.Peer?.Count(rejected: 1); // a message too long
                 reason = $"{lease.Remote} {exception.Message}.";
                 context.EmitError(reason);
                 lease.CloseWith(WebSocketCloseStatus.MessageTooBig, $"Messages can be at most {parameters.MaxSize} bytes.");

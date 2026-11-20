@@ -5,6 +5,13 @@ using BenchmarkDotNet.Running;
 if (args is ["subscriptions", ..])
     return await Meep2.Benchmarks.SubscriptionCost.RunAsync(args);
 
+// What origins, traces and the counts by place cost a busy Fetch to Listen pair:
+// dotnet run -c Release -- flows [--seconds 10] [--subscribe] [--places]
+if (args is ["flows-micro", ..])
+    return Meep2.Benchmarks.FlowMicro.Run();
+if (args is ["flows", ..])
+    return await Meep2.Benchmarks.FlowCost.RunAsync(args);
+
 // Pick benchmarks from the command line, for example: dotnet run -c Release -- --filter '*Pipeline*'
 BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
 return 0;

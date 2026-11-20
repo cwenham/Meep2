@@ -11,6 +11,7 @@ using Meep2.Modules;
 using Meep2.Runtime;
 using Meep2.Runtime.Internal;
 using Meep2.Tests.Support;
+using Subscription = Meep2.Daemon.Subscriptions.Subscription;
 
 namespace Meep2.Tests;
 

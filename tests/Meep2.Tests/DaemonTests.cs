@@ -336,7 +336,7 @@ public sealed class DaemonLab : IAsyncDisposable
     private readonly TemporaryFolder _home = new();
     private readonly ShortTemporaryFolder _socket = ShortFolder();
 
-    private DaemonLab((string Name, string Text)[] start)
+    private DaemonLab((string Name, string Text)[] start, Func<DaemonOptions, DaemonOptions>? change = null)
     {
         Options = new DaemonOptions
         {
@@ -346,6 +346,8 @@ public sealed class DaemonLab : IAsyncDisposable
             Log = TextWriter.Synchronized(Log),
             Start = [.. start.Select(file => new DaemonStart(_home.Write(file.Name, file.Text)))],
         };
+        if (change is not null)
+            Options = change(Options);
         Daemon = new MeepDaemon(Options);
         Client = new DaemonClient(Options.Socket);
     }
@@ -366,6 +368,14 @@ public sealed class DaemonLab : IAsyncDisposable
     public static async Task<DaemonLab> StartAsync(params (string Name, string Text)[] start)
     {
         var lab = new DaemonLab(start);
+        await lab.Daemon.StartAsync();
+        return lab;
+    }
+
+    /// <summary>Starts a daemon with options changed from the usual, which starts these pipeline files once it's listening.</summary>
+    public static async Task<DaemonLab> StartAsync(Func<DaemonOptions, DaemonOptions> change, params (string Name, string Text)[] start)
+    {
+        var lab = new DaemonLab(start, change);
         await lab.Daemon.StartAsync();
         return lab;
     }

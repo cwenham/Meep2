@@ -114,8 +114,11 @@ public static class MeepCommand
                 }
                 if (run.Detach)
                     return await Detaching.StartAsync(run, plugins.Home, output, error, cancellationToken).ConfigureAwait(false);
-                using var telemetry = Telemetry.Start(run.Otlp, run.Sample);
-                return await RunFileAsync(run.Files[0], Options(run.DeveloperMode), run.Watch, output, error, cancellationToken).ConfigureAwait(false);
+                // A run is a Meep host of its own, with an ID for this run: other Meep hosts count what it sends by
+                // it, and its spans and metrics carry it as service.instance.id.
+                var instance = Guid.NewGuid().ToString();
+                using var telemetry = Telemetry.Start(run.Otlp, run.Sample, instance);
+                return await RunFileAsync(run.Files[0], Options(run.DeveloperMode), run.Watch, output, error, cancellationToken, instance).ConfigureAwait(false);
             }
             case ["daemon", "token", var name, .. var capabilities] when capabilities.Length > 0:
                 return await DaemonCommands.TokenAsync(name, string.Join(',', capabilities), Options(), output, error).ConfigureAwait(false);
@@ -181,7 +184,7 @@ public static class MeepCommand
         ?? "?";
 
     // Runs the fixed bootstrap pipeline: Read the file, Parse it, Install its plugins, Build the pipeline, Host it.
-    private static async Task<int> RunFileAsync(string file, PluginOptions plugins, bool watch, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    private static async Task<int> RunFileAsync(string file, PluginOptions plugins, bool watch, TextWriter output, TextWriter error, CancellationToken cancellationToken, string? hostId = null)
     {
         PipelineWatcher? watcher = null;
         var exitCode = 0;
@@ -202,6 +205,7 @@ public static class MeepCommand
 
         var hosted = new PipelineOptions
         {
+            HostId = hostId,
             UnhandledError = e => Log(e.AnsweredBy is { } answerer
                 ? $"error from {e.EmittedBy?.ToString() ?? "the pipeline"}, answered by {answerer}: {e.Error}"
                 : $"error from {e.EmittedBy?.ToString() ?? "the pipeline"}: {e.Error}"),

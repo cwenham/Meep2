@@ -37,6 +37,7 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
     private readonly Lock _changing = new();
     private volatile HttpListenParameters _parameters = parameters;
     private Listening? _listening;
+    private HttpListen.LastOrigin? _lastOrigin;
 
     /// <summary>Takes http:// and https:// addresses, the latter with a certificate.</summary>
     public static string? WhyNot(HttpListenParameters parameters, Message message)
@@ -68,6 +69,7 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
         lock (_changing)
             _listening = new Listening(address, endpoint, route, context, cancellationToken);
         context.Listening(Where(address, endpoint));
+        MeepHosts.Bound(endpoint.Port, context.HostId);
         try
         {
             await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
@@ -78,6 +80,7 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
         }
         finally
         {
+            MeepHosts.Unbound(endpoint.Port, context.HostId);
             // Requests already in the pipeline still need answering, so the server keeps them until they're done.
             HttpServer.Route current;
             lock (_changing)
@@ -139,8 +142,13 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
         var request = http.Request;
         var url = request.GetDisplayUrl();
         var parameters = _parameters;
-        var lease = new HttpRequestLease(http, url, parameters.DefaultStatus, parameters.DefaultReply, context);
-        var requestBody = new CountingStream(request.Body, context.CountBytes);
+        var (tally, traceParent) = Arrived(http, context, ref _lastOrigin);
+        var lease = new HttpRequestLease(http, url, parameters.DefaultStatus, parameters.DefaultReply, context, tally);
+        var requestBody = new CountingStream(request.Body, (received, sent) =>
+        {
+            context.CountBytes(received, sent);
+            tally.Count(bytesReceived: received, bytesSent: sent);
+        });
         try
         {
             ReadOnlyMemory<byte> body = default;
@@ -158,6 +166,7 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
                 }
                 catch (BodyTooLargeException)
                 {
+                    tally.Count(received: 1);
                     await lease.AnswerAsync(413, Bodies.PlainText, Encoding.UTF8.GetBytes("The request's body is larger than this server accepts."), null, CancellationToken.None).ConfigureAwait(false);
                     await lease.CloseAsync().ConfigureAwait(false);
                     context.EmitError($"A request to {url} sent more than {parameters.MaxSize} bytes, so it was refused with 413.");
@@ -167,8 +176,7 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
             }
 
             var connection = http.Connection;
-            context.Emit(
-                new HttpRequest
+            var emitting = new HttpRequest
                 {
                     Method = request.Method,
                     Url = url,
@@ -180,8 +188,11 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
                     Text = text,
                     RemoteAddress = connection.RemoteIpAddress is { } remote ? new IPEndPoint(remote, connection.RemotePort).ToString() : null,
                     Streamed = streamed,
-                },
-                lease);
+                };
+            if (traceParent is not null)
+                context.ContinueTrace(emitting, traceParent);
+            tally.Count(received: 1);
+            context.Emit(emitting, lease);
         }
         catch (Exception exception) when (exception is IOException or ObjectDisposedException or OperationCanceledException or InvalidOperationException)
         {
@@ -191,6 +202,39 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
         }
         await lease.Closed.ConfigureAwait(false);
     }
+
+    /// <summary>
+    /// Where a request or WebSocket comes from, for counting it (<see cref="ModuleContext.Arrival"/>): the origin
+    /// another Meep host gave, or else the client's address. Answers another Meep with this host's ID, and returns
+    /// the trace it continues, if any.
+    /// </summary>
+    internal static (Tally Tally, string? TraceParent) Arrived(HttpContext http, ModuleContext context, ref LastOrigin? last)
+    {
+        var headers = http.Request.Headers;
+        var traceParent = headers.TryGetValue("traceparent", out var traced) && traced.Count > 0 ? traced.ToString() : null;
+        var baggage = headers.TryGetValue("baggage", out var carried) ? carried.ToString() : "";
+        // Most requests come from the same few origins: the last one's counts are kept, to skip reading it again.
+        if (baggage.Length > 0 && last is { } before && before.Baggage == baggage)
+        {
+            if (context.HostId is { } id)
+                http.Response.Headers[Peers.HostHeader] = id;
+            return (before.Tally, traceParent);
+        }
+        var origin = Peers.OriginIn(baggage);
+        if ((origin is not null || headers.ContainsKey(Peers.HostHeader)) && context.HostId is { } hostId)
+            http.Response.Headers[Peers.HostHeader] = hostId;
+        if (origin is not null)
+        {
+            var tally = context.Arrival(Peers.MeepScheme + origin);
+            last = new LastOrigin(baggage, tally);
+            return (tally, traceParent);
+        }
+        var from = http.Connection.RemoteIpAddress is { } address ? Peers.ClientOf(address) : "unknown";
+        return (context.Arrival(from), traceParent);
+    }
+
+    /// <summary>The baggage a Listen last took an origin from, and that origin's counts.</summary>
+    internal sealed record LastOrigin(string Baggage, Tally Tally);
 
     private static Encoding EncodingOf(string? contentType) =>
         contentType is not null && MediaType.TryParse(contentType, out var media) && media.Encoding is { } encoding ? encoding : Encoding.UTF8;
@@ -235,7 +279,7 @@ public sealed record HttpListenParameters
 
 /// <summary>A request from <see cref="HttpListen"/> waiting for its answer.</summary>
 /// <remarks>The bytes of its answer are counted for the Listen, whichever module sends it.</remarks>
-internal sealed class HttpRequestLease(HttpContext http, string url, int defaultStatus, string defaultReply, ModuleContext listen) : Lease
+internal sealed class HttpRequestLease(HttpContext http, string url, int defaultStatus, string defaultReply, ModuleContext listen, Tally? from = null) : Lease
 {
     private readonly Lock _answering = new();
     private Task? _answer;
@@ -265,15 +309,23 @@ internal sealed class HttpRequestLease(HttpContext http, string url, int default
         response.StatusCode = status;
         if (contentType is not null)
             response.ContentType = contentType;
+        // A reply is counted for where the request came from: 400 to 499 as rejected, 500 and over as failed.
+        from?.Count(sent: 1);
+        from?.Status(status);
         if (stream is null)
         {
             response.ContentLength = body.Length;
             await response.Body.WriteAsync(body, cancellationToken).ConfigureAwait(false);
             listen.CountBytes(0, body.Length);
+            from?.Count(bytesSent: body.Length);
         }
         else
         {
-            await stream.CopyToAsync(new CountingStream(response.Body, listen.CountBytes), cancellationToken).ConfigureAwait(false);
+            await stream.CopyToAsync(new CountingStream(response.Body, (received, sent) =>
+            {
+                listen.CountBytes(received, sent);
+                from?.Count(bytesReceived: received, bytesSent: sent);
+            }), cancellationToken).ConfigureAwait(false);
         }
         await response.CompleteAsync().ConfigureAwait(false);
     }

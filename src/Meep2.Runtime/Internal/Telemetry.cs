@@ -30,6 +30,9 @@ internal static class Telemetry
     // The span each message came from, while tracing is on. Weak, so it lasts no longer than the message.
     private static readonly ConditionalWeakTable<Message, StrongBox<ActivityContext>> s_cameFrom = new();
 
+    // The span on another host that a message a source is about to emit continues (ContinueTrace).
+    private static readonly ConditionalWeakTable<Message, StrongBox<ActivityContext>> s_remote = new();
+
     static Telemetry()
     {
         Meter.CreateObservableCounter("meep.module.messages", ObserveCounts, "{message}",
@@ -55,8 +58,11 @@ internal static class Telemetry
         }
         else if (from is SourceNode)
         {
-            // A short span for the source's emitting the message, which roots its trace.
-            using var span = Source.StartActivity(SpanName(emitter), ActivityKind.Producer);
+            // A short span for the source's emitting the message, which roots its trace, or continues one from
+            // another host, as a request from another Meep does.
+            using var span = s_remote.TryGetValue(message, out var remote)
+                ? Source.StartActivity(SpanName(emitter), ActivityKind.Server, remote.Value)
+                : Source.StartActivity(SpanName(emitter), ActivityKind.Producer);
             if (span is null)
                 return;
             if (!span.Recorded)
@@ -77,6 +83,27 @@ internal static class Telemetry
             return;
         }
         s_cameFrom.AddOrUpdate(message, new StrongBox<ActivityContext>(cameFrom));
+    }
+
+    /// <summary>
+    /// Records that a message a source is about to emit continues a trace from another host, by its W3C
+    /// <c>traceparent</c> (<see cref="ModuleContext.ContinueTrace"/>). Text that isn't one is ignored.
+    /// </summary>
+    public static void Continue(Message message, string traceParent)
+    {
+        if (ActivityContext.TryParse(traceParent, null, isRemote: true, out var context))
+            s_remote.AddOrUpdate(message, new StrongBox<ActivityContext>(context));
+    }
+
+    /// <summary>
+    /// The W3C <c>traceparent</c> for a request made while a module handles a message: its span, if the message is
+    /// traced; one marked as not recorded, with new IDs, if it isn't, so the other host doesn't record its part.
+    /// </summary>
+    public static string TraceParent(Node node, Message? message)
+    {
+        if (node.Handling is { } handling && ReferenceEquals(handling.Message, message) && handling.Span.IdFormat == ActivityIdFormat.W3C)
+            return handling.Span.Id!;
+        return $"00-{ActivityTraceId.CreateRandom().ToHexString()}-{ActivitySpanId.CreateRandom().ToHexString()}-00";
     }
 
     /// <summary>Records an injected message as the start of a trace, as a source's messages are.</summary>

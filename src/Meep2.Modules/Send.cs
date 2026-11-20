@@ -280,8 +280,11 @@ public sealed record SendBroadcastParameters
 [Emits(typeof(WebSocketBinary))]
 [Emits(typeof(WebSocketConnected), When = nameof(SendWebSocketParameters.Connections))]
 [Emits(typeof(WebSocketDisconnected), When = nameof(SendWebSocketParameters.Connections))]
-public sealed class SendWebSocket(SendWebSocketParameters parameters) : APassthrough<Message>, IChosenByParameters<SendWebSocketParameters>, IAsyncDisposable
+public sealed class SendWebSocket(SendWebSocketParameters parameters) : APassthrough<Message>, IChosenByParameters<SendWebSocketParameters>, IAsyncDisposable, ISendsTo
 {
+    /// <inheritdoc/>
+    public Computed<string> Address => parameters.Url;
+
     private readonly Connections _connections = new();
 
     /// <summary>Takes ws:// and wss:// addresses.</summary>
@@ -321,7 +324,13 @@ public sealed class SendWebSocket(SendWebSocketParameters parameters) : APassthr
             return;
         }
 
-        var client = _connections.Join(WebSocketClient.Key(uri!), context, parameters.Connections, () => new WebSocketClient(uri!, parameters));
+        // A Meep host gets a connection from this Send alone, so its origin is exact (Q216); anywhere else, one connection
+        // to the address is shared (Q156). A Send that learns the host is Meep, or that it no longer is, moves.
+        var origin = context.HostId is not null ? context.Origin : null;
+        var own = origin is not null && MeepHosts.IsMeep(Peers.EndpointOf(uri!), uri!.Host, uri.Port);
+        if (origin is not null)
+            _connections.Leave(WebSocketClient.Key(uri!, own ? null : origin));
+        var client = _connections.Join(WebSocketClient.Key(uri!, own ? origin : null), context, parameters.Connections, () => new WebSocketClient(uri!, parameters, context.HostId, own ? origin : null));
         await Connections.SendAsync(client, message, text, null, parameters.Tries, parameters.RetryDelay, parameters.Timeout, context, cancellationToken).ConfigureAwait(false);
     }
 
@@ -404,8 +413,11 @@ public sealed record SendWebSocketParameters
 [Emits(typeof(TcpMessage))]
 [Emits(typeof(TcpConnected), When = nameof(SendTcpParameters.Connections))]
 [Emits(typeof(TcpDisconnected), When = nameof(SendTcpParameters.Connections))]
-public sealed class SendTcp(SendTcpParameters parameters) : APassthrough<Message>, IChosenByParameters<SendTcpParameters>, IAsyncDisposable
+public sealed class SendTcp(SendTcpParameters parameters) : APassthrough<Message>, IChosenByParameters<SendTcpParameters>, IAsyncDisposable, ISendsTo
 {
+    /// <inheritdoc/>
+    public Computed<string> Address => parameters.Url;
+
     private readonly Connections _connections = new();
 
     /// <summary>Takes tcp:// addresses with a port, and one way of telling where the server's messages end.</summary>
@@ -531,8 +543,11 @@ public sealed record SendTcpParameters
 [Verb("Send", Inflection = "HTTP")]
 [Role(VerbRole.Outlet)]
 [Emits(typeof(HttpResponse))]
-public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Message>, IChosenByParameters<SendHttpParameters>
+public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Message>, IChosenByParameters<SendHttpParameters>, ISendsTo
 {
+    /// <inheritdoc/>
+    public Computed<string> Address => parameters.Url;
+
     /// <summary>Takes http and https addresses.</summary>
     public static string? WhyNot(SendHttpParameters parameters, Message message)
     {
@@ -571,14 +586,21 @@ public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Messa
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(parameters.Timeout);
+        var endpoint = Peers.EndpointOf(uri!);
+        var tally = endpoint is null ? Tally.None : context.Destination(endpoint);
+        HttpResponseMessage? answer = null;
         try
         {
-            using var content = await ContentAsync(message, text, contentType, context, timeout.Token).ConfigureAwait(false);
-            var length = content is StreamContent ? 0 : content.Headers.ContentLength ?? 0; // a stream is counted as it's read
-            using var response = await HttpFetch.Client.PostAsync(uri, content, timeout.Token).ConfigureAwait(false);
-            context.CountBytes(0, length);
+            using var content = await ContentAsync(message, text, contentType, context, tally, timeout.Token).ConfigureAwait(false);
+            // A body is counted as it's sent, each time a redirect sends it again; a stream as it's read.
+            var reached = await HttpFetch.SendAsync(HttpMethod.Post, uri!, content, HttpCompletionOption.ResponseContentRead, context, timeout.Token, sending: sent => context.CountBytes(0, sent)).ConfigureAwait(false);
+            using var response = answer = reached.Response;
+            tally = reached.Counted(endpoint, tally, context);
+            tally.Count(sent: 1, received: 1, bytesSent: content is StreamContent ? 0 : content.Headers.ContentLength ?? 0);
+            tally.Status((int)response.StatusCode);
             var body = await HttpFetch.ReadBodyAsync(response.Content, url, parameters.MaxSize, timeout.Token).ConfigureAwait(false);
             context.CountBytes(body.Length, 0);
+            tally.Count(bytesReceived: body.Length);
             var decoded = HttpFetch.Decode(body, response.Content.Headers.ContentType);
             var status = (int)response.StatusCode;
             if (!response.IsSuccessStatusCode)
@@ -605,26 +627,33 @@ public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Messa
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            HttpFetch.Failed(answer, tally);
             context.EmitError($"{url} didn't answer within {HttpFetch.Describe(parameters.Timeout)}");
         }
         catch (HttpRequestException exception)
         {
+            HttpFetch.Failed(answer, tally);
             context.EmitError($"Couldn't send to {url}: {exception.Message}", exception);
         }
         catch (HttpFetch.TooLargeException exception)
         {
+            HttpFetch.Failed(answer, tally);
             context.EmitError(exception.Message, exception);
         }
     }
 
-    private static async Task<HttpContent> ContentAsync(Message message, string? text, string? contentType, ModuleContext context, CancellationToken cancellationToken)
+    private static async Task<HttpContent> ContentAsync(Message message, string? text, string? contentType, ModuleContext context, Tally tally, CancellationToken cancellationToken)
     {
         if (text is not null)
             return WithType(new ByteArrayContent(Encoding.UTF8.GetBytes(text)), contentType ?? Bodies.PlainText);
         switch (message)
         {
             case IHasBody { IsStreamed: true } streamed:
-                return WithType(new StreamContent(new CountingStream(streamed.OpenBody(), (read, _) => context.CountBytes(0, read))), contentType ?? streamed.ContentType);
+                return WithType(new StreamContent(new CountingStream(streamed.OpenBody(), (read, _) =>
+                {
+                    context.CountBytes(0, read);
+                    tally.Count(bytesSent: read);
+                })), contentType ?? streamed.ContentType);
             case IHasBody body:
                 return WithType(new ReadOnlyMemoryContent(await Frames.BytesOfAsync(body, cancellationToken).ConfigureAwait(false)), contentType ?? body.ContentType);
             case JsonMessage json:
@@ -676,6 +705,16 @@ internal sealed class Connections : IAsyncDisposable
     private readonly Dictionary<string, Subscription> _subscriptions = new(StringComparer.Ordinal);
     private Outlet? _outlet;
 
+    /// <summary>Leaves a connection this module joined, if it did, which closes once nothing uses it.</summary>
+    public void Leave(string key)
+    {
+        lock (_subscriptions)
+        {
+            if (_subscriptions.Remove(key, out var subscription))
+                subscription.Client.Leave(subscription);
+        }
+    }
+
     /// <summary>The connection for an address, joining it the first time this module uses it.</summary>
     public SharedClient Join(string key, ModuleContext context, bool connections, Func<SharedClient> create)
     {
@@ -695,16 +734,22 @@ internal sealed class Connections : IAsyncDisposable
     {
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         limit.CancelAfter(timeout);
+        var tally = context.Destination(client.Endpoint);
         try
         {
-            context.CountBytes(0, await client.SendAsync(message, text, end, tries, retryDelay, limit.Token).ConfigureAwait(false));
+            var sent = await client.SendAsync(message, text, end, tries, retryDelay, limit.Token).ConfigureAwait(false);
+            context.CountBytes(0, sent);
+            tally.Count(sent: 1, bytesSent: sent);
+            tally.Meep(client.MeepId);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
+            tally.Count(sent: 1, failed: 1);
             context.EmitError($"Couldn't send to {client.Address} within {HttpFetch.Describe(timeout)}.");
         }
         catch (Exception exception) when (exception is IOException or System.Net.Sockets.SocketException or System.Net.WebSockets.WebSocketException or ObjectDisposedException)
         {
+            tally.Count(sent: 1, failed: 1);
             context.EmitError($"Couldn't send to {client.Address}: {exception.Message}", exception);
         }
     }

@@ -57,6 +57,9 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
     /// <summary>The order of each module's bytes.</summary>
     public static readonly string[] ByteCounts = ["received", "sent"];
 
+    /// <summary>The order of the counts for each place a module's messages arrive from or go to.</summary>
+    public static readonly string[] PeerCounts = ["received", "sent", "bytesReceived", "bytesSent", "failed", "rejected"];
+
     /// <summary>The totals for a pipeline or the host, by name.</summary>
     public static readonly string[] TotalNames = [.. ModuleCounts, "sourced", "bytesReceived", "bytesSent"];
 
@@ -74,6 +77,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
     private readonly Dictionary<string, long> _hostSent = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _statesSent = new(StringComparer.Ordinal);
     private string? _listensSent;
+    private string? _sendsSent;
     private readonly Dictionary<string, RuntimeMetrics.Metric> _runtimeSent = new(StringComparer.Ordinal);
     private readonly Dictionary<string, PipelineSent> _sent = new(StringComparer.Ordinal);
 
@@ -271,6 +275,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
             _hostSent.Clear();
             _statesSent.Clear();
             _listensSent = null;
+            _sendsSent = null;
         }
         if (current.Runtime is null)
             _runtimeSent.Clear();
@@ -287,6 +292,12 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
             Prune(sent.Links, "links");
             Prune(sent.Bytes, "bytes");
             Prune(sent.Timing, "timing");
+            Prune(sent.Arrivals, "arrivals");
+            Prune(sent.Destinations, "destinations");
+            if (!pipeline.Wants("destinations"))
+                sent.Peers.Clear();
+            if (!pipeline.Wants("arrivals"))
+                sent.Clients.Clear();
 
             void Prune<T>(Dictionary<string, T> values, string kind)
             {
@@ -303,6 +314,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         _hostSent.Clear();
         _statesSent.Clear();
         _listensSent = null;
+        _sendsSent = null;
         _runtimeSent.Clear();
         _sent.Clear();
         foreach (var slot in _slots.Keys.ToList())
@@ -376,6 +388,9 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                     case "timing":
                         Timing(update, hosted.Name, wanted, slot.Every, pipeline, keys, sent, reads);
                         break;
+                    case "arrivals" or "destinations":
+                        Places(update, hosted.Name, slot.What, wanted, slot.Every, pipeline, keys, sent);
+                        break;
                 }
             }
         }
@@ -445,6 +460,89 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
             sent.Timing.Remove(key);
             (update.Pipeline(name).Timing ??= []).Add((key, null));
         }
+    }
+
+    // A module's counts by place: where its messages arrive from, or where they go. Each place's counts go as an array,
+    // as a module's do. A place past the module's bound is counted under * (or meep://*). A place folded there for
+    // being quiet goes (null), and is named in the pipeline's folded, so a client moves its counts into *'s rather than
+    // seeing *'s rate jump (Q215). For arrivals, the pipeline's clients names clients outside Meep, by address, once a
+    // name is found (Q220); for destinations, its peers says which are Meep hosts, by ID.
+    private static void Places(Update update, string name, string kind, PipelinePlan wanted, TimeSpan every, Pipeline pipeline, IReadOnlyDictionary<ModuleInfo, string> keys, PipelineSent sent)
+    {
+        var arrivals = kind == "arrivals";
+        var record = arrivals ? sent.Arrivals : sent.Destinations;
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (module, places) in pipeline.ReadPeers(arrivals))
+        {
+            if (!keys.TryGetValue(module, out var key) || wanted.RateOf(kind, key) != every)
+                continue;
+            seen.Add(key);
+            if (!record.TryGetValue(key, out var before))
+                record[key] = before = new Dictionary<string, long[]>(StringComparer.Ordinal);
+            var now = new Dictionary<string, long[]>(StringComparer.Ordinal);
+            foreach (var place in places)
+            {
+                long[] counts = [place.Received, place.Sent, place.BytesReceived, place.BytesSent, place.Failed, place.Rejected];
+                // A place counted with nothing yet, as a WebSocket's client before its first message, isn't shown.
+                if (!before.ContainsKey(place.Place) && counts.All(c => c == 0))
+                    continue;
+                now[place.Place] = counts;
+                if (arrivals)
+                    Client(update, name, sent, place.Place);
+                else
+                    Peer(update, name, sent, place.Place, place.Meep);
+            }
+            List<(string Place, long[]? Now, long[]? Before)>? changes = null;
+            foreach (var (place, counts) in now)
+            {
+                var last = before.GetValueOrDefault(place);
+                if (last is not null && counts.AsSpan().SequenceEqual(last))
+                    continue;
+                if (last is not null && counts.Where((count, i) => count < last[i]).Any())
+                {
+                    // Folded and back again since the last update: it starts again from what it has now.
+                    update.Pipeline(name).Fold(key, place);
+                    last = null;
+                }
+                (changes ??= []).Add((place, counts, last));
+                before[place] = counts;
+            }
+            foreach (var place in before.Keys.Where(p => !now.ContainsKey(p)).ToList())
+            {
+                // Places go only by being folded into * (or meep://*).
+                before.Remove(place);
+                (changes ??= []).Add((place, null, null));
+                update.Pipeline(name).Fold(key, place);
+            }
+            if (changes is not null)
+                update.Pipeline(name).AddPlaces(kind, key, changes);
+        }
+        foreach (var key in record.Keys.Where(k => !seen.Contains(k) && wanted.RateOf(kind, k) == every).ToList())
+        {
+            record.Remove(key);
+            update.Pipeline(name).AddPlaces(kind, key, null);
+        }
+    }
+
+    // Names a client outside Meep by its address, when a name is first found for it or changes.
+    private static void Client(Update update, string name, PipelineSent sent, string place)
+    {
+        if (ClientNames.NameOf(place) is not { } found || (sent.Clients.TryGetValue(place, out var told) && told == found))
+            return;
+        sent.Clients[place] = found;
+        (update.Pipeline(name).Clients ??= []).Add((place, found));
+    }
+
+    // Says which Meep host a destination is, when that's new or has changed.
+    private static void Peer(Update update, string name, PipelineSent sent, string endpoint, string? id)
+    {
+        if (sent.Peers.TryGetValue(endpoint, out var told) ? told == id : id is null)
+            return;
+        if (id is null)
+            sent.Peers.Remove(endpoint);
+        else
+            sent.Peers[endpoint] = id;
+        (update.Pipeline(name).Peers ??= []).Add((endpoint, id));
     }
 
     // A module's or link's counts, if any changed since they were last sent.
@@ -600,7 +698,14 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
             _listensSent = print;
             part.Listens = listens;
         }
-        return part.Totals is null && part.States is null && part.Listens is null ? null : part;
+        var sends = MeepDaemon.Sending(listed);
+        var sendsPrint = string.Join('\n', sends.Select(s => $"{s.Pipeline}|{s.Module}|{s.Label}|{s.Address}|{s.Computed}|{s.Endpoint}"));
+        if (sendsPrint != _sendsSent)
+        {
+            _sendsSent = sendsPrint;
+            part.Sends = sends;
+        }
+        return part.Totals is null && part.States is null && part.Listens is null && part.Sends is null ? null : part;
     }
 
     private Dictionary<string, RuntimeMetrics.Metric>? RuntimeChanges()
@@ -623,10 +728,12 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         WriteHost(writer, identity);
         writer.Property("clock", HostIdentity.Microseconds(DateTimeOffset.UtcNow));
         writer.Name("counts");
-        writer.StartMap(4);
+        writer.StartMap(6);
         Names(writer, "modules", ModuleCounts);
         Names(writer, "links", LinkCounts);
         Names(writer, "bytes", ByteCounts);
+        Names(writer, "arrivals", PeerCounts);
+        Names(writer, "destinations", PeerCounts);
         Names(writer, "totals", TotalNames);
         writer.EndMap();
         writer.Name("timing");
@@ -732,6 +839,17 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
 
         // The busy time last sent with each module's histogram, which changes whenever it does.
         public Dictionary<string, long> Timing { get; } = new(StringComparer.Ordinal);
+
+        // Each module's counts by place, as last sent.
+        public Dictionary<string, Dictionary<string, long[]>> Arrivals { get; } = new(StringComparer.Ordinal);
+
+        public Dictionary<string, Dictionary<string, long[]>> Destinations { get; } = new(StringComparer.Ordinal);
+
+        // The Meep host at each destination, as last sent.
+        public Dictionary<string, string> Peers { get; } = new(StringComparer.Ordinal);
+
+        // The name of each client outside Meep, by address, as last sent.
+        public Dictionary<string, string> Clients { get; } = new(StringComparer.Ordinal);
     }
 
     private sealed class HostPart
@@ -741,6 +859,8 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         public List<KeyValuePair<string, long>>? States { get; set; }
 
         public List<(string Pipeline, string Module, string Label, string Address)>? Listens { get; set; }
+
+        public List<SendInfo>? Sends { get; set; }
     }
 
     private sealed class PipelinePart
@@ -755,6 +875,29 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
 
         public List<(string Key, HandlingTimes? Times)>? Timing { get; set; }
 
+        public Dictionary<string, List<(string Key, List<(string Place, long[]? Now, long[]? Before)>? Places)>> Places { get; } = new(StringComparer.Ordinal);
+
+        public List<(string Endpoint, string? Id)>? Peers { get; set; }
+
+        public List<(string Address, string Name)>? Clients { get; set; }
+
+        public Dictionary<string, List<string>>? Folded { get; set; }
+
+        public void Fold(string key, string place)
+        {
+            Folded ??= new(StringComparer.Ordinal);
+            if (!Folded.TryGetValue(key, out var places))
+                Folded[key] = places = [];
+            places.Add(place);
+        }
+
+        public void AddPlaces(string kind, string key, List<(string Place, long[]? Now, long[]? Before)>? places)
+        {
+            if (!Places.TryGetValue(kind, out var list))
+                Places[kind] = list = [];
+            list.Add((key, places));
+        }
+
         public void Add(string kind, string key, long[]? now, long[]? before)
         {
             if (!Counts.TryGetValue(kind, out var list))
@@ -763,7 +906,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         }
 
         public int Size =>
-            (Graph is null ? 0 : 1) + (Totals is null ? 0 : 1) + Counts.Count + (Timing is null ? 0 : 1);
+            (Graph is null ? 0 : 1) + (Totals is null ? 0 : 1) + Counts.Count + (Timing is null ? 0 : 1) + Places.Count + (Peers is null ? 0 : 1) + (Clients is null ? 0 : 1) + (Folded is null ? 0 : 1);
     }
 
     /// <summary>One update: what changed, by section.</summary>
@@ -812,7 +955,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
             if (Host is { } hostPart)
             {
                 writer.Name("host");
-                writer.StartMap((hostPart.Totals is null ? 0 : 1) + (hostPart.States is null ? 0 : 1) + (hostPart.Listens is null ? 0 : 1));
+                writer.StartMap((hostPart.Totals is null ? 0 : 1) + (hostPart.States is null ? 0 : 1) + (hostPart.Listens is null ? 0 : 1) + (hostPart.Sends is null ? 0 : 1));
                 if (hostPart.Totals is { } totals)
                 {
                     writer.Name("totals");
@@ -837,6 +980,25 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                         writer.Property("module", module);
                         writer.Property("label", label);
                         writer.Property("address", address);
+                        writer.EndMap();
+                    }
+                    writer.EndArray();
+                }
+                if (hostPart.Sends is { } sends)
+                {
+                    writer.Name("sends");
+                    writer.StartArray(sends.Count);
+                    foreach (var send in sends)
+                    {
+                        writer.StartMap(4 + (send.Computed ? 1 : 0) + (send.Endpoint is null ? 0 : 1));
+                        writer.Property("pipeline", send.Pipeline);
+                        writer.Property("module", send.Module);
+                        writer.Property("label", send.Label);
+                        writer.Property("address", send.Address);
+                        if (send.Computed)
+                            writer.Property("computed", true);
+                        if (send.Endpoint is { } endpoint)
+                            writer.Property("endpoint", endpoint);
                         writer.EndMap();
                     }
                     writer.EndArray();
@@ -900,6 +1062,67 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                                 writer.Null();
                             else
                                 writer.Changed(now, before ?? now, all: before is null);
+                        }
+                        writer.EndMap();
+                    }
+                    foreach (var (kind, modules) in part.Places)
+                    {
+                        writer.Name(kind);
+                        writer.StartMap(modules.Count);
+                        foreach (var (key, places) in modules)
+                        {
+                            writer.Name(key);
+                            if (places is null)
+                            {
+                                writer.Null();
+                                continue;
+                            }
+                            writer.StartMap(places.Count);
+                            foreach (var (place, now, before) in places)
+                            {
+                                writer.Name(place);
+                                if (now is null)
+                                    writer.Null();
+                                else
+                                    writer.Changed(now, before ?? now, all: before is null);
+                            }
+                            writer.EndMap();
+                        }
+                        writer.EndMap();
+                    }
+                    if (part.Folded is { } folded)
+                    {
+                        writer.Name("folded");
+                        writer.StartMap(folded.Count);
+                        foreach (var (key, places) in folded)
+                        {
+                            writer.Name(key);
+                            writer.StartArray(places.Count);
+                            foreach (var place in places)
+                                writer.String(place);
+                            writer.EndArray();
+                        }
+                        writer.EndMap();
+                    }
+                    if (part.Clients is { } clients)
+                    {
+                        writer.Name("clients");
+                        writer.StartMap(clients.Count);
+                        foreach (var (address, client) in clients)
+                            writer.Property(address, client);
+                        writer.EndMap();
+                    }
+                    if (part.Peers is { } peers)
+                    {
+                        writer.Name("peers");
+                        writer.StartMap(peers.Count);
+                        foreach (var (endpoint, id) in peers)
+                        {
+                            writer.Name(endpoint);
+                            if (id is null)
+                                writer.Null();
+                            else
+                                writer.String(id);
                         }
                         writer.EndMap();
                     }

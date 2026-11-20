@@ -40,6 +40,9 @@ public abstract class Outlet
     {
     }
 
+    /// <summary>The counts for messages going to one place, as <see cref="ModuleContext.Destination"/> gives them.</summary>
+    public virtual Tally Destination(string endpoint) => Tally.None;
+
     /// <summary>Emits an error. False if the pipeline has finished.</summary>
     public bool EmitError(string error, Exception? exception = null) =>
         Emit(new ErrorMessage { Error = error, Exception = exception });

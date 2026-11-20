@@ -9,7 +9,8 @@ namespace Meep2.Runtime;
 /// <para>
 /// Spans: one each time a module handles a message, named by its verb and inflection, such as <c>Fetch.HTTP</c>, with
 /// the tags <c>meep.pipeline</c>, <c>meep.module</c>, <c>meep.message.type</c> and <c>meep.message.id</c>. A span's
-/// parent is the span its message came from, so a trace follows fam.
+/// parent is the span its message came from, so a trace follows fam. Across hosts, Fetch and Send send
+/// <c>traceparent</c> naming their span, and a Listen's span for the request continues it.
 /// </para>
 /// <para>
 /// Metrics, tagged with <c>meep.pipeline</c> and <c>meep.module</c>: <c>meep.module.messages</c> (by

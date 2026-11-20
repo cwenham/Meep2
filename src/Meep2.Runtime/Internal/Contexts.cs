@@ -38,6 +38,16 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
 
     public override void Listening(string? address) => node.ListeningAt = address;
 
+    public override string? HostId => node.Pipeline.Options.HostId;
+
+    public override string? Origin => node.Origin;
+
+    public override string? TraceParent => Telemetry.Tracing ? Telemetry.TraceParent(node, _current) : null;
+
+    public override Tally Arrival(string from) => node.ArrivalFrom(from);
+
+    public override Tally Destination(string endpoint) => node.DestinationAt(endpoint);
+
     /// <summary>Whether the module emitted the message it was given, passing it on unchanged.</summary>
     public bool PassedOn => _passedOn;
 
@@ -226,6 +236,22 @@ internal sealed class SourceContext(SourceNode node) : ModuleContext
 
     public override void Listening(string? address) => node.ListeningAt = address;
 
+    public override string? HostId => node.Pipeline.Options.HostId;
+
+    public override string? Origin => node.Origin;
+
+    public override void ContinueTrace(Message message, string traceParent)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentNullException.ThrowIfNull(traceParent);
+        if (Telemetry.Tracing)
+            Telemetry.Continue(message, traceParent);
+    }
+
+    public override Tally Arrival(string from) => node.ArrivalFrom(from);
+
+    public override Tally Destination(string endpoint) => node.DestinationAt(endpoint);
+
     /// <summary>Called when the source finishes. Emitting after that is a mistake, and it's no longer listening.</summary>
     public void Close()
     {
@@ -298,6 +324,8 @@ internal sealed class SourceContext(SourceNode node) : ModuleContext
 internal sealed class NodeOutlet(InflectionNode node, ModuleInfo emitter) : Outlet
 {
     public override void CountBytes(long received, long sent) => node.CountBytes(received, sent);
+
+    public override Tally Destination(string endpoint) => node.DestinationAt(endpoint);
 
     public override bool Emit(Message message)
     {

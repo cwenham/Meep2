@@ -91,6 +91,9 @@ internal sealed class InflectionNode : Node
         && message is not ErrorMessage
         && Stopwatch.GetTimestamp() >= message.ExpiresTimestamp;
 
+    public override IEnumerable<AModule> Instances =>
+        [.. _slots.Select(slot => slot.Module).OfType<AModule>()];
+
     public override void CreateModule()
     {
         foreach (var slot in _slots)

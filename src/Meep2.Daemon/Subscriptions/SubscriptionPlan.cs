@@ -24,7 +24,9 @@ namespace Meep2.Daemon.Subscriptions;
 ///       "modules": { "*": "100ms", "m7": "1s" },   // each module's counts, by key; "*" for those not named
 ///       "links":   { "*": "100ms" },               // each link's counts, by key
 ///       "timing":  { "*": "1s" },                  // each module's handling-time histogram
-///       "bytes":   { "*": "1s" }                   // bytes in and out, for modules that talk to the network
+///       "bytes":   { "*": "1s" },                  // bytes in and out, for modules that talk to the network
+///       "arrivals":     { "*": "1s" },             // a Listen's counts by where messages come from
+///       "destinations": { "*": "1s" }              // a Fetch's or Send's counts by where they go
 ///     }
 ///   }
 /// }
@@ -40,7 +42,7 @@ internal sealed class SubscriptionPlan
     public static readonly TimeSpan Fastest = TimeSpan.FromMilliseconds(50);
 
     /// <summary>The kinds of thing a pipeline's entry can ask for, each module or link at a rate of its own.</summary>
-    public static readonly string[] PerModule = ["modules", "links", "timing", "bytes"];
+    public static readonly string[] PerModule = ["modules", "links", "timing", "bytes", "arrivals", "destinations"];
 
     private SubscriptionPlan(JsonObject json, bool cbor, TimeSpan? list, TimeSpan? host, TimeSpan? runtime, TimeSpan heartbeat, long? budget, IReadOnlyDictionary<string, PipelinePlan> pipelines)
     {
@@ -191,7 +193,7 @@ internal sealed record PipelinePlan(TimeSpan? Totals, IReadOnlyDictionary<string
             if (name == "totals")
                 continue;
             if (!SubscriptionPlan.PerModule.Contains(name))
-                throw new DaemonException(400, $"A pipeline's entry doesn't take {name}. It takes totals, modules, links, timing and bytes.");
+                throw new DaemonException(400, $"A pipeline's entry doesn't take {name}. It takes totals, modules, links, timing, bytes, arrivals and destinations.");
             if (value is not JsonObject keyed)
                 throw new DaemonException(400, $"{pipeline}'s {name} is an object from each key, or \"*\" for the rest, to a rate, such as {{\"*\": \"200ms\"}}.");
             var byKey = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);

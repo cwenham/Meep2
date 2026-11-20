@@ -384,6 +384,9 @@ public class HostingTests
                     return (options.TraceId.ToHexString()[^1] - '0') % 2 == 0 ? ActivitySamplingResult.AllDataAndRecorded : ActivitySamplingResult.PropagationData;
                 if ((options.Parent.TraceFlags & ActivityTraceFlags.Recorded) != 0)
                     return ActivitySamplingResult.AllDataAndRecorded;
+                // A Listen in another test, continuing another host's unsampled trace, asks too, as it should.
+                if (options.Parent.IsRemote)
+                    return ActivitySamplingResult.PropagationData;
                 Interlocked.Increment(ref unsampledChildren);
                 return ActivitySamplingResult.PropagationData;
             },

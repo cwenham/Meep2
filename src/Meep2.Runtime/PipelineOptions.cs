@@ -52,4 +52,10 @@ public sealed record PipelineOptions
         get;
         init => field = value >= TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(KeepFinished), value, "It can't be negative.");
     } = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// The lasting ID of the Meep host running the pipeline, such as the daemon's, which its modules give other Meep
+    /// hosts as part of their origin (<see cref="Meep2.SDK.Modules.ModuleContext.Origin"/>). Null for none.
+    /// </summary>
+    public string? HostId { get; init; }
 }

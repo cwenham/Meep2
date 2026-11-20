@@ -234,6 +234,60 @@ public sealed class Pipeline : IAsyncDisposable
     }
 
     /// <summary>
+    /// What one module has received from each place, as it counted them (<see cref="ModuleContext.Arrival"/>): from
+    /// other Meep hosts by origin, and from elsewhere by the client's address. Nothing for a module that counts none.
+    /// </summary>
+    public IReadOnlyList<PeerCount> GetArrivals(ModuleInfo module) => NodeOf(module).Arrivals?.Read() ?? [];
+
+    /// <summary>
+    /// What one module has sent to each place, by the host and port it connected to, as it counted them
+    /// (<see cref="ModuleContext.Destination"/>). Nothing for a module that counts none.
+    /// </summary>
+    public IReadOnlyList<PeerCount> GetDestinations(ModuleInfo module) => NodeOf(module).Destinations?.Read() ?? [];
+
+    /// <summary>
+    /// For every module that has counted any, its arrivals (<paramref name="arrivals"/>) or its destinations, in the
+    /// order of <see cref="Modules"/>.
+    /// </summary>
+    public IReadOnlyList<(ModuleInfo Module, IReadOnlyList<PeerCount> Places)> ReadPeers(bool arrivals)
+    {
+        var layout = _layout;
+        var read = new List<(ModuleInfo, IReadOnlyList<PeerCount>)>();
+        for (var i = 0; i < layout.Nodes.Length; i++)
+        {
+            if ((arrivals ? layout.Nodes[i].Arrivals : layout.Nodes[i].Destinations) is { } table)
+                read.Add((layout.Modules[i], table.Read()));
+        }
+        return read;
+    }
+
+    /// <summary>
+    /// Where the pipeline's modules send, as their parameters say (<see cref="ISendsTo"/>): an address that's the
+    /// same for every message, or the expression that works it out for each, as written.
+    /// </summary>
+    public IReadOnlyList<SendingTo> GetSending()
+    {
+        var layout = _layout;
+        var sending = new List<SendingTo>();
+        for (var i = 0; i < layout.Nodes.Length; i++)
+        {
+            if (layout.Nodes[i].Instances.OfType<ISendsTo>().FirstOrDefault() is not { } sends)
+                continue;
+            var address = sends.Address;
+            if (address.IsConstant)
+            {
+                if (address.Evaluate(null!) is { } fixedAddress)
+                    sending.Add(new SendingTo(layout.Modules[i], fixedAddress, Computed: false));
+            }
+            else if (address.ToString() is { Length: > 0 } written)
+            {
+                sending.Add(new SendingTo(layout.Modules[i], written, Computed: true));
+            }
+        }
+        return sending;
+    }
+
+    /// <summary>
     /// Gives modules the keys a tool knows them by, such as the daemon's graph keys, which last while their numbers
     /// change. They go on the modules' spans and metrics as <c>meep.module.key</c>. A module not named keeps the key it
     /// had.

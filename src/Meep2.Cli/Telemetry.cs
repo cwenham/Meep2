@@ -25,8 +25,8 @@ internal static class Telemetry
     /// <param name="otlp">A collector's OTLP/HTTP address, such as http://localhost:4318, or null to use the standard variables.</param>
     /// <param name="sample">The share of traces to record, or null for the default.</param>
     /// <param name="instance">
-    /// The daemon's lasting ID, for the resource's <c>service.instance.id</c>, so a collector can tell which daemon
-    /// sent what; null for <c>meep run</c>, which gets a new one each time.
+    /// The host's ID, for the resource's <c>service.instance.id</c>, so a collector can tell which host sent what: the
+    /// daemon's lasting one, or the one <c>meep run</c> makes for each run, which its origins also carry.
     /// </param>
     public static IDisposable? Start(string? otlp, double? sample = null, string? instance = null)
     {

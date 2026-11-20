@@ -120,6 +120,16 @@ internal sealed class WebSocketLink
         _writer = Task.Run(WriteAllAsync);
     }
 
+    /// <summary>
+    /// The counts for the other end, for a Listen's connection (<see cref="ModuleContext.Arrival"/>): what's sent on
+    /// it, and replies dropped for a client too slow to keep up. Received messages are counted by whoever reads them.
+    /// </summary>
+    public Tally? Peer
+    {
+        get => Volatile.Read(ref field);
+        set => Volatile.Write(ref field, value);
+    }
+
     /// <summary>When something was last sent or received, in <see cref="Environment.TickCount64"/> milliseconds.</summary>
     public long LastActivity => Volatile.Read(ref _lastActivity);
 
@@ -231,6 +241,7 @@ internal sealed class WebSocketLink
                 {
                     await _socket.SendAsync(outgoing.Frame.Bytes, outgoing.Frame.Type, endOfMessage: true, CancellationToken.None).ConfigureAwait(false);
                     _owner?.CountBytes(0, outgoing.Frame.Bytes.Length);
+                    Peer?.Count(sent: 1, bytesSent: outgoing.Frame.Bytes.Length);
                     Volatile.Write(ref _lastActivity, Environment.TickCount64);
                     outgoing.Done?.TrySetResult();
                     continue;
@@ -267,7 +278,10 @@ internal sealed class WebSocketConnectionLease(WebSocketLink link, string url, s
         if (IsClosed || !link.IsOpen)
             throw new IOException($"{this} has closed");
         if (!link.TryQueue(frame))
+        {
+            link.Peer?.Count(failed: 1);
             throw new QueueFullException($"{this} is too slow to keep up, so a message to it was dropped");
+        }
     }
 
     public async Task ReplyAsync(Message message, string? text, string? end, bool final, CancellationToken cancellationToken)
