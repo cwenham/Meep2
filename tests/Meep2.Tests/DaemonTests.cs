@@ -244,7 +244,7 @@ public class DaemonTests
         var daemonOutput = new SharedText();
         var daemonLog = new SharedText();
         var daemon = MeepCommand.RunAsync(["daemon"], TextWriter.Synchronized(daemonOutput), TextWriter.Synchronized(daemonLog), options, stopDaemon.Token);
-        await Wait.Until(() => File.Exists(Path.Combine(home.Path, "daemon", "meep.sock")) || daemon.IsCompleted);
+        await DaemonLab.UntilAnswering(Path.Combine(home.Path, "daemon", "meep.sock"), daemon);
 
         var start = await Cli(options, "start", file);
         var list = await Cli(options, "list");
@@ -299,7 +299,7 @@ public class DaemonTests
 
         using var stopDaemon = new CancellationTokenSource();
         var daemon = MeepCommand.RunAsync(["daemon"], new SharedText(), new SharedText(), options, stopDaemon.Token);
-        await Wait.Until(() => File.Exists(socket) || daemon.IsCompleted);
+        await DaemonLab.UntilAnswering(socket, daemon);
         var running = await Cli(options, "daemon", "socket");
         await Cli(options, "daemon", "stop");
         await Wait.For(daemon);
@@ -382,6 +382,32 @@ public sealed class DaemonLab : IAsyncDisposable
 
     /// <summary>A folder with a short path, for sockets.</summary>
     public static ShortTemporaryFolder ShortFolder() => new();
+
+    /// <summary>
+    /// Waits until a daemon answers on its socket, or has ended. The socket's file appears when Kestrel binds,
+    /// a moment before the daemon answers, so waiting for the file alone lets a client in too soon.
+    /// </summary>
+    public static Task UntilAnswering(string socket, Task daemon) => Wait.Until(async () =>
+    {
+        if (daemon.IsCompleted)
+            return true;
+        if (!File.Exists(socket))
+            return false;
+        using var client = new DaemonClient(socket);
+        try
+        {
+            await client.InfoAsync();
+            return true;
+        }
+        catch (DaemonException)
+        {
+            return false;
+        }
+        catch (HttpRequestException)
+        {
+            return false;
+        }
+    });
 
     public string Write(string name, string text) => _home.Write(name, text);
 
