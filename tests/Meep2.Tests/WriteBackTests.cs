@@ -84,6 +84,30 @@ public class WriteBackTests
     }
 
     [Test]
+    public async Task A_key_written_in_the_config_is_signed_with_from_a_file_deleted_afterwards()
+    {
+        Skip.Unless(GitRepo.Available, "git isn't on this machine.");
+        using var folder = new TemporaryFolder();
+        folder.Write("ticker.meep", Ticker);
+        GitRepo.Init(folder.Path);
+        GitRepo.Run(folder.Path, "config", "gpg.format", "ssh");
+        GitRepo.Run(folder.Path, "config", "user.signingkey", "key::ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl meep@test");
+        using var repository = new LibGit2Sharp.Repository(folder.Path);
+        var mine = Path.Combine(folder.Path, "id_ed25519.pub");
+        File.WriteAllText(mine, "a key of yours");
+
+        var (key, whyNot) = CommitSigning.KeyFor(repository);
+        var written = File.Exists(key);
+        CommitSigning.LetGo(key);
+        CommitSigning.LetGo(mine);
+
+        await Assert.That(whyNot).IsNull();
+        await Assert.That(written).IsTrue();
+        await Assert.That(File.Exists(key)).IsFalse();
+        await Assert.That(File.Exists(mine)).IsTrue(); // only the files it wrote itself
+    }
+
+    [Test]
     public async Task A_commit_says_why_it_cant_be_made()
     {
         Skip.Unless(GitRepo.Available, "git isn't on this machine.");

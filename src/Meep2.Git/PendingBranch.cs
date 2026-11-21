@@ -97,7 +97,16 @@ public static class PendingBranch
         string? unsigned = null;
         var (key, noKey) = CommitSigning.KeyFor(repository);
         var content = LibGit2Sharp.Commit.CreateBuffer(signature, signature, message, newTree, [parent], prettifyMessage: true, commentChar: null);
-        var (signed, whyNot) = key is null ? (null, noKey) : CommitSigning.SignAsync(content, key).GetAwaiter().GetResult();
+        (string? Signature, string? WhyNot) signing;
+        try
+        {
+            signing = key is null ? (null, noKey) : CommitSigning.SignAsync(content, key).GetAwaiter().GetResult();
+        }
+        finally
+        {
+            CommitSigning.LetGo(key);
+        }
+        var (signed, whyNot) = signing;
         if (signed is not null)
         {
             id = repository.ObjectDatabase.CreateCommitWithSignature(content, signed);

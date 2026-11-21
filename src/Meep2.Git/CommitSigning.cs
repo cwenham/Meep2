@@ -26,7 +26,7 @@ internal static class CommitSigning
             if (configured.StartsWith("key::", StringComparison.Ordinal))
             {
                 // A public key written in the config: ssh-keygen signs with it through ssh-agent.
-                var file = Path.Combine(Path.GetTempPath(), $"meep-signing-{Guid.NewGuid():N}.pub");
+                var file = Path.Combine(Path.GetTempPath(), $"{TemporaryPrefix}{Guid.NewGuid():N}.pub");
                 File.WriteAllText(file, configured["key::".Length..] + "\n");
                 return (file, null);
             }
@@ -38,6 +38,25 @@ internal static class CommitSigning
         return key is null
             ? (null, "there's no SSH key to sign with: set user.signingkey with gpg.format = ssh, or make one with ssh-keygen -t ed25519")
             : (key, null);
+    }
+
+    // The start of the name of a file KeyFor writes for a key in the config.
+    private const string TemporaryPrefix = "meep-signing-";
+
+    /// <summary>Deletes the key's file once it has been signed with, if <see cref="KeyFor"/> wrote it (M5).</summary>
+    public static void LetGo(string? key)
+    {
+        if (key is null || !Path.GetFileName(key).StartsWith(TemporaryPrefix, StringComparison.Ordinal)
+            || Path.GetDirectoryName(Path.GetFullPath(key)) != Path.GetFullPath(Path.GetTempPath()).TrimEnd(Path.DirectorySeparatorChar))
+            return;
+        try
+        {
+            File.Delete(key);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Left for the system to clear; it holds only a public key.
+        }
     }
 
     /// <summary>Signs a commit's content, returning the armoured signature, or null, with why not, if ssh-keygen couldn't.</summary>
