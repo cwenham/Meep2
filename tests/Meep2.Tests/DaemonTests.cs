@@ -128,6 +128,23 @@ public class DaemonTests
     }
 
     [Test]
+    public async Task Ended_pipelines_are_taken_off_the_list_on_a_timer_once_they_have_stayed_long_enough()
+    {
+        await using var lab = await DaemonLab.StartAsync(options => options with { PruneEvery = TimeSpan.FromMilliseconds(50) });
+        await lab.Client.StartAsync(lab.Write("brief.meep", """
+            defaults
+                keep-finished = 1s
+            Interval 10ms count=1
+                WriteLine "{msg}"
+            """));
+
+        // Nothing asks for the list while it waits, so only the timer can take it off.
+        await Wait.Until(() => lab.Log.ToString().Contains("[brief] has finished", StringComparison.Ordinal));
+        await Assert.That(lab.Daemon.ListedNow).IsEqualTo(1);
+        await Wait.Until(() => lab.Daemon.ListedNow == 0);
+    }
+
+    [Test]
     public async Task A_tap_over_a_websocket_drops_for_a_client_that_stops_reading()
     {
         await using var lab = await DaemonLab.StartAsync();

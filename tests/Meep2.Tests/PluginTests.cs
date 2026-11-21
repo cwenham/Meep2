@@ -483,6 +483,45 @@ public class PluginTests
     }
 
     [Test]
+    public async Task A_plugin_unloads_once_its_pipeline_has_finished_in_the_daemon_though_it_stays_listed()
+    {
+        using var lab = new PluginLab();
+        lab.CopyPlugin("shout", lab.Key);
+        var catalog = new PluginCatalog();
+        await using var daemon = await DaemonLab.StartAsync(options => options with { Plugins = lab.Options, Catalog = catalog });
+        var file = Path.Combine(lab.Path, "shouting.meep");
+        await File.WriteAllTextAsync(file, """
+            #plugin "shout/Meep2.TestPlugin.dll"
+            defaults
+                keep-finished = 1h
+            Interval 50ms count=3
+                Shout "tick {msg.Count}"
+                    WriteLine "{msg.Text}"
+            """);
+
+        WeakReference? unloaded = null;
+        var starting = daemon.Client.StartAsync(file);
+        await Wait.Until(() => (unloaded = PluginLab.Loaded(catalog)) is not null || starting.IsFaulted);
+        await starting;
+        await daemon.WaitFor("shouting", "finished");
+
+        await Assert.That(unloaded).IsNotNull();
+        await Assert.That(catalog.Loaded.Count).IsEqualTo(0);
+        for (var i = 0; i < 50 && unloaded!.IsAlive; i++)
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            await Task.Delay(20);
+        }
+        await Assert.That(unloaded!.IsAlive).IsFalse();
+        // What it ran, and how it ended, are still there to see.
+        var detail = await daemon.Client.GetAsync("shouting");
+        await Assert.That(detail.Modules.Single(m => m.Verb == "Shout").Counts.Handled).IsEqualTo(3);
+        await Assert.That((await daemon.Client.SourceAsync("shouting")).Text).Contains("Shout \"tick {msg.Count}\"");
+        await Assert.That((await daemon.Client.GraphAsync("shouting")).Modules.Select(m => m.Verb)).Contains("Shout");
+    }
+
+    [Test]
     public async Task Pipelines_using_one_plugin_share_it()
     {
         using var lab = new PluginLab();

@@ -361,10 +361,10 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                 update.Pipeline(hosted.Name).Graph = (notice.Version, notice.Reason);
             }
 
-            var pipeline = hosted.Pipeline;
-            var keys = hosted.Live?.ModuleKeys();
-            if (pipeline is null || keys is null)
+            // Read from the pipeline while it runs, or as it was when it ended.
+            if (hosted.Counts is not { } pipeline)
                 continue; // still loading
+            var keys = pipeline.Keys();
 
             foreach (var slot in due)
             {
@@ -380,7 +380,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                         Modules(update, hosted.Name, wanted, slot.Every, pipeline, keys, sent, reads);
                         break;
                     case "links":
-                        Links(update, hosted.Name, wanted, slot.Every, hosted, pipeline, sent);
+                        Links(update, hosted.Name, wanted, slot.Every, pipeline, sent);
                         break;
                     case "bytes":
                         Bytes(update, hosted.Name, wanted, slot.Every, pipeline, keys, sent, reads);
@@ -397,7 +397,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         return update;
     }
 
-    private static void Modules(Update update, string name, PipelinePlan wanted, TimeSpan every, Pipeline pipeline, IReadOnlyDictionary<ModuleInfo, string> keys, PipelineSent sent, Reads reads)
+    private static void Modules(Update update, string name, PipelinePlan wanted, TimeSpan every, PipelineCounts pipeline, IReadOnlyDictionary<ModuleInfo, string> keys, PipelineSent sent, Reads reads)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var read in reads.Of(pipeline))
@@ -410,10 +410,10 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         Gone(update, name, "modules", every, wanted, sent.Modules, seen);
     }
 
-    private static void Links(Update update, string name, PipelinePlan wanted, TimeSpan every, HostedPipeline hosted, Pipeline pipeline, PipelineSent sent)
+    private static void Links(Update update, string name, PipelinePlan wanted, TimeSpan every, PipelineCounts pipeline, PipelineSent sent)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var link in Graphs.LinkCounts(hosted.Live!, pipeline))
+        foreach (var link in pipeline.Links())
         {
             if (wanted.RateOf("links", link.Key) != every)
                 continue;
@@ -423,7 +423,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         Gone(update, name, "links", every, wanted, sent.Links, seen);
     }
 
-    private static void Bytes(Update update, string name, PipelinePlan wanted, TimeSpan every, Pipeline pipeline, IReadOnlyDictionary<ModuleInfo, string> keys, PipelineSent sent, Reads reads)
+    private static void Bytes(Update update, string name, PipelinePlan wanted, TimeSpan every, PipelineCounts pipeline, IReadOnlyDictionary<ModuleInfo, string> keys, PipelineSent sent, Reads reads)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var read in reads.Of(pipeline))
@@ -439,7 +439,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         Gone(update, name, "bytes", every, wanted, sent.Bytes, seen);
     }
 
-    private static void Timing(Update update, string name, PipelinePlan wanted, TimeSpan every, Pipeline pipeline, IReadOnlyDictionary<ModuleInfo, string> keys, PipelineSent sent, Reads reads)
+    private static void Timing(Update update, string name, PipelinePlan wanted, TimeSpan every, PipelineCounts pipeline, IReadOnlyDictionary<ModuleInfo, string> keys, PipelineSent sent, Reads reads)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var read in reads.Of(pipeline))
@@ -467,7 +467,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
     // being quiet goes (null), and is named in the pipeline's folded, so a client moves its counts into *'s rather than
     // seeing *'s rate jump (Q215). For arrivals, the pipeline's clients names clients outside Meep, by address, once a
     // name is found (Q220); for destinations, its peers says which are Meep hosts, by ID.
-    private static void Places(Update update, string name, string kind, PipelinePlan wanted, TimeSpan every, Pipeline pipeline, IReadOnlyDictionary<ModuleInfo, string> keys, PipelineSent sent)
+    private static void Places(Update update, string name, string kind, PipelinePlan wanted, TimeSpan every, PipelineCounts pipeline, IReadOnlyDictionary<ModuleInfo, string> keys, PipelineSent sent)
     {
         var arrivals = kind == "arrivals";
         var record = arrivals ? sent.Arrivals : sent.Destinations;
@@ -572,7 +572,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
     }
 
     // A pipeline's counts added up over its modules, with what its sources emitted and its bytes.
-    private static long[] TotalsOf(HostedPipeline hosted, Pipeline pipeline, Dictionary<string, long[]> sums, Reads reads)
+    private static long[] TotalsOf(HostedPipeline hosted, PipelineCounts pipeline, Dictionary<string, long[]> sums, Reads reads)
     {
         if (sums.TryGetValue(hosted.Name, out var made))
             return made;
@@ -595,9 +595,9 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
     /// <summary>The modules' counts read for one update, each pipeline's once.</summary>
     private sealed class Reads
     {
-        private readonly Dictionary<Pipeline, ModuleRead[]> _read = new(ReferenceEqualityComparer.Instance);
+        private readonly Dictionary<PipelineCounts, ModuleRead[]> _read = new(ReferenceEqualityComparer.Instance);
 
-        public ModuleRead[] Of(Pipeline pipeline)
+        public ModuleRead[] Of(PipelineCounts pipeline)
         {
             if (_read.TryGetValue(pipeline, out var read))
                 return read;
@@ -665,12 +665,12 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         foreach (var hosted in listed)
         {
             states[hosted.State] = states.GetValueOrDefault(hosted.State) + 1;
-            if (hosted.Pipeline is not { } pipeline || hosted.Live is not { } live)
+            if (hosted.Counts is not { } counts)
                 continue;
-            var sum = TotalsOf(hosted, pipeline, sums, reads);
+            var sum = TotalsOf(hosted, counts, sums, reads);
             for (var i = 0; i < totals.Length; i++)
                 totals[i] += sum[i];
-            if (hosted.Ended is null)
+            if (hosted.Ended is null && hosted.Pipeline is { } pipeline && hosted.Live is { } live)
             {
                 var keys = live.ModuleKeys();
                 foreach (var at in pipeline.GetListening())

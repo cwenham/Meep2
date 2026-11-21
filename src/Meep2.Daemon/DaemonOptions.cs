@@ -8,6 +8,15 @@ public sealed record DaemonOptions
     /// <summary>Where plugins come from, and Meep's own folder, <c>~/.meep</c> or <c>MEEP_HOME</c>, which holds the daemon's socket and tokens.</summary>
     public required PluginOptions Plugins { get; init; }
 
+    /// <summary>
+    /// Loads the plugins of the pipelines the daemon starts, and shares them between pipelines: the process's own
+    /// unless set. Tests set one of their own, to see what's loaded.
+    /// </summary>
+    internal Meep2.Plugins.PluginCatalog? Catalog { get; init; }
+
+    /// <summary>How often pipelines that have ended are taken off the list once they've stayed as long as their files ask (M1).</summary>
+    internal TimeSpan PruneEvery { get; init; } = TimeSpan.FromSeconds(30);
+
     /// <summary>The control socket's path, unless it's the usual <see cref="DefaultSocket"/>.</summary>
     public string? SocketPath { get; init; }
 

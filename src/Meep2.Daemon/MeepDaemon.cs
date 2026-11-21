@@ -74,6 +74,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private HostInfo? _identity;
     private IDisposable? _meepHosts;
+    private Task _pruning = Task.CompletedTask;
 
     private readonly DaemonOptions _options;
     private readonly ConcurrentDictionary<string, HostedPipeline> _pipelines = new(StringComparer.Ordinal);
@@ -104,6 +105,9 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
             return [.. _pipelines.Values];
         }
     }
+
+    /// <summary>How many pipelines are listed now, without taking off those that have stayed long enough, for tests.</summary>
+    internal int ListedNow => _pipelines.Count;
 
     /// <summary>Completes when someone asks the daemon to stop, through the API.</summary>
     public Task StopRequested => _stopRequested.Task;
@@ -174,6 +178,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         if (!OperatingSystem.IsWindows())
             File.SetUnixFileMode(socket, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         Log($"meep daemon {Version} is listening on {socket}");
+        _pruning = PruneEveryAsync(_stopping.Token);
 
         // The pipelines its command line and settings file name. A file that doesn't load is logged, not fatal.
         foreach (var start in _options.Start)
@@ -215,6 +220,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
             hosted.Stop();
         await _stopping.CancelAsync().ConfigureAwait(false);
         await Task.WhenAll(_pipelines.Values.Select(hosted => hosted.Finished)).ConfigureAwait(false);
+        await _pruning.ConfigureAwait(false);
         if (_app is not null)
         {
             await _app.StopAsync().ConfigureAwait(false);
@@ -330,7 +336,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
                 ? builder.AddSource(() => new Read(new ReadParameters { Path = address.Location }))
                 : builder.AddSource(() => new ReadPipeline(address, plugins, text: text)),
             builder.Add(() => new Parse()),
-            builder.Add(() => new Install(registry, new PluginInstaller(plugins))),
+            builder.Add(() => new Install(registry, new PluginInstaller(plugins), _options.Catalog)),
             builder.Add(() => new Build(registry, hostedOptions)),
             builder.Add(() => new Host(
                 running: built =>
@@ -444,14 +450,34 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         return sending;
     }
 
-    // Takes pipelines off the list once they've been listed for as long as their files ask.
-    private void Prune()
+    // Takes pipelines off the list once they've been listed for as long as their files ask. Returns whether it took any.
+    private bool Prune()
     {
         var now = DateTimeOffset.UtcNow;
+        var pruned = false;
         foreach (var (name, hosted) in _pipelines)
         {
             if (hosted.Expired(now))
-                _pipelines.TryRemove(new KeyValuePair<string, HostedPipeline>(name, hosted));
+                pruned |= _pipelines.TryRemove(new KeyValuePair<string, HostedPipeline>(name, hosted));
+        }
+        return pruned;
+    }
+
+    // Prunes on a timer too, so ended pipelines go though nobody asks for the list (M1), telling subscriptions.
+    private async Task PruneEveryAsync(CancellationToken stopping)
+    {
+        using var timer = new PeriodicTimer(_options.PruneEvery);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(stopping).ConfigureAwait(false))
+            {
+                if (Prune())
+                    Signal();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // The daemon is stopping.
         }
     }
 
@@ -635,8 +661,8 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
             {
                 Require(capabilities, Capabilities.Observe);
                 var hosted = Find(name);
-                var live = hosted.Live ?? throw new DaemonException(409, $"{name} isn't running yet."); // one that has ended still shows what it ran
-                return Answer.Json(200, new SourceText(hosted.Path, live.Syntax.Source.Text, hosted.Edited), DaemonJson.Default.SourceText);
+                var text = hosted.SourceText ?? throw new DaemonException(409, $"{name} isn't running yet."); // one that has ended still shows what it ran
+                return Answer.Json(200, new SourceText(hosted.Path, text, hosted.Edited), DaemonJson.Default.SourceText);
             }
             case ("POST", ["pipelines", var name, "reload"]):
             {

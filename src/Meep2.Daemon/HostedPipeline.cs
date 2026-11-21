@@ -10,6 +10,11 @@ namespace Meep2.Daemon;
 /// A pipeline the daemon hosts: the bootstrap pipeline that loads and hosts it, and, once it's built, the pipeline
 /// itself. One that ends on its own stays listed for a while, with its final counts and why it stopped (Q111).
 /// </summary>
+/// <remarks>
+/// Once it has ended, it keeps only what's shown of it: its final detail and counts, its text, its graph and its
+/// warnings. It lets go of the pipeline, its modules and the verbs it was built with, so its plugins can unload while
+/// it's still listed (M1).
+/// </remarks>
 public sealed class HostedPipeline
 {
     private readonly Lock _lock = new();
@@ -19,6 +24,8 @@ public sealed class HostedPipeline
     private string? _failure;
     private bool _stopRequested;
     private PipelineDetail? _final;
+    private PipelineCounts? _counts;
+    private EndedState? _ended;
     private readonly SemaphoreSlim _reloading = new(1, 1);
     private PipelineWatcher? _watcher;
     private bool _ending; // once set, nothing more is watched
@@ -48,7 +55,7 @@ public sealed class HostedPipeline
     /// <summary>Where it came from: a file, a URL, Git, standard input or text sent to the daemon (goal 7).</summary>
     public PipelineAddress Address { get; }
 
-    /// <summary>The pipeline as one that can be changed while it runs, once it's built (goal 4).</summary>
+    /// <summary>The pipeline as one that can be changed while it runs, once it's built (goal 4), until it ends.</summary>
     public LivePipeline? Live
     {
         get
@@ -85,7 +92,7 @@ public sealed class HostedPipeline
     /// <summary>How many times it has been restarted.</summary>
     public int Restarts { get; private set; }
 
-    /// <summary>The pipeline running now, or the last one to run.</summary>
+    /// <summary>The pipeline running now, or the last one to run, until it ends.</summary>
     public Pipeline? Pipeline
     {
         get
@@ -121,7 +128,7 @@ public sealed class HostedPipeline
         get
         {
             lock (_lock)
-                return _built is { } built ? [.. built.Warnings.Select(w => w.ToString())] : [];
+                return _ended?.Warnings ?? (_built is { } built ? [.. built.Warnings.Select(w => w.ToString())] : []);
         }
     }
 
@@ -131,7 +138,7 @@ public sealed class HostedPipeline
         get
         {
             lock (_lock)
-                return _built?.Pipeline.Options.KeepFinished ?? TimeSpan.Zero;
+                return _ended?.KeepFinished ?? _built?.Pipeline.Options.KeepFinished ?? TimeSpan.Zero;
         }
     }
 
@@ -158,6 +165,26 @@ public sealed class HostedPipeline
         }
     }
 
+    /// <summary>What it counts, from the pipeline while it runs, or as it was when it ended; null while it loads.</summary>
+    internal PipelineCounts? Counts
+    {
+        get
+        {
+            lock (_lock)
+                return _counts;
+        }
+    }
+
+    /// <summary>Its text, as it runs or ran; null while it loads.</summary>
+    internal string? SourceText
+    {
+        get
+        {
+            lock (_lock)
+                return _ended?.Source ?? _built?.Live?.Syntax.Source.Text;
+        }
+    }
+
     /// <summary>Completes when the bootstrap pipeline, and so this pipeline, has finished.</summary>
     internal Task Finished { get; set; } = Task.CompletedTask;
 
@@ -170,6 +197,7 @@ public sealed class HostedPipeline
         {
             restarted = _built is not null;
             _built = built;
+            _counts = built.Live is { } live ? PipelineCounts.Of(live, built.Pipeline) : null;
             if (_state != PipelineStates.Stopping)
             {
                 _state = PipelineStates.Running;
@@ -186,6 +214,11 @@ public sealed class HostedPipeline
     /// <exception cref="DaemonException">It hasn't loaded yet.</exception>
     internal PipelineGraph Graph()
     {
+        lock (_lock)
+        {
+            if (_ended?.Graph is { } ended)
+                return ended;
+        }
         var live = Live ?? throw new DaemonException(409, $"{Name} isn't running yet.");
         var graph = Graphs.Describe(Name, Path, live, version: 0);
         var text = System.Text.Json.JsonSerializer.Serialize(graph, DaemonJson.Default.PipelineGraph);
@@ -402,11 +435,15 @@ public sealed class HostedPipeline
         watcher?.Dispose();
     }
 
-    /// <summary>Records how it ended, with its final counts.</summary>
+    /// <summary>
+    /// Records how it ended, with its final counts, and keeps what's shown of it, letting go of the pipeline, the
+    /// bootstrap pipeline and the verbs it was built with (M1).
+    /// </summary>
     internal void End()
     {
         StopWatching();
         var final = DetailNow();
+        var graph = Live is null ? null : Graph();
         lock (_lock)
         {
             Ended = DateTimeOffset.UtcNow;
@@ -414,9 +451,20 @@ public sealed class HostedPipeline
                 : _failure is not null ? (PipelineStates.Failed, _failure)
                 : (PipelineStates.Finished, "its sources finished");
             _final = final with { State = _state, Ended = Ended, Reason = _reason, Restarts = Restarts, GraphVersion = GraphVersion, Watching = false };
+            _ended = new EndedState(
+                graph,
+                _built?.Live?.Syntax.Source.Text,
+                _built is { } built ? [.. built.Warnings.Select(w => w.ToString())] : [],
+                _built?.Pipeline.Options.KeepFinished ?? TimeSpan.Zero);
+            _counts = _counts?.Freeze();
+            _built = null;
+            Bootstrap = null;
         }
         _changed?.Invoke();
     }
+
+    /// <summary>What's kept of a pipeline once it has ended.</summary>
+    private sealed record EndedState(PipelineGraph? Graph, string? Source, IReadOnlyList<string> Warnings, TimeSpan KeepFinished);
 
     internal PipelineSummary Summary()
     {
