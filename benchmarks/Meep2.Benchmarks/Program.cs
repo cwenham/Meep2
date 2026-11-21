@@ -12,6 +12,10 @@ if (args is ["flows-micro", ..])
 if (args is ["flows", ..])
     return await Meep2.Benchmarks.FlowCost.RunAsync(args);
 
+// The memory the fam chain keeps alive (M8, for Q7): dotnet run -c Release -- fam [--messages 100000]
+if (args is ["fam", ..])
+    return await Meep2.Benchmarks.FamCost.RunAsync(args);
+
 // Pick benchmarks from the command line, for example: dotnet run -c Release -- --filter '*Pipeline*'
 BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
 return 0;
