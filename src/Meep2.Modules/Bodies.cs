@@ -151,6 +151,13 @@ internal static class Bodies
         return buffer.ToArray();
     }
 
+    // Text read as File.ReadAllText reads it: UTF-8 unless a byte order mark says otherwise.
+    public static string Decode(ReadOnlyMemory<byte> bytes)
+    {
+        using var reader = new StreamReader(Open(bytes), System.Text.Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+        return reader.ReadToEnd();
+    }
+
     // Query values and headers by name, ignoring case. A name given more than once has its values joined with commas.
     public static IReadOnlyDictionary<string, string> ToDictionary(IEnumerable<KeyValuePair<string, StringValues>> values)
     {

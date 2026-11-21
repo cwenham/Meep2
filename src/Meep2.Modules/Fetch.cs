@@ -370,14 +370,34 @@ public sealed class FileFetch(FetchParameters parameters) : AInflection<Message>
         }
         try
         {
-            var info = new FileInfo(path);
-            if (info.Exists && info.Length > parameters.MaxSize)
+            // Checked before opening, since opening a named pipe waits for a writer, and again once it's open, in case
+            // the path was changed in between.
+            if (File.Exists(path) && !FileKinds.IsRegular(path))
             {
-                context.EmitError($"{path} is {info.Length} bytes, over the limit of {parameters.MaxSize}");
+                context.EmitError($"{path} isn't a regular file, such as a device or a named pipe, so it isn't read");
                 return;
             }
-            var text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
-            context.Emit(new FileText(path, text));
+            var stream = new FileStream(path, new FileStreamOptions { Mode = FileMode.Open, Access = FileAccess.Read, Options = FileOptions.Asynchronous });
+            await using (stream.ConfigureAwait(false))
+            {
+                if (!FileKinds.IsRegular(stream.SafeFileHandle))
+                {
+                    context.EmitError($"{path} isn't a regular file, such as a device or a named pipe, so it isn't read");
+                    return;
+                }
+                if (stream.Length > parameters.MaxSize)
+                {
+                    context.EmitError($"{path} is {stream.Length} bytes, over the limit of {parameters.MaxSize}");
+                    return;
+                }
+                // Read to its end, within the limit, rather than trusting the length: a file can grow while it's read.
+                var bytes = await Bodies.ReadAsync(stream, declaredLength: -1, parameters.MaxSize, cancellationToken).ConfigureAwait(false);
+                context.Emit(new FileText(path, Bodies.Decode(bytes)));
+            }
+        }
+        catch (BodyTooLargeException)
+        {
+            context.EmitError($"{path} grew past the limit of {parameters.MaxSize} bytes while it was read");
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {

@@ -272,6 +272,34 @@ public class ModuleTests
     }
 
     [Test]
+    public async Task Fetch_reads_only_regular_files_and_within_the_limit()
+    {
+        using var folder = new TemporaryFolder();
+        var big = folder.Write("big.txt", new string('x', 100));
+        var small = folder.Write("small.txt", "\uFEFFsmall");
+        var pipe = Path.Combine(folder.Path, "pipe");
+        if (!OperatingSystem.IsWindows())
+            System.Diagnostics.Process.Start("mkfifo", [pipe])!.WaitForExit();
+        var run = await TestRun.Start($$"""
+            Interval 10ms count=1
+                Fetch "/dev/zero" max-size=1000
+                    Sink
+                Fetch '{{pipe}}'
+                    Sink
+                Fetch '{{big}}' max-size=50
+                    Sink
+                Fetch '{{small}}' max-size=50
+                    Sink
+            """);
+
+        var errors = run.At("Sink").OfType<ErrorMessage>().Select(m => m.Error).ToList();
+        await Assert.That(errors).Contains("/dev/zero isn't a regular file, such as a device or a named pipe, so it isn't read");
+        await Assert.That(errors).Contains($"{pipe} isn't a regular file, such as a device or a named pipe, so it isn't read");
+        await Assert.That(errors).Contains($"{big} is 100 bytes, over the limit of 50");
+        await Assert.That(run.At("Sink").OfType<FileText>().Single().Text).IsEqualTo("small");
+    }
+
+    [Test]
     public async Task WriteLine_without_a_template_writes_each_message_as_text()
     {
         await using var server = Server();
