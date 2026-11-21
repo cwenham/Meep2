@@ -42,6 +42,13 @@ public sealed record PluginOptions
     /// <summary>The keys whose plugins you trust. Null means the ones in <see cref="TrustedKeysFile"/>.</summary>
     public TrustedKeys? Trusted { get; init; }
 
+    /// <summary>The largest plugin download, a GitHub release asset or a NuGet package (S5). 256 MiB unless set.</summary>
+    public long MaxDownload
+    {
+        get;
+        init => field = value > 0 ? value : throw new ArgumentOutOfRangeException(nameof(MaxDownload), "The download limit must be at least 1 byte.");
+    } = 256L * 1024 * 1024;
+
     /// <summary>The settings for this user: Meep's folder is <c>MEEP_HOME</c>, or <c>~/.meep</c>.</summary>
     public static PluginOptions ForUser(bool developerMode = false) => new()
     {

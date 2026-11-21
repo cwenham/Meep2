@@ -208,6 +208,23 @@ public class PluginTests
     }
 
     [Test]
+    public async Task Plugin_downloads_over_the_limit_are_refused()
+    {
+        using var lab = new PluginLab();
+        var (zip, sha) = lab.ReleaseAsset();
+        await using var github = new TestServer(context => Serve(context, new(), "/cwenham/Meep2.TestPlugin/releases/download/v1.0.0/Meep2.TestPlugin-1.0.0.zip", zip));
+        lab.Options = lab.Options with { GitHub = new Uri(github.Url + "/"), NuGetSources = [lab.SignedFeed()], MaxDownload = 1000 };
+
+        var fromGitHub = await lab.RunAsync($"#plugin github.com/cwenham/Meep2.TestPlugin 1.0.0 sha256:{sha}\n" + ShoutTwice, new PluginCatalog());
+        var fromNuGet = await lab.RunAsync("#plugin nuget:Meep2.TestPlugin 1.0.0\n" + ShoutTwice, new PluginCatalog());
+
+        await Assert.That(zip.Length).IsGreaterThan(1000);
+        await Assert.That(fromGitHub.AllErrors).Contains("Meep2.TestPlugin-1.0.0.zip is larger than 1000 bytes, the most Meep downloads for a plugin, so it isn't installed.");
+        await Assert.That(fromNuGet.AllErrors).Contains("Meep2.TestPlugin 1.0.0 is larger than 1000 bytes");
+        await Assert.That(Directory.Exists(Path.Combine(lab.Options.Cache, "github", "cwenham", "meep2.testplugin", "1.0.0"))).IsFalse();
+    }
+
+    [Test]
     public async Task An_unsigned_github_plugin_is_trusted_by_the_sha_its_line_pins()
     {
         using var lab = new PluginLab();

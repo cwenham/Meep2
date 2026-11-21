@@ -97,6 +97,19 @@ public class SourceTests
     }
 
     [Test]
+    public async Task A_pipeline_from_a_url_over_the_limit_isnt_read()
+    {
+        var huge = Ticker + "// " + new string('x', PipelineSources.MaxDownload) + "\n";
+        await using var server = Serve(new() { ["/p/huge.meep"] = huge });
+        using var home = new TemporaryFolder();
+        var options = new PluginOptions { Home = home.Path, Trusted = TrustedKeys.None, DeveloperMode = true };
+
+        var run = await Run(options, "run", $"{server.Url}/p/huge.meep");
+
+        await Assert.That(run.Error).Contains($"{server.Url}/p/huge.meep is larger than 4 MiB, the most Meep reads for a pipeline, an include or a signature, so it isn't read.");
+    }
+
+    [Test]
     public async Task Plain_http_is_only_for_this_machine_where_developer_mode_needs_no_signature()
     {
         await using var server = Serve(new() { ["/p/ticker.meep"] = Ticker });

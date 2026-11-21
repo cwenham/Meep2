@@ -223,21 +223,40 @@ public static class PipelineSources
             throw new PipelineSourceException($"Meep fetches pipelines over HTTPS, so it won't fetch {url}: http:// is only for this machine (localhost). Use https://.");
     }
 
+    /// <summary>The largest pipeline, include or signature fetched from a URL (S5): 4 MiB.</summary>
+    internal const int MaxDownload = 4 * 1024 * 1024;
+
+    // Reads a file from a URL, up to the limit, or null if it isn't there.
     private static async Task<byte[]?> GetAsync(string url, CancellationToken cancellationToken)
     {
         try
         {
-            using var response = await s_http.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            using var response = await s_http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
                 return null;
             response.EnsureSuccessStatusCode();
-            return await response.Content.ReadAsByteArrayAsync(cancellationToken).ConfigureAwait(false);
+            if (response.Content.Headers.ContentLength > MaxDownload)
+                throw TooLarge(url);
+            await using var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
+            using var buffer = new MemoryStream();
+            var chunk = new byte[81920];
+            int read;
+            while ((read = await body.ReadAsync(chunk, cancellationToken).ConfigureAwait(false)) > 0)
+            {
+                if (buffer.Length + read > MaxDownload)
+                    throw TooLarge(url);
+                buffer.Write(chunk, 0, read);
+            }
+            return buffer.ToArray();
         }
         catch (HttpRequestException exception)
         {
             throw new PipelineSourceException($"Couldn't fetch {url}: {exception.Message}", exception);
         }
     }
+
+    private static PipelineSourceException TooLarge(string url) =>
+        new($"{url} is larger than {MaxDownload / (1024 * 1024)} MiB, the most Meep reads for a pipeline, an include or a signature, so it isn't read.");
 
     private static async Task<string?> GetTextAsync(string url, CancellationToken cancellationToken) =>
         await GetAsync(url, cancellationToken).ConfigureAwait(false) is { } bytes ? Encoding.UTF8.GetString(bytes) : null;

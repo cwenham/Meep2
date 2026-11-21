@@ -263,7 +263,7 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
             if (have.Package is not null && have.Version >= match.Version)
                 continue;
 
-            using var download = new MemoryStream();
+            using var download = new LimitedStream(options.MaxDownload, () => TooLarge($"{wanted.Id} {match.Version}"));
             if (!await match.Feed.CopyNupkgToStreamAsync(wanted.Id, match.Version, download, cache, logger, cancellationToken).ConfigureAwait(false))
                 throw new PluginException($"Couldn't download {wanted.Id} {match.Version}.");
             var package = download.ToArray();
@@ -413,17 +413,65 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
             return null;
         if (!response.IsSuccessStatusCode)
             throw new PluginException($"Couldn't download {url}: {(int)response.StatusCode} {response.ReasonPhrase}.");
+        if (response.Content.Headers.ContentLength > options.MaxDownload)
+            throw TooLarge(url.ToString());
         await using var body = await response.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
         await using var file = File.Create(path);
         using var hash = IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
         var buffer = new byte[81920];
+        long total = 0;
         int read;
         while ((read = await body.ReadAsync(buffer, cancellationToken).ConfigureAwait(false)) > 0)
         {
+            if ((total += read) > options.MaxDownload)
+                throw TooLarge(url.ToString());
             hash.AppendData(buffer, 0, read);
             await file.WriteAsync(buffer.AsMemory(0, read), cancellationToken).ConfigureAwait(false);
         }
         return Convert.ToHexStringLower(hash.GetHashAndReset());
+    }
+
+    private PluginException TooLarge(string what) =>
+        new($"{what} is larger than {(options.MaxDownload % (1024 * 1024) == 0 ? $"{options.MaxDownload / (1024 * 1024)} MiB" : $"{options.MaxDownload} bytes")}, the most Meep downloads for a plugin, so it isn't installed.");
+
+    // A stream in memory that refuses to grow past a limit, for packages NuGet copies into it.
+    private sealed class LimitedStream(long limit, Func<Exception> tooLarge) : MemoryStream
+    {
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            Check(count);
+            base.Write(buffer, offset, count);
+        }
+
+        public override void Write(ReadOnlySpan<byte> buffer)
+        {
+            Check(buffer.Length);
+            base.Write(buffer);
+        }
+
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            Check(count);
+            return base.WriteAsync(buffer, offset, count, cancellationToken);
+        }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            Check(buffer.Length);
+            return base.WriteAsync(buffer, cancellationToken);
+        }
+
+        public override void WriteByte(byte value)
+        {
+            Check(1);
+            base.WriteByte(value);
+        }
+
+        private void Check(int count)
+        {
+            if (Length + count > limit)
+                throw tooLarge();
+        }
     }
 
     // Unpacks a zip, refusing any entry that would land outside the folder.
