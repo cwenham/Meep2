@@ -20,7 +20,13 @@ public class LanguageServerTests
             input.Write(Encoding.ASCII.GetBytes($"Content-Length: {body.Length}\r\n\r\n"));
             input.Write(body);
         }
-        input.Position = 0;
+        return await ConverseRaw(input.ToArray());
+    }
+
+    // Runs the server on bytes exactly as given, framing and all, and reads back what it sent.
+    private static async Task<List<JsonNode>> ConverseRaw(byte[] bytes)
+    {
+        var input = new MemoryStream(bytes);
         var output = new MemoryStream();
         await Wait.For(new LanguageServer(input, output).RunAsync(CancellationToken.None));
 
@@ -35,6 +41,49 @@ public class LanguageServerTests
             at = header + 4 + length;
         }
         return replies;
+    }
+
+    private static byte[] Framed(string body) =>
+        [.. Encoding.ASCII.GetBytes($"Content-Length: {Encoding.UTF8.GetByteCount(body)}\r\n\r\n"), .. Encoding.UTF8.GetBytes(body)];
+
+    [Test]
+    public async Task Malformed_messages_are_answered_with_errors_and_the_server_carries_on()
+    {
+        var replies = await ConverseRaw([
+            .. Framed("""{"jsonrpc":"2.0","id":1,"method":"textDocument/hover","params":{}}"""),
+            .. Framed("not json"),
+            .. Framed("""{"jsonrpc":"2.0","id":2,"method":"textDocument/didOpen"}"""),
+            .. Framed("""{"jsonrpc":"2.0","method":"textDocument/didChange"}"""),
+            .. Framed("""[1, 2]"""),
+            .. Framed("""{"jsonrpc":"2.0","id":3,"method":"shutdown"}"""),
+            .. Encoding.ASCII.GetBytes($"Content-Length: {LanguageServer.MaxMessage + 1}\r\n\r\n"),
+        ]);
+
+        await Assert.That(replies.Count).IsEqualTo(6);
+        await Assert.That(replies[0]["id"]!.GetValue<int>()).IsEqualTo(1);
+        await Assert.That(replies[0]["error"]!["code"]!.GetValue<int>()).IsEqualTo(-32602);
+        await Assert.That(replies[0]["error"]!["message"]!.GetValue<string>()).StartsWith("meep lsp couldn't handle textDocument/hover: ");
+        await Assert.That(replies[1]["id"]).IsNull();
+        await Assert.That(replies[1]["error"]!["code"]!.GetValue<int>()).IsEqualTo(-32700);
+        await Assert.That(replies[2]["id"]!.GetValue<int>()).IsEqualTo(2);
+        await Assert.That(replies[2]["error"]!["code"]!.GetValue<int>()).IsEqualTo(-32602);
+        await Assert.That(replies[3]["id"]).IsNull(); // [1, 2] isn't a JSON-RPC message; the didChange notification had nobody to answer
+        await Assert.That(replies[3]["error"]!["code"]!.GetValue<int>()).IsEqualTo(-32600);
+        await Assert.That(replies[4]["id"]!.GetValue<int>()).IsEqualTo(3);
+        await Assert.That(replies[4]["result"]).IsNull();
+        await Assert.That(replies[5]["error"]!["message"]!.GetValue<string>()).IsEqualTo($"meep lsp skipped a message of {LanguageServer.MaxMessage + 1} bytes: messages can be at most {LanguageServer.MaxMessage}.");
+    }
+
+    [Test]
+    public async Task A_message_without_a_length_it_can_follow_stops_the_server_saying_why()
+    {
+        var replies = await ConverseRaw([
+            .. Encoding.ASCII.GetBytes("Content-Length: lots\r\n\r\n{}"),
+            .. Framed("""{"jsonrpc":"2.0","id":1,"method":"shutdown"}"""),
+        ]);
+
+        await Assert.That(replies.Count).IsEqualTo(1);
+        await Assert.That(replies[0]["error"]!["message"]!.GetValue<string>()).IsEqualTo("meep lsp read a message without a Content-Length it could follow, so it has stopped.");
     }
 
     private static JsonObject Open(string uri, string text) => new()

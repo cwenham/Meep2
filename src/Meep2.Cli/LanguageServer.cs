@@ -57,112 +57,129 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
     {
         while (await ReadAsync(cancellationToken).ConfigureAwait(false) is { } message)
         {
-            var method = message["method"]?.GetValue<string>();
-            var id = message["id"];
-            var parameters = message["params"];
-            switch (method)
+            if (message is not JsonObject)
             {
-                case "initialize":
-                    await RespondAsync(id, new JsonObject
-                    {
-                        ["capabilities"] = new JsonObject
+                await RespondErrorAsync(null, -32600, "meep lsp takes JSON-RPC messages, which are JSON objects.", cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            JsonNode? id = null;
+            string? method = null;
+            try
+            {
+                id = message["id"];
+                method = message["method"] is JsonValue name && name.TryGetValue<string>(out var text) ? text : null;
+                var parameters = message["params"];
+                switch (method)
+                {
+                    case "initialize":
+                        await RespondAsync(id, new JsonObject
                         {
-                            ["textDocumentSync"] = 1, // the whole text, on each change
-                            ["completionProvider"] = new JsonObject { ["triggerCharacters"] = new JsonArray("@", " ", "#", "\"") },
-                            ["hoverProvider"] = true,
-                            ["semanticTokensProvider"] = new JsonObject
+                            ["capabilities"] = new JsonObject
                             {
-                                ["legend"] = new JsonObject
+                                ["textDocumentSync"] = 1, // the whole text, on each change
+                                ["completionProvider"] = new JsonObject { ["triggerCharacters"] = new JsonArray("@", " ", "#", "\"") },
+                                ["hoverProvider"] = true,
+                                ["semanticTokensProvider"] = new JsonObject
                                 {
-                                    ["tokenTypes"] = new JsonArray([.. Highlighter.Types.Select(t => (JsonNode)t)]),
-                                    ["tokenModifiers"] = new JsonArray([.. Highlighter.Modifiers.Select(m => (JsonNode)m)]),
+                                    ["legend"] = new JsonObject
+                                    {
+                                        ["tokenTypes"] = new JsonArray([.. Highlighter.Types.Select(t => (JsonNode)t)]),
+                                        ["tokenModifiers"] = new JsonArray([.. Highlighter.Modifiers.Select(m => (JsonNode)m)]),
+                                    },
+                                    ["full"] = new JsonObject { ["delta"] = true },
+                                    ["range"] = false,
                                 },
-                                ["full"] = new JsonObject { ["delta"] = true },
-                                ["range"] = false,
+                                ["experimental"] = new JsonObject
+                                {
+                                    ["meep"] = new JsonObject { ["graph"] = true, ["setBase"] = true, ["verbs"] = true, ["applyEdits"] = true },
+                                },
                             },
-                            ["experimental"] = new JsonObject
-                            {
-                                ["meep"] = new JsonObject { ["graph"] = true, ["setBase"] = true, ["verbs"] = true, ["applyEdits"] = true },
-                            },
-                        },
-                        ["serverInfo"] = new JsonObject { ["name"] = "meep" },
-                    }, cancellationToken).ConfigureAwait(false);
-                    break;
-                case "shutdown":
-                    _shuttingDown = true;
-                    await RespondAsync(id, null, cancellationToken).ConfigureAwait(false);
-                    break;
-                case "exit":
-                    foreach (var uri in _loaded.Keys.ToList())
-                        Unload(uri);
-                    return _shuttingDown ? 0 : 1;
-                case "textDocument/didOpen":
-                    await ChangedAsync(
-                        parameters!["textDocument"]!["uri"]!.GetValue<string>(),
-                        parameters["textDocument"]!["text"]!.GetValue<string>(),
-                        parameters["textDocument"]!["version"]?.GetValue<int>() ?? 0,
-                        cancellationToken).ConfigureAwait(false);
-                    break;
-                case "textDocument/didChange":
-                    var changes = parameters!["contentChanges"]!.AsArray();
-                    if (changes.Count > 0)
-                    {
+                            ["serverInfo"] = new JsonObject { ["name"] = "meep" },
+                        }, cancellationToken).ConfigureAwait(false);
+                        break;
+                    case "shutdown":
+                        _shuttingDown = true;
+                        await RespondAsync(id, null, cancellationToken).ConfigureAwait(false);
+                        break;
+                    case "exit":
+                        foreach (var uri in _loaded.Keys.ToList())
+                            Unload(uri);
+                        return _shuttingDown ? 0 : 1;
+                    case "textDocument/didOpen":
                         await ChangedAsync(
-                            parameters["textDocument"]!["uri"]!.GetValue<string>(),
-                            changes[^1]!["text"]!.GetValue<string>(),
+                            parameters!["textDocument"]!["uri"]!.GetValue<string>(),
+                            parameters["textDocument"]!["text"]!.GetValue<string>(),
                             parameters["textDocument"]!["version"]?.GetValue<int>() ?? 0,
                             cancellationToken).ConfigureAwait(false);
-                    }
-                    break;
-                case "textDocument/didClose":
-                    var closed = parameters!["textDocument"]!["uri"]!.GetValue<string>();
-                    _documents.Remove(closed);
-                    Unload(closed);
-                    Unload(closed + BaseSuffix);
-                    await PublishAsync(closed, [], cancellationToken).ConfigureAwait(false);
-                    break;
-                case "textDocument/semanticTokens/full":
-                    await RespondAsync(id, SemanticTokens(parameters!, null), cancellationToken).ConfigureAwait(false);
-                    break;
-                case "textDocument/semanticTokens/full/delta":
-                    await RespondAsync(id, SemanticTokens(parameters!, parameters!["previousResultId"]?.GetValue<string>()), cancellationToken).ConfigureAwait(false);
-                    break;
-                case "meep/graph":
-                    await RespondAsync(id, Graph(parameters!), cancellationToken).ConfigureAwait(false);
-                    break;
-                case "meep/setBase":
-                    try
-                    {
-                        await RespondAsync(id, await SetBaseAsync(parameters!, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (LspException exception)
-                    {
-                        await RespondErrorAsync(id!, exception.Code, exception.Message, cancellationToken, exception.Details).ConfigureAwait(false);
-                    }
-                    break;
-                case "meep/applyEdits":
-                    try
-                    {
-                        await RespondAsync(id, await ApplyEditsAsync(parameters!, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
-                    }
-                    catch (LspException exception)
-                    {
-                        await RespondErrorAsync(id!, exception.Code, exception.Message, cancellationToken, exception.Details).ConfigureAwait(false);
-                    }
-                    break;
-                case "meep/verbs":
-                    await RespondAsync(id, Verbs(parameters), cancellationToken).ConfigureAwait(false);
-                    break;
-                case "textDocument/completion":
-                    await RespondAsync(id, Complete(parameters!), cancellationToken).ConfigureAwait(false);
-                    break;
-                case "textDocument/hover":
-                    await RespondAsync(id, Hover(parameters!), cancellationToken).ConfigureAwait(false);
-                    break;
-                default:
-                    if (id is not null)
-                        await RespondErrorAsync(id, -32601, $"meep lsp doesn't handle {method}.", cancellationToken).ConfigureAwait(false);
-                    break;
+                        break;
+                    case "textDocument/didChange":
+                        var changes = parameters!["contentChanges"]!.AsArray();
+                        if (changes.Count > 0)
+                        {
+                            await ChangedAsync(
+                                parameters["textDocument"]!["uri"]!.GetValue<string>(),
+                                changes[^1]!["text"]!.GetValue<string>(),
+                                parameters["textDocument"]!["version"]?.GetValue<int>() ?? 0,
+                                cancellationToken).ConfigureAwait(false);
+                        }
+                        break;
+                    case "textDocument/didClose":
+                        var closed = parameters!["textDocument"]!["uri"]!.GetValue<string>();
+                        _documents.Remove(closed);
+                        Unload(closed);
+                        Unload(closed + BaseSuffix);
+                        await PublishAsync(closed, [], cancellationToken).ConfigureAwait(false);
+                        break;
+                    case "textDocument/semanticTokens/full":
+                        await RespondAsync(id, SemanticTokens(parameters!, null), cancellationToken).ConfigureAwait(false);
+                        break;
+                    case "textDocument/semanticTokens/full/delta":
+                        await RespondAsync(id, SemanticTokens(parameters!, parameters!["previousResultId"]?.GetValue<string>()), cancellationToken).ConfigureAwait(false);
+                        break;
+                    case "meep/graph":
+                        await RespondAsync(id, Graph(parameters!), cancellationToken).ConfigureAwait(false);
+                        break;
+                    case "meep/setBase":
+                        try
+                        {
+                            await RespondAsync(id, await SetBaseAsync(parameters!, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (LspException exception)
+                        {
+                            await RespondErrorAsync(id!, exception.Code, exception.Message, cancellationToken, exception.Details).ConfigureAwait(false);
+                        }
+                        break;
+                    case "meep/applyEdits":
+                        try
+                        {
+                            await RespondAsync(id, await ApplyEditsAsync(parameters!, cancellationToken).ConfigureAwait(false), cancellationToken).ConfigureAwait(false);
+                        }
+                        catch (LspException exception)
+                        {
+                            await RespondErrorAsync(id!, exception.Code, exception.Message, cancellationToken, exception.Details).ConfigureAwait(false);
+                        }
+                        break;
+                    case "meep/verbs":
+                        await RespondAsync(id, Verbs(parameters), cancellationToken).ConfigureAwait(false);
+                        break;
+                    case "textDocument/completion":
+                        await RespondAsync(id, Complete(parameters!), cancellationToken).ConfigureAwait(false);
+                        break;
+                    case "textDocument/hover":
+                        await RespondAsync(id, Hover(parameters!), cancellationToken).ConfigureAwait(false);
+                        break;
+                    default:
+                        if (id is not null)
+                            await RespondErrorAsync(id, -32601, $"meep lsp doesn't handle {method}.", cancellationToken).ConfigureAwait(false);
+                        break;
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException and not IOException and not OutOfMemoryException)
+            {
+                // A message missing what it needs, or with the wrong kind of value, is answered as invalid, and the
+                // server carries on with the next (S10). A notification has nobody to answer.
+                if (id is not null)
+                    await RespondErrorAsync(id, -32602, $"meep lsp couldn't handle {method ?? "a message without a method"}: {exception.Message}", cancellationToken).ConfigureAwait(false);
             }
         }
         return 0;
@@ -820,12 +837,13 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
     private Task RespondAsync(JsonNode? id, JsonNode? result, CancellationToken cancellationToken) =>
         WriteAsync(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id?.DeepClone(), ["result"] = result }, cancellationToken);
 
-    private Task RespondErrorAsync(JsonNode id, int code, string message, CancellationToken cancellationToken, JsonNode? data = null)
+    // An error answer; with a null id, for a message whose id couldn't be read, as JSON-RPC says.
+    private Task RespondErrorAsync(JsonNode? id, int code, string message, CancellationToken cancellationToken, JsonNode? data = null)
     {
         var error = new JsonObject { ["code"] = code, ["message"] = message };
         if (data is not null)
             error["data"] = data.DeepClone();
-        return WriteAsync(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id.DeepClone(), ["error"] = error }, cancellationToken);
+        return WriteAsync(new JsonObject { ["jsonrpc"] = "2.0", ["id"] = id?.DeepClone(), ["error"] = error }, cancellationToken);
     }
 
     private Task NotifyAsync(string method, JsonNode parameters, CancellationToken cancellationToken) =>
@@ -841,24 +859,65 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
         await output.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    /// <summary>The largest message meep lsp reads: 32 MiB, far more than any file's text.</summary>
+    internal const int MaxMessage = 32 * 1024 * 1024;
+
+    // The next message, or null once the stream ends or its framing can't be followed. A message too large, or not
+    // JSON, is answered with an error and skipped (S10).
     private async Task<JsonNode?> ReadAsync(CancellationToken cancellationToken)
     {
-        var length = -1;
         while (true)
         {
-            var line = await ReadHeaderLineAsync(cancellationToken).ConfigureAwait(false);
-            if (line is null)
+            long length = -1;
+            var malformed = false;
+            while (true)
+            {
+                var line = await ReadHeaderLineAsync(cancellationToken).ConfigureAwait(false);
+                if (line is null)
+                    return null;
+                if (line.Length == 0)
+                    break;
+                if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
+                {
+                    malformed = !long.TryParse(line["Content-Length:".Length..].Trim(), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out length);
+                }
+            }
+            if (malformed || length < 0)
+            {
+                // Without a length, where the next message starts can't be known, so the server stops, saying why.
+                await RespondErrorAsync(null, -32700, "meep lsp read a message without a Content-Length it could follow, so it has stopped.", cancellationToken).ConfigureAwait(false);
                 return null;
-            if (line.Length == 0)
-                break;
-            if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase))
-                length = int.Parse(line["Content-Length:".Length..].Trim(), System.Globalization.CultureInfo.InvariantCulture);
+            }
+            if (length > MaxMessage)
+            {
+                await SkipAsync(length, cancellationToken).ConfigureAwait(false);
+                await RespondErrorAsync(null, -32600, $"meep lsp skipped a message of {length} bytes: messages can be at most {MaxMessage}.", cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            var body = new byte[length];
+            await input.ReadExactlyAsync(body, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                return JsonNode.Parse(body) ?? new JsonObject();
+            }
+            catch (JsonException exception)
+            {
+                await RespondErrorAsync(null, -32700, $"meep lsp couldn't read a message as JSON: {exception.Message}", cancellationToken).ConfigureAwait(false);
+            }
         }
-        if (length < 0)
-            return null;
-        var body = new byte[length];
-        await input.ReadExactlyAsync(body, cancellationToken).ConfigureAwait(false);
-        return JsonNode.Parse(body);
+    }
+
+    // Reads past a body without keeping it.
+    private async Task SkipAsync(long length, CancellationToken cancellationToken)
+    {
+        var buffer = new byte[81920];
+        while (length > 0)
+        {
+            var read = await input.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, length)), cancellationToken).ConfigureAwait(false);
+            if (read == 0)
+                return;
+            length -= read;
+        }
     }
 
     private async Task<string?> ReadHeaderLineAsync(CancellationToken cancellationToken)
