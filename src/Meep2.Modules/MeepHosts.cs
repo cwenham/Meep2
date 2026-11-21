@@ -293,7 +293,8 @@ public static class MeepHosts
         {
             s_saveTimer?.Dispose();
             s_saveTimer = null;
-            var lines = s_known.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => $"{k.Key} {k.Value}").ToList();
+            // A snapshot first: sorting the dictionary itself while requests change it can read past its end.
+            var lines = s_known.ToArray().OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => $"{k.Key} {k.Value}").ToList();
             foreach (var file in s_files.Keys)
             {
                 try
