@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Net;
+using Meep2.Daemon;
 using Meep2.Plugins;
 
 namespace Meep2.Cli;
@@ -254,7 +255,7 @@ internal static class KeysCommands
         using var process = Process.Start(start)!;
         var standardError = process.StandardError.ReadToEndAsync(cancellationToken);
         var standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        await process.WaitOrKillAsync(cancellationToken).ConfigureAwait(false); // not left waiting for a passphrase (M6)
         return (process.ExitCode, await standardError.ConfigureAwait(false) + await standardOutput.ConfigureAwait(false));
     }
 

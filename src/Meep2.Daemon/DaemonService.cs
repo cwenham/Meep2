@@ -166,7 +166,7 @@ public static class DaemonService
         return true;
     }
 
-    private static async Task RunAsync(ServiceCommand command, CancellationToken cancellationToken)
+    internal static async Task RunAsync(ServiceCommand command, CancellationToken cancellationToken)
     {
         var start = new ProcessStartInfo(command.Words[0])
         {
@@ -179,7 +179,7 @@ public static class DaemonService
         using var process = Process.Start(start) ?? throw new InvalidOperationException($"Couldn't run {command}.");
         var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
         var error = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        await process.WaitOrKillAsync(cancellationToken).ConfigureAwait(false);
         if (process.ExitCode != 0 && !command.MayFail)
             throw new InvalidOperationException($"{command} failed with {process.ExitCode}: {(await error.ConfigureAwait(false) + await output.ConfigureAwait(false)).Trim()}");
     }

@@ -30,6 +30,36 @@ public class HostingTests
         """;
 
     [Test]
+    public async Task A_program_whose_wait_is_cancelled_is_killed()
+    {
+        Skip.When(OperatingSystem.IsWindows(), "This uses sh.");
+        using var folder = new TemporaryFolder();
+        var pidFile = Path.Combine(folder.Path, "pid");
+        using var stop = new CancellationTokenSource();
+
+        var running = DaemonService.RunAsync(new ServiceCommand(["sh", "-c", $"echo $$ > '{pidFile}'; exec sleep 30"]), stop.Token);
+        await Wait.Until(() => File.Exists(pidFile) && File.ReadAllText(pidFile).Trim().Length > 0);
+        var pid = int.Parse(File.ReadAllText(pidFile).Trim(), System.Globalization.CultureInfo.InvariantCulture);
+        await stop.CancelAsync();
+
+        await Assert.That(async () => await running).Throws<OperationCanceledException>();
+        await Wait.Until(() => !Alive(pid));
+
+        static bool Alive(int pid)
+        {
+            try
+            {
+                using var process = System.Diagnostics.Process.GetProcessById(pid);
+                return !process.HasExited;
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+    }
+
+    [Test]
     public async Task Defaults_set_how_long_a_finished_pipeline_stays_listed()
     {
         var hour = await TestRun.Start("""
