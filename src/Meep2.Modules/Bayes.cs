@@ -340,9 +340,17 @@ public sealed class BayesTree
             }
             else
             {
-                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
+                // Meep's own folder for trees is kept to you, and so is each tree's file, since trees hold the words
+                // they learned (S7). A folder named with file= is made as usual.
+                var folder = System.IO.Path.GetDirectoryName(Path)!;
+                if (System.IO.Path.GetFullPath(folder) == System.IO.Path.GetFullPath(DefaultFolder))
+                    Meep2.SDK.Modules.PrivateFolders.Create(folder);
+                else
+                    Directory.CreateDirectory(folder);
                 var temporary = Path + ".saving";
-                await File.WriteAllBytesAsync(temporary, JsonSerializer.SerializeToUtf8Bytes(snapshot, TreeJson.Default.SavedTree), cancellationToken).ConfigureAwait(false);
+                var stream = new FileStream(temporary, Meep2.SDK.Modules.PrivateFolders.NewFile(FileMode.Create));
+                await using (stream.ConfigureAwait(false))
+                    await stream.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(snapshot, TreeJson.Default.SavedTree), cancellationToken).ConfigureAwait(false);
                 File.Move(temporary, Path, overwrite: true);
             }
 

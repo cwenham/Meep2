@@ -49,11 +49,7 @@ public static class HostIdentity
             Replace(file, moved, machine);
             return moved;
         }
-        var folder = Path.GetDirectoryName(file)!;
-        if (OperatingSystem.IsWindows())
-            Directory.CreateDirectory(folder);
-        else
-            Directory.CreateDirectory(folder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        Meep2.SDK.Modules.PrivateFolders.Create(Path.GetDirectoryName(file)!);
         var made = Guid.NewGuid().ToString();
         try
         {

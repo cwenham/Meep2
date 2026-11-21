@@ -290,6 +290,13 @@ public sealed class TrustedKeys
     {
         if (!File.Exists(path))
             return None;
+        // As OpenSSH does, a list that someone else could have added a key to isn't trusted (S7).
+        var folder = Path.GetDirectoryName(Path.GetFullPath(path))!;
+        if (Meep2.SDK.Modules.PrivateFolders.OthersCanWrite(path) || Meep2.SDK.Modules.PrivateFolders.OthersCanWrite(folder))
+        {
+            throw new PluginException(
+                $"{path} can be changed by other users, so Meep doesn't trust the keys in it. Make it yours alone with chmod go-w \"{path}\" \"{folder}\".");
+        }
         var keys = new List<PublicKey>();
         var number = 0;
         foreach (var line in File.ReadLines(path))

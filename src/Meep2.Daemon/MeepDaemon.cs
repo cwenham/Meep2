@@ -487,17 +487,8 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         var limit = OperatingSystem.IsLinux() ? 107 : 103;
         if (Encoding.UTF8.GetByteCount(socket) > limit)
             throw new DaemonException(0, $"The socket path {socket} is longer than the {limit} characters this system allows. Set MEEP_HOME to a shorter folder.");
-        var folder = Path.GetDirectoryName(socket)!;
-        if (OperatingSystem.IsWindows())
-        {
-            Directory.CreateDirectory(folder);
-        }
-        else
-        {
-            // A folder only you can open, so nobody else can reach the socket.
-            Directory.CreateDirectory(folder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-            File.SetUnixFileMode(folder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        }
+        // A folder only you can open, so nobody else can reach the socket.
+        Meep2.SDK.Modules.PrivateFolders.Create(Path.GetDirectoryName(socket)!);
         if (!File.Exists(socket))
             return;
         using var probe = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);

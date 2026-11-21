@@ -490,6 +490,8 @@ public class HostingTests
         await Assert.That(output).StartsWith("Running ticker in the background, as process ");
         await Assert.That(output).Contains($"Its output and errors go to {log}");
         await Assert.That(ReadShared(log)).Contains("Stopping, as asked.");
+        if (!OperatingSystem.IsWindows())
+            await Assert.That(File.GetUnixFileMode(Path.GetDirectoryName(log)!)).IsEqualTo(PrivateFolders.Folder); // S7
     }
 
     [Test]

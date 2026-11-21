@@ -260,7 +260,7 @@ internal static class KeysCommands
 
     private static async Task AppendAsync(string path, string line, CancellationToken cancellationToken)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        Meep2.SDK.Modules.PrivateFolders.Create(Path.GetDirectoryName(Path.GetFullPath(path))!);
         await File.AppendAllTextAsync(path, line + Environment.NewLine, cancellationToken).ConfigureAwait(false);
     }
 }

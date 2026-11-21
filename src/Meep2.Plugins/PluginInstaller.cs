@@ -519,7 +519,7 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
 
     private string Staging()
     {
-        var staging = Path.Combine(options.Cache, ".staging", Guid.NewGuid().ToString("N"));
+        var staging = Path.Combine(Meep2.SDK.Modules.PrivateFolders.Create(Path.Combine(options.Cache, ".staging")), Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(staging);
         return staging;
     }

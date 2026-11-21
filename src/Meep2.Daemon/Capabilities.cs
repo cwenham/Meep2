@@ -84,15 +84,13 @@ public sealed class DaemonTokens
         if (name.Any(char.IsWhiteSpace))
             throw new FormatException("A token's name can't have spaces.");
         var token = Prefix + Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-        var folder = Path.GetDirectoryName(Path.GetFullPath(path))!;
-        if (!OperatingSystem.IsWindows())
-            Directory.CreateDirectory(folder, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
-        else
-            Directory.CreateDirectory(folder);
+        Meep2.SDK.Modules.PrivateFolders.Create(Path.GetDirectoryName(Path.GetFullPath(path))!);
         var line = $"{name} {string.Join(',', CapabilityNames.Of(capabilities))} sha256:{Convert.ToHexStringLower(Hash(token))}{Environment.NewLine}";
-        File.AppendAllText(path, line);
+        // Made for you alone from the start, rather than narrowed after (S7).
+        using (var file = new FileStream(path, Meep2.SDK.Modules.PrivateFolders.NewFile(FileMode.Append)))
+            file.Write(System.Text.Encoding.UTF8.GetBytes(line));
         if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite); // one made before this
         return token;
     }
 
