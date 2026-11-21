@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Net;
 using System.Text;
 using Meep2.Cli;
+using Meep2.Meeplang.Syntax;
 using Meep2.Plugins;
 using Meep2.Tests.Support;
 
@@ -29,6 +30,25 @@ public class PluginTests
         await Assert.That(run.AllErrors).IsEmpty();
         await Assert.That(run.Output).IsEqualTo("TICK 1!\nTICK 2!\n");
         await Assert.That(run.Warnings).IsEmpty();
+    }
+
+    [Test]
+    [Arguments("github", "../..", "1.0")]
+    [Arguments("github", "cwenham/Meep", "../../../outside")]
+    [Arguments("nuget", "../../Evil", "1.0.0")]
+    public async Task The_installer_refuses_a_folder_outside_the_cache(string origin, string name, string version)
+    {
+        using var home = new TemporaryFolder();
+        var outside = Directory.CreateDirectory(Path.Combine(home.Path, "outside")).FullName;
+        File.WriteAllText(Path.Combine(outside, "keep.txt"), "mine");
+        var installer = new PluginInstaller(new PluginOptions { Home = home.Path, Offline = true });
+        var directive = new PluginDirective(
+            origin == "github" ? PluginOrigin.GitHub : PluginOrigin.NuGet, name, version, new string('a', 64), new SourceSpan(1, 1, 1));
+
+        var refused = await Assert.That(async () => { await installer.InstallAsync(directive); }).Throws<PluginException>();
+
+        await Assert.That(refused!.Message).Contains("outside Meep's plugin cache").Or.Contains("isn't a NuGet package ID");
+        await Assert.That(File.Exists(Path.Combine(outside, "keep.txt"))).IsTrue();
     }
 
     [Test]

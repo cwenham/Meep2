@@ -400,9 +400,16 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
         {
             origin = PluginOrigin.GitHub;
             id = reference.Text["github.com/".Length..];
-            if (id.Split('/') is not [{ Length: > 0 }, { Length: > 0 }])
+            if (id.Split('/') is not [{ Length: > 0 } owner, { Length: > 0 } repo])
             {
                 _diagnostics.Error($"A plugin on GitHub is named as github.com/owner/repo, not {reference.Text}.", reference.Span);
+                return;
+            }
+            if (!PluginNames.IsGitHubOwner(owner) || !PluginNames.IsGitHubRepo(repo))
+            {
+                _diagnostics.Error(
+                    $"{reference.Text} isn't a name GitHub allows: an owner is letters, digits and '-', and a repository letters, digits, '-', '_' and '.', but not '.' or '..'.",
+                    reference.Span);
                 return;
             }
         }
@@ -410,9 +417,11 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
         {
             origin = PluginOrigin.NuGet;
             id = reference.Text["nuget:".Length..];
-            if (id.Length == 0 || id.Contains('/', StringComparison.Ordinal))
+            if (!PluginNames.IsNuGetId(id))
             {
-                _diagnostics.Error($"A plugin on NuGet is named as nuget:Package.Id, not {reference.Text}.", reference.Span);
+                _diagnostics.Error(
+                    $"A plugin on NuGet is named as nuget:Package.Id, with letters, digits and '_' joined by '.' or '-', not {reference.Text}.",
+                    reference.Span);
                 return;
             }
         }
@@ -428,6 +437,13 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
             return;
         }
         var version = words[2].Text;
+        if (!PluginNames.IsVersion(version))
+        {
+            _diagnostics.Error(
+                $"{version} isn't a version: write it with letters, digits, '.', '+' and '-', as in 1.2.0 or 2.0.0-beta.1.",
+                words[2].Span);
+            return;
+        }
         string? sha = null;
         if (words.Count > 3)
         {

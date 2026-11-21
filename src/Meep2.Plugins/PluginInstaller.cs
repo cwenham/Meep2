@@ -167,7 +167,7 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
     {
         var (owner, repo) = directive.Name.Split('/') is [var o, var r] ? (o, r) : throw new PluginException($"github.com/{directive.Name} isn't owner/repo.");
         var version = directive.Version!;
-        var folder = Path.Combine(options.Cache, "github", owner.ToLowerInvariant(), repo.ToLowerInvariant(), version);
+        var folder = InCache(directive, "github", owner.ToLowerInvariant(), repo.ToLowerInvariant(), version);
         var asset = $"{repo}-{version}.zip";
 
         // A cached copy is used if its files are still the ones that were downloaded; otherwise it's downloaded again.
@@ -212,7 +212,9 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
     {
         if (!NuGetVersion.TryParse(directive.Version, out var version))
             throw new PluginException($"{directive.Version} isn't a version NuGet understands.");
-        var folder = Path.Combine(options.Cache, "nuget", directive.Name.ToLowerInvariant(), version.ToNormalizedString());
+        if (!PackageIdValidator.IsValidPackageId(directive.Name))
+            throw new PluginException($"nuget:{directive.Name} isn't a NuGet package ID.");
+        var folder = InCache(directive, "nuget", directive.Name.ToLowerInvariant(), version.ToNormalizedString());
 
         if (Manifest.Read(folder) is { } existing && (directive.Sha256 is null || existing.Sha256 == directive.Sha256))
         {
@@ -450,6 +452,21 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
         {
             throw new PluginException($"{Path.GetFileName(zip)} isn't a zip file Meep can read: {exception.Message}", exception);
         }
+    }
+
+    // The folder in the cache for a plugin, refused if its words would put it anywhere else, before anything in it is
+    // read, deleted or replaced. The parser checks the words too; this holds for directives made any other way.
+    private string InCache(PluginDirective directive, params string[] parts)
+    {
+        var cache = Path.GetFullPath(options.Cache);
+        var folder = Path.GetFullPath(Path.Combine([cache, .. parts]));
+        var relative = Path.GetRelativePath(cache, folder);
+        if (parts.Any(part => part.Length == 0 || part is "." or ".." || part.IndexOfAny(['/', '\\']) >= 0)
+            || relative == "." || relative.StartsWith("..", StringComparison.Ordinal) || Path.IsPathRooted(relative))
+        {
+            throw new PluginException($"{directive} would be kept outside Meep's plugin cache ({cache}), so it isn't installed.");
+        }
+        return folder;
     }
 
     private string Staging()

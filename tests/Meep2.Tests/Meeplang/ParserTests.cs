@@ -173,6 +173,53 @@ public class ParserTests
     }
 
     [Test]
+    public async Task Plugin_lines_cant_name_folders_outside_the_cache()
+    {
+        var sha = new string('a', 64);
+        var syntax = Script.Parse($"""
+            #plugin github.com/../.. 1.0 sha256:{sha}
+            #plugin github.com/cwenham/.. 1.0 sha256:{sha}
+            #plugin github.com/cw_enham/Meep 1.0 sha256:{sha}
+            #plugin github.com/cwenham/Meep ../../etc sha256:{sha}
+            #plugin github.com/cwenham/Meep .. sha256:{sha}
+            #plugin nuget:../Evil 1.0
+            #plugin nuget:Evil.. 1.0
+            #plugin nuget:Meep.Transit 1.0/../..
+            #plugin nuget:Meep.Transit 1.0\x
+            """);
+        var diagnostics = Script.Diagnostics(syntax);
+
+        await Assert.That(diagnostics).Contains("(1,9): error: github.com/../.. isn't a name GitHub allows: an owner is letters, digits and '-', and a repository letters, digits, '-', '_' and '.', but not '.' or '..'.");
+        await Assert.That(diagnostics).Contains("(2,9): error: github.com/cwenham/.. isn't a name GitHub allows");
+        await Assert.That(diagnostics).Contains("(3,9): error: github.com/cw_enham/Meep isn't a name GitHub allows");
+        await Assert.That(diagnostics).Contains("(4,33): error: ../../etc isn't a version: write it with letters, digits, '.', '+' and '-', as in 1.2.0 or 2.0.0-beta.1.");
+        await Assert.That(diagnostics).Contains("(5,33): error: .. isn't a version");
+        await Assert.That(diagnostics).Contains("(6,9): error: A plugin on NuGet is named as nuget:Package.Id, with letters, digits and '_' joined by '.' or '-', not nuget:../Evil.");
+        await Assert.That(diagnostics).Contains("(7,9): error: A plugin on NuGet is named as nuget:Package.Id");
+        await Assert.That(diagnostics).Contains("(8,28): error: 1.0/../.. isn't a version");
+        await Assert.That(diagnostics).Contains("(9,28): error: 1.0\\x isn't a version");
+        await Assert.That(syntax.Plugins.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Plugin_names_follow_github_and_nugets_rules()
+    {
+        await Assert.That(PluginNames.IsGitHubOwner("cwenham")).IsTrue();
+        await Assert.That(PluginNames.IsGitHubOwner("my-org-2")).IsTrue();
+        await Assert.That(PluginNames.IsGitHubOwner(new string('a', 40))).IsFalse();
+        await Assert.That(PluginNames.IsGitHubRepo("Meep2.TestPlugin")).IsTrue();
+        await Assert.That(PluginNames.IsGitHubRepo(".github")).IsTrue();
+        await Assert.That(PluginNames.IsGitHubRepo(".")).IsFalse();
+        await Assert.That(PluginNames.IsNuGetId("Meep2.TestPlugin.Words")).IsTrue();
+        await Assert.That(PluginNames.IsNuGetId("A-b_c.d")).IsTrue();
+        await Assert.That(PluginNames.IsNuGetId(".Evil")).IsFalse();
+        await Assert.That(PluginNames.IsNuGetId("A..B")).IsFalse();
+        await Assert.That(PluginNames.IsVersion("2.0.0-beta.1+build.5")).IsTrue();
+        await Assert.That(PluginNames.IsVersion("v1.0")).IsTrue();
+        await Assert.That(PluginNames.IsVersion("-1.0")).IsFalse();
+    }
+
+    [Test]
     public async Task A_plugin_line_can_name_the_plugin_and_modules_can_name_plugins()
     {
         var syntax = Script.Parse("""
