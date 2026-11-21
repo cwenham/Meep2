@@ -25,7 +25,7 @@ namespace Meep2.Modules;
 [EmitsInput]
 public sealed class Learn(LearnParameters parameters) : AInflection<Message>, IAsyncDisposable
 {
-    private BayesTree? _tree;
+    private BayesTree.TreeHold? _tree;
 
     /// <inheritdoc/>
     protected override async ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
@@ -55,7 +55,7 @@ public sealed class Learn(LearnParameters parameters) : AInflection<Message>, IA
             return;
         }
 
-        if (Trees.Open(ref _tree, parameters.Tree, parameters.File, context) is not { } tree)
+        if (Trees.Open(ref _tree, parameters.Tree, parameters.File, saves: parameters.SaveEvery > 0, context) is not { } tree)
             return;
         tree.Learn(@class.Trim(), text ?? "");
 
@@ -74,11 +74,17 @@ public sealed class Learn(LearnParameters parameters) : AInflection<Message>, IA
         context.Emit(message);
     }
 
-    /// <summary>Saves what the tree has learned since it was last saved, unless <c>save-every</c> is 0.</summary>
+    /// <summary>
+    /// Saves what the tree has learned since it was last saved, unless <c>save-every</c> is 0, and lets go of it, so
+    /// it leaves memory once nothing else holds it (M2).
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
-        if (_tree is { Unsaved: > 0 } tree && parameters.SaveEvery > 0)
-            await tree.SaveAsync().ConfigureAwait(false);
+        if (_tree is not { } hold)
+            return;
+        if (hold.Tree.Unsaved > 0 && parameters.SaveEvery > 0)
+            await hold.Tree.SaveAsync().ConfigureAwait(false);
+        await hold.DisposeAsync().ConfigureAwait(false);
     }
 }
 
@@ -125,12 +131,15 @@ public sealed record LearnParameters
 /// </remarks>
 [Verb("Classify")]
 [Emits(typeof(ClassifiedMessage))]
-public sealed class Classify(ClassifyParameters parameters) : AInflection<Message>
+public sealed class Classify(ClassifyParameters parameters) : AInflection<Message>, IAsyncDisposable
 {
     private readonly string[]? _against = parameters.Against?
         .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
 
-    private BayesTree? _tree;
+    private BayesTree.TreeHold? _tree;
+
+    /// <summary>Lets go of the tree, so it leaves memory once nothing else holds it (M2).</summary>
+    public ValueTask DisposeAsync() => _tree?.DisposeAsync() ?? ValueTask.CompletedTask;
 
     /// <inheritdoc/>
     protected override ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
@@ -153,7 +162,7 @@ public sealed class Classify(ClassifyParameters parameters) : AInflection<Messag
             return ValueTask.CompletedTask;
         }
 
-        if (Trees.Open(ref _tree, parameters.Tree, parameters.File, context) is not { } tree)
+        if (Trees.Open(ref _tree, parameters.Tree, parameters.File, saves: false, context) is not { } tree)
             return ValueTask.CompletedTask;
 
         var scores = tree.Scores(text, parameters.MinTraining, _against);
@@ -211,9 +220,12 @@ public sealed record ClassifyParameters
 /// </remarks>
 [Verb("Forget")]
 [EmitsInput]
-public sealed class Forget(ForgetParameters parameters) : AInflection<Message>
+public sealed class Forget(ForgetParameters parameters) : AInflection<Message>, IAsyncDisposable
 {
-    private BayesTree? _tree;
+    private BayesTree.TreeHold? _tree;
+
+    /// <summary>Lets go of the tree, so it leaves memory once nothing else holds it (M2).</summary>
+    public ValueTask DisposeAsync() => _tree?.DisposeAsync() ?? ValueTask.CompletedTask;
 
     /// <inheritdoc/>
     protected override async ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
@@ -235,7 +247,7 @@ public sealed class Forget(ForgetParameters parameters) : AInflection<Message>
             return;
         }
 
-        if (Trees.Open(ref _tree, parameters.Tree, parameters.File, context) is not { } tree)
+        if (Trees.Open(ref _tree, parameters.Tree, parameters.File, saves: true, context) is not { } tree)
             return;
 
         if (tree.Forget(string.IsNullOrWhiteSpace(@class) ? null : @class.Trim()))
@@ -280,15 +292,18 @@ internal static class Trees
             ? name
             : throw new ArgumentException($"{verb} needs the name of a classification tree.", nameof(name));
 
-    /// <summary>The module's tree, opened the first time it's needed, or null after emitting an error.</summary>
-    public static BayesTree? Open(ref BayesTree? tree, string name, string? file, ModuleContext context)
+    /// <summary>
+    /// The module's tree, held from the first time it's needed until the module is disposed, or null after emitting an
+    /// error. <paramref name="saves"/> says whether the module saves the tree, so it's saved when the last lets go.
+    /// </summary>
+    public static BayesTree? Open(ref BayesTree.TreeHold? hold, string name, string? file, bool saves, ModuleContext context)
     {
-        if (tree is not null)
-            return tree;
+        if (hold is not null)
+            return hold.Tree;
         var path = file is not null ? Paths.Expand(file) : BayesTree.PathFor(context.PipelineName, name);
         try
         {
-            return tree = BayesTree.Open(path);
+            return (hold = BayesTree.Hold(path, saves)).Tree;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
         {

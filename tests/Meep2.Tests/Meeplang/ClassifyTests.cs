@@ -194,29 +194,73 @@ public sealed class ClassifyTests : IDisposable
     public async Task Learn_and_Classify_find_their_pipelines_tree_by_name()
     {
         var name = $"tree-{Guid.NewGuid():N}";
-        await TestRun.Start($$"""
-            Interval 1ms count=10 payload="gravity experiment in the laboratory"
+        var path = BayesTree.PathFor("test", name);
+        var learned = await TestRun.Start($$"""
+            Interval 1ms count=3 payload="gravity experiment in the laboratory"
                 Learn "{{name}}" class="Science" text=msg.Payload save-every=0
-                    Classify "{{name}}" text=msg.Payload as Classified
+                    Classify "{{name}}" text=msg.Payload min-training=1 as Classified
                         Sink
             """);
 
-        // Test pipelines are all called "test", after test.meep. Nothing was saved, so this only opens the tree in memory.
-        var tree = BayesTree.Open(BayesTree.PathFor("test", name));
-        await Assert.That(tree.Classes).IsEquivalentTo(new Dictionary<string, long> { ["Science"] = 10 });
-        await Assert.That(File.Exists(tree.Path)).IsFalse();
+        // Test pipelines are all called "test", after test.meep. Learn and Classify shared the tree by its name.
+        await Assert.That(learned.At("Sink").OfType<ClassifiedMessage>().Last().Class).IsEqualTo("Science");
+        // Nothing was saved, and nothing holds the tree now, so it has gone with the pipeline (M2).
+        await Assert.That(File.Exists(path)).IsFalse();
+        await Assert.That(BayesTree.Open(path).Classes).IsEmpty();
+    }
+
+    [Test]
+    public async Task A_tree_is_saved_and_leaves_memory_when_the_last_module_lets_go()
+    {
+        var file = NewFile();
+        var first = BayesTree.Hold(file, saves: true);
+        var second = BayesTree.Hold(file, saves: false);
+        await Assert.That(second.Tree).IsSameReferenceAs(first.Tree);
+        first.Tree.Learn("Science", "gravity waves");
+
+        await first.DisposeAsync();
+        await first.DisposeAsync(); // once only
+        await Assert.That(File.Exists(file)).IsFalse(); // the second still holds it
+        var again = BayesTree.Hold(file, saves: false);
+        await Assert.That(again.Tree).IsSameReferenceAs(first.Tree);
+        await second.DisposeAsync();
+        await again.DisposeAsync();
+
+        await Assert.That(File.Exists(file)).IsTrue(); // saved, since a module that saves it held it
+        var reloaded = BayesTree.Hold(file, saves: false);
+        await Assert.That(reloaded.Tree).IsNotSameReferenceAs(first.Tree); // dropped, then loaded again
+        await Assert.That(reloaded.Tree.Classes).IsEquivalentTo(new Dictionary<string, long> { ["Science"] = 1 });
+        await reloaded.DisposeAsync();
+    }
+
+    [Test]
+    public async Task A_pipelines_trees_leave_memory_when_it_ends()
+    {
+        var file = NewFile();
+        var run = await TestRun.Start($$"""
+            Interval 1ms count=5 payload="gravity experiment"
+                Learn "topics" class="Science" text=msg.Payload file="{{file}}" save-every=100
+                    Classify "topics" text=msg.Payload file="{{file}}" min-training=1
+                        Sink
+            """);
+
+        await Assert.That(run.At("Sink").Count).IsEqualTo(5);
+        await Assert.That(BayesTree.IsInMemory(file)).IsFalse();
+        using var saved = JsonDocument.Parse(await File.ReadAllTextAsync(file)); // saved as it finished, though fewer than save-every
+        await Assert.That(saved.RootElement.GetProperty("classes").GetProperty("Science").GetProperty("documents").GetInt64()).IsEqualTo(5);
     }
 
     [Test]
     public async Task Learn_can_take_its_class_from_each_message()
     {
         var file = NewFile();
+        var tree = BayesTree.Open(file); // opened for good, so it stays in memory after the pipeline
         await TestRun.Start($$"""
             Interval 1ms count=3 payload="some words"
                 Learn "topics" class="Batch {msg.Count}" text=msg.Payload file="{{file}}" save-every=0
             """);
 
-        await Assert.That(BayesTree.Open(file).Classes.Keys).IsEquivalentTo(["Batch 1", "Batch 2", "Batch 3"]);
+        await Assert.That(tree.Classes.Keys).IsEquivalentTo(["Batch 1", "Batch 2", "Batch 3"]);
         await Assert.That(File.Exists(file)).IsFalse();
     }
 

@@ -129,6 +129,7 @@ Teaches a named naive Bayes tree that each message belongs to a class, then pass
 - Positional: `tree`
 - Parameters: `class` (required), `text`, `file`, `save-every`
 - Example: `Learn "topics" class="Science"`
+- A tree stays in memory while any Learn, Classify or Forget uses it. When the last lets go, as when its pipelines end, it's saved (unless every Learn had `save-every=0`) and leaves memory, to be loaded from its file when it's next named. A tree kept in memory only, with `save-every=0`, is gone once no pipeline uses it.
 
 ### Classify
 Emits a `ClassifiedMessage` with the class and score a named tree gives each message.

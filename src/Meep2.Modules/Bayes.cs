@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -23,6 +22,11 @@ namespace Meep2.Modules;
 /// its name starts with <c>shared:</c> (Q143). A tree is loaded from its file the first time it's opened, if the file
 /// is there, and saved by <see cref="SaveAsync"/> (Q142).
 /// </para>
+/// <para>
+/// Modules hold a tree while they use it (<see cref="Hold"/>). When the last lets go, the tree is saved, if
+/// a module that saves it has held it, and dropped from memory (M2), so a daemon that has run many pipelines doesn't
+/// keep all their vocabularies. A tree kept only in memory (<c>save-every=0</c>) is gone once nothing holds it.
+/// </para>
 /// <para>Safe to use from several threads: each tree takes a lock while it learns, classifies or saves.</para>
 /// </remarks>
 public sealed class BayesTree
@@ -30,7 +34,14 @@ public sealed class BayesTree
     /// <summary>The prefix that makes a tree shared by every pipeline, as in <c>shared:topics</c>.</summary>
     public const string SharedPrefix = "shared:";
 
-    private static readonly ConcurrentDictionary<string, BayesTree> s_trees = new(StringComparer.Ordinal);
+    private static readonly Dictionary<string, BayesTree> s_trees = new(StringComparer.Ordinal);
+    private static readonly Lock s_opening = new();
+
+    // Guarded by s_opening: the modules holding the tree, whether it was opened for good with Open, and whether a module
+    // that saves it has held it since it was loaded.
+    private int _holders;
+    private bool _kept;
+    private bool _saveWhenDropped;
 
     private readonly Lock _lock = new();
     private readonly SemaphoreSlim _saving = new(1, 1);
@@ -96,17 +107,96 @@ public sealed class BayesTree
     /// </summary>
     /// <exception cref="IOException">The file is there but couldn't be read.</exception>
     /// <exception cref="JsonException">The file isn't a saved tree.</exception>
+    /// <remarks>A tree opened this way stays in memory for the life of the process, as for tests and tools.</remarks>
     public static BayesTree Open(string path)
+    {
+        var tree = Find(path);
+        lock (s_opening)
+            tree._kept = true;
+        return tree;
+    }
+
+    /// <summary>
+    /// Holds the tree saved in this file while a module uses it, loading it the first time, as <see cref="Open"/>
+    /// does. Disposing the hold lets go of it; the last to let go saves the tree, if <paramref name="saves"/> was true
+    /// for any of them, and drops it from memory.
+    /// </summary>
+    /// <exception cref="IOException">The file is there but couldn't be read.</exception>
+    /// <exception cref="JsonException">The file isn't a saved tree.</exception>
+    public static TreeHold Hold(string path, bool saves)
+    {
+        var tree = Find(path, hold: true);
+        lock (s_opening)
+            tree._saveWhenDropped |= saves;
+        return new TreeHold(tree);
+    }
+
+    /// <summary>Whether the tree saved in this file is in memory now, for tests.</summary>
+    internal static bool IsInMemory(string path)
+    {
+        lock (s_opening)
+            return s_trees.ContainsKey(System.IO.Path.GetFullPath(path));
+    }
+
+    // The tree in memory for a file, loaded if it isn't, counting a holder if asked.
+    private static BayesTree Find(string path, bool hold = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         path = System.IO.Path.GetFullPath(path);
-        if (s_trees.TryGetValue(path, out var tree))
-            return tree;
+        lock (s_opening)
+        {
+            if (s_trees.TryGetValue(path, out var tree))
+            {
+                tree._holders += hold ? 1 : 0;
+                return tree;
+            }
+        }
 
         var loaded = new BayesTree(path);
         if (File.Exists(path))
             loaded.Load(File.ReadAllText(path));
-        return s_trees.GetOrAdd(path, loaded);
+        lock (s_opening)
+        {
+            // Another may have loaded it in the meantime.
+            if (!s_trees.TryGetValue(path, out var tree))
+                s_trees[path] = tree = loaded;
+            tree._holders += hold ? 1 : 0;
+            return tree;
+        }
+    }
+
+    // A module let go: the last saves the tree, if it should, then drops it, unless it was taken again meanwhile.
+    private async ValueTask LetGoAsync()
+    {
+        bool save;
+        lock (s_opening)
+        {
+            if (--_holders > 0 || _kept)
+                return;
+            save = _saveWhenDropped;
+        }
+        if (save && Unsaved > 0)
+            await SaveAsync().ConfigureAwait(false);
+        lock (s_opening)
+        {
+            if (_holders == 0 && !_kept && s_trees.TryGetValue(Path, out var tree) && ReferenceEquals(tree, this))
+                s_trees.Remove(Path);
+        }
+    }
+
+    /// <summary>A module's hold on a tree, which <see cref="Hold"/> gives. Dispose it to let go.</summary>
+    public sealed class TreeHold : IAsyncDisposable
+    {
+        private int _released;
+
+        internal TreeHold(BayesTree tree) => Tree = tree;
+
+        /// <summary>The tree held.</summary>
+        public BayesTree Tree { get; }
+
+        /// <summary>Lets go of the tree, once.</summary>
+        public ValueTask DisposeAsync() =>
+            Interlocked.Exchange(ref _released, 1) == 0 ? Tree.LetGoAsync() : ValueTask.CompletedTask;
     }
 
     /// <summary>Learns that <paramref name="text"/> belongs to <paramref name="class"/>.</summary>
