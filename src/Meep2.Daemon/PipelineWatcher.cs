@@ -64,7 +64,17 @@ public sealed class PipelineWatcher : IDisposable
         _settle.Dispose();
     }
 
-    // Watches the folders the files are in, for the files that matter.
+    /// <summary>The folders watched now, for tests.</summary>
+    internal IReadOnlyCollection<string> Folders
+    {
+        get
+        {
+            lock (_lock)
+                return [.. _folders.Keys];
+        }
+    }
+
+    // Watches the folders the files are in, for the files that matter, and stops watching those it no longer needs.
     private void Refresh()
     {
         lock (_lock)
@@ -72,7 +82,16 @@ public sealed class PipelineWatcher : IDisposable
             if (Volatile.Read(ref _disposed) != 0)
                 return;
             _watched = new HashSet<string>(_files(), StringComparer.Ordinal);
-            foreach (var folder in _watched.Select(f => Path.GetDirectoryName(f)!).Distinct())
+            var needed = _watched.Select(f => Path.GetDirectoryName(f)!).ToHashSet(StringComparer.Ordinal);
+
+            // Folders no watched file is in any more, as when an include was taken out, are let go (M4).
+            foreach (var gone in _folders.Keys.Where(folder => !needed.Contains(folder)).ToList())
+            {
+                _folders[gone].Dispose();
+                _folders.Remove(gone);
+            }
+
+            foreach (var folder in needed)
             {
                 if (_folders.ContainsKey(folder) || !Directory.Exists(folder))
                     continue;

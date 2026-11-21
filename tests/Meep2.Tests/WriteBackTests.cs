@@ -1,6 +1,7 @@
 using Meep2.Cli;
 using Meep2.Daemon;
 using Meep2.Git;
+using Meep2.Meeplang.Editing;
 using Meep2.Plugins;
 using Meep2.Tests.Support;
 
@@ -14,6 +15,35 @@ public class WriteBackTests
         Interval 20ms
             WriteLine "tick {msg.Count}"
         """;
+
+    [Test]
+    public async Task A_watcher_stops_watching_a_folder_no_included_file_is_in()
+    {
+        using var folder = new TemporaryFolder();
+        var main = folder.Write("main.meep", "Interval 1s\n");
+        var shared = Directory.CreateDirectory(Path.Combine(folder.Path, "shared")).FullName;
+        var include = Path.Combine(shared, "say.meep");
+        File.WriteAllText(include, "");
+        var includes = new List<string> { include };
+        var reloaded = 0;
+        using var watcher = new PipelineWatcher(
+            main,
+            "main",
+            _ =>
+            {
+                Interlocked.Increment(ref reloaded);
+                includes.Clear(); // the reload took the #include out
+                return Task.FromResult(new LiveChange(false, null, [], []));
+            },
+            _ => { },
+            () => includes);
+        await Assert.That(watcher.Folders.Count).IsEqualTo(2);
+
+        File.AppendAllText(main, "// changed\n");
+        await Wait.Until(() => Volatile.Read(ref reloaded) > 0 && watcher.Folders.Count == 1);
+
+        await Assert.That(watcher.Folders.Single()).IsEqualTo(Path.GetDirectoryName(Path.GetFullPath(main))!);
+    }
 
     [Test]
     public async Task A_commit_goes_to_pending_without_touching_the_checkout()
