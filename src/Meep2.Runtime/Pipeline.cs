@@ -509,7 +509,7 @@ public sealed class Pipeline : IAsyncDisposable
         foreach (var source in created.OfType<SourceNode>())
         {
             _inFlight.Add(); // held until the source finishes
-            source.Start(_stopSources.Token);
+            source.Start(StoppingToken);
         }
         await RemoveAsync(removed).ConfigureAwait(false);
         return new PipelineChangeReport(added, [.. removed.Where(node => !replacedOld.Contains(node)).Select(node => node.Spec.Info)], reconfigured, replaced, unchanged);
@@ -587,6 +587,7 @@ public sealed class Pipeline : IAsyncDisposable
         if (Interlocked.CompareExchange(ref _state, Finished, NotStarted) == NotStarted)
         {
             _abort.Dispose();
+            _stopSources.Dispose();
             return;
         }
 
@@ -624,7 +625,7 @@ public sealed class Pipeline : IAsyncDisposable
             foreach (var source in _sources)
             {
                 _inFlight.Add(); // held until the source finishes
-                source.Start(_stopSources.Token);
+                source.Start(StoppingToken);
             }
 
             using (_abort.Token.Register(static state => ((Pipeline)state!).Abort(), this))
@@ -648,6 +649,7 @@ public sealed class Pipeline : IAsyncDisposable
             foreach (var node in _nodes)
                 await node.DisposeModuleAsync().ConfigureAwait(false);
             _abort.Dispose();
+            _stopSources.Dispose(); // its token, kept as StoppingToken, still reads as it was (M7)
             _finished.TrySetResult();
         }
     }

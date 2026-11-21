@@ -18,6 +18,26 @@ public class LifecycleTests
     }
 
     [Test]
+    public async Task A_finished_pipeline_lets_go_of_its_cancellation_sources_and_can_still_be_stopped()
+    {
+        var builder = new PipelineBuilder();
+        builder.Chain(builder.AddSource(() => new Numbers([1, 2])), builder.Add(() => new Collect<Number>()));
+        var pipeline = builder.Build();
+        await Wait.For(pipeline.RunAsync());
+        await pipeline.DisposeAsync();
+        var stopSources = (CancellationTokenSource)typeof(Pipeline)
+            .GetField("_stopSources", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .GetValue(pipeline)!;
+
+        await Assert.That(() => stopSources.Token).Throws<ObjectDisposedException>(); // disposed (M7)
+        pipeline.Stop(); // still harmless
+        await Assert.That(pipeline.StoppingToken.IsCancellationRequested).IsFalse();
+
+        var never = new PipelineBuilder().Build();
+        await never.DisposeAsync(); // never run: disposed too, without waiting
+    }
+
+    [Test]
     public async Task A_pipeline_can_only_run_once()
     {
         await using var pipeline = new PipelineBuilder().Build();
