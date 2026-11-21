@@ -35,6 +35,30 @@ public sealed class GitSnapshot
     /// </summary>
     public bool Pinned { get; }
 
+    /// <summary>
+    /// Why Meep won't fetch from an address, or null if it will: only https:// addresses, file:// ones and paths on
+    /// this machine (Q66, S6). Anything else, such as ssh://, git://, http:// or scp-style user@host:path, is refused.
+    /// </summary>
+    public static string? WhyNot(string url)
+    {
+        ArgumentNullException.ThrowIfNull(url);
+        var scheme = url.IndexOf("://", StringComparison.Ordinal);
+        if (scheme >= 0)
+        {
+            var name = url[..scheme];
+            return name.Equals("https", StringComparison.OrdinalIgnoreCase) || name.Equals("file", StringComparison.OrdinalIgnoreCase)
+                ? null
+                : $"Meep reads Git over HTTPS only (Q66), so it can't fetch {url}. Use the repository's https:// address, or a path on this machine.";
+        }
+        // Without a scheme, a path on this machine; but host:path, with or without user@, is scp-style SSH.
+        var colon = url.IndexOf(':', StringComparison.Ordinal);
+        var slash = url.IndexOfAny(['/', '\\']);
+        var scpStyle = colon > 0 && (slash < 0 || colon < slash) && !(OperatingSystem.IsWindows() && colon == 1);
+        return scpStyle
+            ? $"Meep reads Git over HTTPS only (Q66), so it can't fetch {url}. Use the repository's https:// address."
+            : null;
+    }
+
     /// <summary>Fetches a repository into the cache, and finds the commit a ref names.</summary>
     /// <param name="url">An https:// address, or a repository on this machine (a path, or file://).</param>
     /// <param name="reference">A branch, a tag, or a commit's full SHA; null for main, or master.</param>
@@ -44,10 +68,8 @@ public sealed class GitSnapshot
     {
         ArgumentNullException.ThrowIfNull(url);
         ArgumentNullException.ThrowIfNull(cache);
-        if (url.StartsWith("ssh://", StringComparison.OrdinalIgnoreCase) || url.Contains('@', StringComparison.Ordinal) && !url.Contains("://", StringComparison.Ordinal))
-            throw new GitSourceException($"Meep reads Git over HTTPS only (Q66), so it can't fetch {url}. Use the repository's https:// address.");
-        if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
-            throw new GitSourceException($"Meep reads Git over HTTPS only, so it can't fetch {url}. Use https://.");
+        if (WhyNot(url) is { } why)
+            throw new GitSourceException(why);
 
         var folder = Path.Combine(cache, "git", Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(url)))[..16]);
         try

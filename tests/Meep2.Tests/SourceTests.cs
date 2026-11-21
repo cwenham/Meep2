@@ -172,6 +172,26 @@ public class SourceTests
     }
 
     [Test]
+    [Arguments("https://github.com/x/y.git", true)]
+    [Arguments("file:///Users/me/repo", true)]
+    [Arguments("/Users/me/repo", true)]
+    [Arguments("../repo", true)]
+    [Arguments("git://github.com/x/y.git", false)]
+    [Arguments("ssh://git@github.com/x/y.git", false)]
+    [Arguments("http://github.com/x/y.git", false)]
+    [Arguments("git@github.com:x/y.git", false)]
+    [Arguments("github.com:x/y.git", false)]
+    [Arguments("ftp://example.com/repo", false)]
+    public async Task Git_sources_are_https_file_or_a_path_on_this_machine(string url, bool fetched)
+    {
+        var why = Meep2.Git.GitSnapshot.WhyNot(url);
+
+        await Assert.That(why is null).IsEqualTo(fetched);
+        if (!fetched)
+            await Assert.That(why!).StartsWith("Meep reads Git over HTTPS only (Q66)");
+    }
+
+    [Test]
     public async Task A_pipeline_can_come_from_standard_input()
     {
         using var home = new TemporaryFolder();
