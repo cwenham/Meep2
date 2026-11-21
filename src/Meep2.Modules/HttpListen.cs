@@ -205,8 +205,8 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
 
     /// <summary>
     /// Where a request or WebSocket comes from, for counting it (<see cref="ModuleContext.Arrival"/>): the origin
-    /// another Meep host gave, or else the client's address. Answers another Meep with this host's ID, and returns
-    /// the trace it continues, if any.
+    /// another Meep host gave, or else the client's address. Answers another Meep with this host's ID, if it's on this
+    /// machine or a private address or the setting allows anyone, and returns the trace it continues, if any.
     /// </summary>
     internal static (Tally Tally, string? TraceParent) Arrived(HttpContext http, ModuleContext context, ref LastOrigin? last)
     {
@@ -214,15 +214,17 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
         var traceParent = headers.TryGetValue("traceparent", out var traced) && traced.Count > 0 ? traced.ToString() : null;
         var baggage = headers.TryGetValue("baggage", out var carried) ? carried.ToString() : "";
         // Most requests come from the same few origins: the last one's counts are kept, to skip reading it again.
+        // This host's ID goes only to clients on this machine and private addresses, unless the setting says anyone (S11).
+        var mayAnswer = context.HostId is not null && MeepHosts.MayAnswer(http.Connection.RemoteIpAddress);
         if (baggage.Length > 0 && last is { } before && before.Baggage == baggage)
         {
-            if (context.HostId is { } id)
-                http.Response.Headers[Peers.HostHeader] = id;
+            if (mayAnswer)
+                http.Response.Headers[Peers.HostHeader] = context.HostId;
             return (before.Tally, traceParent);
         }
         var origin = Peers.OriginIn(baggage);
-        if ((origin is not null || headers.ContainsKey(Peers.HostHeader)) && context.HostId is { } hostId)
-            http.Response.Headers[Peers.HostHeader] = hostId;
+        if ((origin is not null || headers.ContainsKey(Peers.HostHeader)) && mayAnswer)
+            http.Response.Headers[Peers.HostHeader] = context.HostId;
         if (origin is not null)
         {
             var tally = context.Arrival(Peers.MeepScheme + origin);

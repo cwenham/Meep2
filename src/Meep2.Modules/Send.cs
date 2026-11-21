@@ -326,11 +326,14 @@ public sealed class SendWebSocket(SendWebSocketParameters parameters) : APassthr
 
         // A Meep host gets a connection from this Send alone, so its origin is exact (Q216); anywhere else, one connection
         // to the address is shared (Q156). A Send that learns the host is Meep, or that it no longer is, moves.
-        var origin = context.HostId is not null ? context.Origin : null;
-        var own = origin is not null && MeepHosts.IsMeep(Peers.EndpointOf(uri!), uri!.Host, uri.Port);
+        // Only hosts it may tell are asked or given the origin (S11).
+        var endpoint = Peers.EndpointOf(uri!);
+        var hostId = context.HostId is not null && MeepHosts.MayTell(endpoint, uri!.Host) ? context.HostId : null;
+        var origin = hostId is not null ? context.Origin : null;
+        var own = origin is not null && MeepHosts.IsMeep(endpoint, uri!.Host, uri.Port);
         if (origin is not null)
             _connections.Leave(WebSocketClient.Key(uri!, own ? null : origin));
-        var client = _connections.Join(WebSocketClient.Key(uri!, own ? origin : null), context, parameters.Connections, () => new WebSocketClient(uri!, parameters, context.HostId, own ? origin : null));
+        var client = _connections.Join(WebSocketClient.Key(uri!, own ? origin : null), context, parameters.Connections, () => new WebSocketClient(uri!, parameters, hostId, own ? origin : null));
         await Connections.SendAsync(client, message, text, null, parameters.Tries, parameters.RetryDelay, parameters.Timeout, context, cancellationToken).ConfigureAwait(false);
     }
 

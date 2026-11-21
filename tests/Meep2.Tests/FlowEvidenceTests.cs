@@ -170,6 +170,70 @@ public class FlowEvidenceTests
     }
 
     [Test]
+    [Arguments("127.0.0.1", true)]
+    [Arguments("::1", true)]
+    [Arguments("10.1.2.3", true)]
+    [Arguments("172.16.0.1", true)]
+    [Arguments("172.31.255.255", true)]
+    [Arguments("172.32.0.1", false)]
+    [Arguments("192.168.1.30", true)]
+    [Arguments("169.254.10.10", true)]
+    [Arguments("100.64.0.1", true)]
+    [Arguments("100.128.0.1", false)]
+    [Arguments("fd00::5", true)]
+    [Arguments("fe80::1", true)]
+    [Arguments("::ffff:192.168.1.30", true)]
+    [Arguments("8.8.8.8", false)]
+    [Arguments("192.0.2.7", false)]
+    [Arguments("2001:db8::1", false)]
+    public async Task Private_addresses_are_this_machine_private_ranges_and_link_local(string address, bool isPrivate)
+    {
+        await Assert.That(MeepHosts.IsPrivate(IPAddress.Parse(address))).IsEqualTo(isPrivate);
+    }
+
+    [Test]
+    public async Task Only_named_local_and_private_hosts_are_asked_or_told_where_a_message_comes_from()
+    {
+        MeepHosts.Configure(["meep-test-public.example"]);
+
+        await Assert.That(MeepHosts.MayTell("8.8.8.8:443", "8.8.8.8")).IsFalse();
+        await Assert.That(MeepHosts.MayTell("[2001:db8::1]:443", "[2001:db8::1]")).IsFalse();
+        await Assert.That(MeepHosts.MayTell("meep-test-elsewhere.invalid:443", "meep-test-elsewhere.invalid")).IsFalse();
+        await Assert.That(MeepHosts.MayTell("192.168.1.30:8080", "192.168.1.30")).IsTrue();
+        await Assert.That(MeepHosts.MayTell("127.0.0.1:8080", "127.0.0.1")).IsTrue();
+        await Assert.That(MeepHosts.MayTell("localhost:8080", "localhost")).IsTrue();
+        await Assert.That(MeepHosts.MayTell("meep-test-public.example:443", "meep-test-public.example")).IsTrue();
+        await Assert.That(MeepHosts.MayTell(null, "127.0.0.1")).IsFalse();
+    }
+
+    [Test]
+    [NotInParallel("meep-host-public")]
+    public async Task Listens_tell_only_private_clients_the_daemons_id_unless_the_setting_says_anyone()
+    {
+        var before = MeepHosts.AnswerAnyone;
+        try
+        {
+            MeepHosts.AnswerAnyone = false;
+            await Assert.That(MeepHosts.MayAnswer(IPAddress.Parse("8.8.8.8"))).IsFalse();
+            await Assert.That(MeepHosts.MayAnswer(IPAddress.Parse("192.168.1.30"))).IsTrue();
+            await Assert.That(MeepHosts.MayAnswer(IPAddress.Loopback)).IsTrue();
+            MeepHosts.AnswerAnyone = true;
+            await Assert.That(MeepHosts.MayAnswer(IPAddress.Parse("8.8.8.8"))).IsTrue();
+        }
+        finally
+        {
+            MeepHosts.AnswerAnyone = before;
+        }
+
+        using var settings = new TemporaryFolder();
+        var open = settings.Write("open.meep", "defaults\n    meep-host-public = true\n");
+        var bad = settings.Write("bad.meep", "defaults\n    meep-host-public = \"yes\"\n");
+        await Assert.That(DaemonConfig.Load(open).MeepHostPublic).IsTrue();
+        await Assert.That(new DaemonConfig().MeepHostPublic).IsFalse();
+        await Assert.That(() => DaemonConfig.Load(bad)).Throws<FormatException>().WithMessageContaining("meep-host-public is true or false");
+    }
+
+    [Test]
     public async Task Hosts_the_settings_name_are_told_the_origin_from_the_first_request()
     {
         var heard = new ConcurrentQueue<string?>();

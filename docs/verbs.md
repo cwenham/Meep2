@@ -56,6 +56,7 @@ Receives messages from the network, each carrying a lease so `Send` can reply. C
 
 - Positional: `url`
 - Example: `Listen "ws://0.0.0.0:8080/chat/" as Room`
+- HTTP and WebSocket Listens tell a client that asks with `Meep-Host: ?` the daemon's ID only if it's on this machine or a private address, unless the daemon's settings have `meep-host-public = true`. An origin a client gives is counted as it says; it's a claim, not proof.
 
 ## Getting and reshaping data
 
@@ -71,6 +72,7 @@ Fetches something for each message it receives.
 - Example: `Fetch "https://api.example.com/stops/{msg.StopId}"`
 - What a `{msg…}` hole gives can't make a file path absolute, start it with `~`, climb out of its folder with `..`, or be part of a `file://` address, unless `any-path=true`. So `Fetch "~/stops/{msg.Name}.json"` reads only files in `~/stops`, whatever the message says. Holes that don't read the message, such as constants, aren't limited.
 - `root=` keeps every path inside a folder: relative paths start from it, and a path that leads anywhere else becomes an error. A Fetch with `root=` only reads files.
+- HTTP Fetches (and Sends) tell where a message comes from, or ask whether the other end is Meep, only to hosts the daemon's `meep-hosts` names, this machine, and hosts on private addresses. An API on the internet hears nothing about the pipeline calling it.
 
 ### Extract
 Reads a message's text as JSON and emits a `JsonMessage` for each value a JSONPath query matches.

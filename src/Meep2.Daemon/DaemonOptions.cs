@@ -30,6 +30,12 @@ public sealed record DaemonOptions
     public IReadOnlyList<string> MeepHosts { get; init; } = [];
 
     /// <summary>
+    /// Whether Listens answer <c>Meep-Host</c> with the daemon's ID to clients anywhere, from the settings file's
+    /// <c>meep-host-public</c> (Q224), rather than only to clients on this machine and private addresses.
+    /// </summary>
+    public bool MeepHostPublic { get; init; }
+
+    /// <summary>
     /// The file in which the Meep hosts Fetch and Send learn are remembered across restarts (Q213):
     /// <c>daemon/meep-hosts</c> in Meep's folder.
     /// </summary>

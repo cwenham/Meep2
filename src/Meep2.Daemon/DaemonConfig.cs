@@ -20,6 +20,7 @@ public sealed record DaemonStart(string Path, bool DeveloperMode = false, bool W
 ///     otlp = "http://localhost:4318"     // where to send spans and metrics
 ///     sample = 0.25                      // the share of traces to record
 ///     meep-hosts = "studio.local, 10.0.0.5:8080"   // hosts known to be Meep, given origins from the first request
+///     meep-host-public = true            // Listens tell clients anywhere this daemon's ID, not only private ones
 /// const Pipelines = "~/pipelines"
 /// Start "{Pipelines}/ticker.meep" watch=true
 /// Start "feed.meep" dev=true
@@ -39,6 +40,9 @@ public sealed record DaemonConfig
 
     /// <summary>Hosts known to be Meep, each a host, or a host and port (Q213).</summary>
     public IReadOnlyList<string> MeepHosts { get; init; } = [];
+
+    /// <summary>Whether Listens answer <c>Meep-Host</c> to clients anywhere, not only on private addresses (Q224).</summary>
+    public bool MeepHostPublic { get; init; }
 
     /// <summary>The usual settings file for a Meep folder.</summary>
     public static string DefaultPath(string home) => System.IO.Path.Combine(home, "daemon", "daemon.meep");
@@ -81,8 +85,14 @@ public sealed record DaemonConfig
                 case "meep-hosts":
                     Problem(setting.Span, "meep-hosts is hosts known to be Meep, separated by commas, each a host or a host and port, as in \"studio.local, 10.0.0.5:8080\".");
                     break;
+                case "meep-host-public" when setting.Value is bool open:
+                    config = config with { MeepHostPublic = open };
+                    break;
+                case "meep-host-public":
+                    Problem(setting.Span, "meep-host-public is true or false: whether Listens tell clients anywhere this daemon's ID, not only those on private addresses.");
+                    break;
                 default:
-                    Problem(setting.Span, $"The daemon has no setting called {name}. Its settings are otlp, sample and meep-hosts.");
+                    Problem(setting.Span, $"The daemon has no setting called {name}. Its settings are otlp, sample, meep-hosts and meep-host-public.");
                     break;
             }
         }

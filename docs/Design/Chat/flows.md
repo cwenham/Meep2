@@ -127,6 +127,8 @@ The SDK has what the built-in verbs use, so a plugin's verbs can take part:
 7. **The boundary:** arrivals not keyed `meep://`, and destinations not in `peers`, are endpoints outside Meep, each with its rate, failures and rejections. `*` is everything past a module's limit, and what was folded there.
 8. A `meep://` origin whose daemon isn't one you know is another Meep, perhaps a `meep run`.
 
+**Flow evidence is a claim, not proof** (added in phase 1 of the refactoring, S11 and Q224). An origin is what the other end says about itself, and a `Meep-Host` answer is what the server says; anyone can send `baggage: meep.origin=…` naming any daemon, or answer with another daemon's ID. Treat a `meep://` arrival as "this client says it's that module", and don't use it to decide who may do what. Since phase 1, Listens answer `Meep-Host` only to clients on this machine and private addresses unless the daemon's `meep-host-public = true` is set, and Fetch and Send ask or tell only hosts `meep-hosts` names, this machine, and hosts on private addresses; see `refactoring-phase-1.md`.
+
 ## What it cost
 
 All on this machine (an 8-core, 16-thread Xeon W-2140B), Release, with other work keeping the load average between 8 and 19, so single runs move by tens of percent.

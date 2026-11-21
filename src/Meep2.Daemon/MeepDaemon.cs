@@ -151,6 +151,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         _identity = new HostInfo(HostIdentity.IdOf(_options.Plugins.Home), await HostIdentity.NamesAsync(cancellationToken).ConfigureAwait(false), HostIdentity.Addresses(), Version, Environment.ProcessId);
         // Meep hosts the settings name, and those learned before, get origins from the first request (Q213).
         Meep2.Modules.MeepHosts.Configure(_options.MeepHosts);
+        Meep2.Modules.MeepHosts.AnswerAnyone = _options.MeepHostPublic;
         _meepHosts = Meep2.Modules.MeepHosts.Keep(_options.MeepHostsFile);
 
         var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions());

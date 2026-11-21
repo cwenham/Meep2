@@ -13,10 +13,17 @@ namespace Meep2.Modules;
 /// before a restart (<see cref="Keep"/>), and this process's own Listens.
 /// </summary>
 /// <remarks>
+/// <para>
 /// A request to a host and port not known yet asks, and carries no origin, so the first request from this process to
 /// a Meep host neither named nor remembered counts there as from outside. A host that has answered is forgotten, here
 /// and in the saved list, when it answers a request that carried an origin without saying <c>Meep-Host</c>. A host
 /// the setting names stays known whatever it answers.
+/// </para>
+/// <para>
+/// Only hosts the setting names, this machine, and hosts on private addresses are asked or told at all (Q224, S11), so
+/// an API on the internet learns nothing about the pipelines that call it. A Listen answers <c>Meep-Host</c> only to
+/// clients on this machine and private addresses, unless <see cref="AnswerAnyone"/> is set.
+/// </para>
 /// </remarks>
 public static class MeepHosts
 {
@@ -30,8 +37,20 @@ public static class MeepHosts
     private static readonly Lock s_saving = new();
     private static readonly Lock s_addressing = new();
     private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<string, string> s_baggage = new();
+    private static readonly ConcurrentDictionary<string, (long At, bool Private)> s_privateNames = new(StringComparer.OrdinalIgnoreCase);
     private static (long At, HashSet<IPAddress> Addresses) s_ownAddresses = (long.MinValue, []);
     private static Timer? s_saveTimer;
+    private static volatile bool s_answerAnyone;
+
+    /// <summary>
+    /// Whether Listens answer <c>Meep-Host</c> with this host's ID to clients anywhere, as the daemon's
+    /// <c>meep-host-public</c> setting says, rather than only to clients on this machine and private addresses (Q224).
+    /// </summary>
+    public static bool AnswerAnyone
+    {
+        get => s_answerAnyone;
+        set => s_answerAnyone = value;
+    }
 
     /// <summary>What a request told the other end.</summary>
     internal enum Marked
@@ -135,15 +154,82 @@ public static class MeepHosts
             || (!s_configured.IsEmpty && (s_configured.ContainsKey(endpoint) || s_configured.ContainsKey(host.Trim('[', ']').ToLowerInvariant()))));
 
     /// <summary>
+    /// Whether a host may be asked whether it's Meep, or given an origin (S11): one the setting names, this machine, or
+    /// a host on a private address. A name is looked up, and private only if every address it has is.
+    /// </summary>
+    internal static bool MayTell(string? endpoint, string host)
+    {
+        if (endpoint is null)
+            return false;
+        var name = host.Trim('[', ']');
+        if (!s_configured.IsEmpty && (s_configured.ContainsKey(endpoint) || s_configured.ContainsKey(name.ToLowerInvariant())))
+            return true;
+        return IsThisMachine(name) || IsPrivateName(name);
+    }
+
+    /// <summary>Whether a Listen answers a client at this address with this host's ID (S11).</summary>
+    internal static bool MayAnswer(IPAddress? client) =>
+        s_answerAnyone || client is null || IsPrivate(client) || OwnAddresses().Contains(client.IsIPv4MappedToIPv6 ? client.MapToIPv4() : client);
+
+    /// <summary>
+    /// Whether an address is on this machine or a private network: loopback, the private IPv4 ranges (10/8,
+    /// 172.16/12, 192.168/16), link-local, the shared range carriers and overlay networks use (100.64/10), and IPv6's
+    /// unique-local and link-local ranges.
+    /// </summary>
+    internal static bool IsPrivate(IPAddress address)
+    {
+        if (address.IsIPv4MappedToIPv6)
+            address = address.MapToIPv4();
+        if (IPAddress.IsLoopback(address))
+            return true;
+        if (address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            Span<byte> b = stackalloc byte[4];
+            address.TryWriteBytes(b, out _);
+            return b[0] == 10
+                || (b[0] == 172 && (b[1] & 0xF0) == 16)
+                || (b[0] == 192 && b[1] == 168)
+                || (b[0] == 169 && b[1] == 254)
+                || (b[0] == 100 && (b[1] & 0xC0) == 64);
+        }
+        return address.IsIPv6UniqueLocal || address.IsIPv6LinkLocal || address.IsIPv6SiteLocal;
+    }
+
+    // A host name or address is private if it's an address that is, or a name whose addresses all are. Names are
+    // looked up again at most every 30 seconds.
+    private static bool IsPrivateName(string name)
+    {
+        if (IPAddress.TryParse(name, out var address))
+            return IsPrivate(address);
+        var now = Environment.TickCount64;
+        if (s_privateNames.TryGetValue(name, out var known) && now - known.At < 30_000)
+            return known.Private;
+        bool isPrivate;
+        try
+        {
+            var addresses = Dns.GetHostAddresses(name);
+            isPrivate = addresses.Length > 0 && addresses.All(IsPrivate);
+        }
+        catch (Exception exception) when (exception is System.Net.Sockets.SocketException or ArgumentException)
+        {
+            isPrivate = false;
+        }
+        if (s_privateNames.Count < Limit || s_privateNames.ContainsKey(name))
+            s_privateNames[name] = (now, isPrivate);
+        return isPrivate;
+    }
+
+    /// <summary>
     /// Adds what a request to another host says about where it comes from: <c>traceparent</c> while tracing, and the
-    /// origin to a Meep host, or the question to anywhere not known to be one. With <paramref name="ask"/>, it only
+    /// origin to a Meep host, or the question to anywhere not known to be one, among the hosts it may tell
+    /// (<see cref="MayTell"/>). With <paramref name="ask"/>, it only
     /// asks, wherever it goes, as to the host a redirect leads to (Q217).
     /// </summary>
     internal static Marked Mark(HttpHeaders headers, string? endpoint, Uri uri, ModuleContext context, bool ask = false)
     {
         if (context.TraceParent is { } traceParent)
             headers.TryAddWithoutValidation("traceparent", traceParent);
-        if (endpoint is null || context.HostId is null)
+        if (endpoint is null || context.HostId is null || !MayTell(endpoint, uri.Host))
             return Marked.Nothing;
         if (!ask && IsMeep(endpoint, uri.Host, uri.Port) && context.Origin is { } origin)
         {
