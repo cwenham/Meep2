@@ -234,6 +234,10 @@ public sealed class DaemonClient : IDisposable
     // Sends a request, turning a refusal into a DaemonException that says why.
     private async Task<HttpResponseMessage> SendRawAsync(HttpRequestMessage request, HttpCompletionOption completion, CancellationToken cancellationToken)
     {
+        // A large body waits for the daemon to say it will take it, so a refusal (413) arrives as an answer rather than
+        // as a connection closed in the middle of sending.
+        if (request.Content?.Headers.ContentLength > 64 * 1024)
+            request.Headers.ExpectContinue = true;
         HttpResponseMessage response;
         try
         {

@@ -163,6 +163,8 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         builder.WebHost.ConfigureKestrel(kestrel =>
         {
             kestrel.AddServerHeader = false;
+            // Bodies are read before a route's capability is checked, so they're kept small, as /ws frames are (S9).
+            kestrel.Limits.MaxRequestBodySize = MaxBody;
             kestrel.ListenUnixSocket(socket, listen => listen.Use(next => connection =>
             {
                 // Who's connecting, as the system tells it, for HandleAsync to decide what they may do.
@@ -549,16 +551,29 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         }
     }
 
+    /// <summary>The largest body a request to the control socket may have: 1 MiB, the same as a <c>/ws</c> frame.</summary>
+    internal const int MaxBody = SocketSession.MaxFrame;
+
     // An HTTP request as the API sees it. Its body is JSON if it says so, and otherwise text.
     private static async Task<ApiRequest> ReadRequestAsync(HttpContext context, Capabilities capabilities)
     {
         var request = context.Request;
         string? text = null;
         JsonElement? json = null;
+        if (request.ContentLength > MaxBody)
+            throw new DaemonException(413, $"A request's body can be at most {MaxBody} bytes."); // before any of it is read
         if (request.ContentLength > 0 || request.Headers.TransferEncoding.Count > 0)
         {
             using var reader = new StreamReader(request.Body, Encoding.UTF8);
-            var body = await reader.ReadToEndAsync(context.RequestAborted).ConfigureAwait(false);
+            string body;
+            try
+            {
+                body = await reader.ReadToEndAsync(context.RequestAborted).ConfigureAwait(false);
+            }
+            catch (Microsoft.AspNetCore.Http.BadHttpRequestException exception) when (exception.StatusCode == StatusCodes.Status413PayloadTooLarge)
+            {
+                throw new DaemonException(413, $"A request's body can be at most {MaxBody} bytes.", innerException: exception);
+            }
             if (request.ContentType?.StartsWith("application/json", StringComparison.OrdinalIgnoreCase) == true)
                 json = ParseJson(body);
             else

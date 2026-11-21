@@ -206,6 +206,21 @@ public class DaemonTests
     }
 
     [Test]
+    public async Task A_request_body_over_a_mebibyte_is_refused()
+    {
+        await using var lab = await DaemonLab.StartAsync();
+        await lab.Client.StartAsync(lab.Write("ticker.meep", Ticker));
+
+        var refused = await Assert.That(async () => { await lab.Client.InjectAsync("ticker", "WriteLine", new string('x', MeepDaemon.MaxBody + 1)); })
+            .Throws<DaemonException>();
+        var small = await lab.Client.InjectAsync("ticker", "WriteLine", new string('x', 1000));
+
+        await Assert.That(refused!.Status).IsEqualTo(413);
+        await Assert.That(refused.Message).IsEqualTo($"A request's body can be at most {MeepDaemon.MaxBody} bytes.");
+        await Assert.That(small).IsNotNull();
+    }
+
+    [Test]
     public async Task A_token_gives_only_the_capabilities_it_names()
     {
         await using var lab = await DaemonLab.StartAsync();
