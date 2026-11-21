@@ -128,6 +128,34 @@ public class DaemonTests
     }
 
     [Test]
+    public async Task A_tap_over_a_websocket_drops_for_a_client_that_stops_reading()
+    {
+        await using var lab = await DaemonLab.StartAsync();
+        var payload = new string('x', 2000);
+        await lab.Client.StartAsync(lab.Write("flood.meep", $"""
+            Interval 1ms payload='{payload}'
+                WriteLine "." as Printer
+            """));
+        await lab.WaitFor("flood", "running");
+        await using var socket = await lab.Client.OpenSocketAsync();
+        await socket.SendAsync("t", "GET", "/pipelines/flood/modules/Printer/tap");
+        await Wait.For(socket.ReceiveAsync());
+
+        // Stop reading while about a thousand messages pass. Before S4, every one was queued for the socket, however
+        // long that took, and the tap never dropped any.
+        await Task.Delay(TimeSpan.FromSeconds(1));
+        long dropped = 0;
+        for (var i = 0; i < 400 && dropped == 0; i++)
+        {
+            var frame = await Wait.For(socket.ReceiveAsync()) ?? throw new InvalidOperationException("The socket closed.");
+            if (frame.GetProperty("event").GetString() == "message")
+                dropped = frame.GetProperty("data").GetProperty("dropped").GetInt64();
+        }
+
+        await Assert.That(dropped).IsGreaterThan(0);
+    }
+
+    [Test]
     public async Task A_tap_that_cant_be_opened_says_why()
     {
         await using var lab = await DaemonLab.StartAsync();

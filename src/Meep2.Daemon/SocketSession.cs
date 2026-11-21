@@ -230,12 +230,14 @@ internal sealed class SocketSession(
             var events = (Events)reply;
             try
             {
+                // Each event waits until it's on the socket, as a subscription's updates do, so a client that reads
+                // slowly holds the stream back and a tap drops its oldest messages, rather than frames piling up here (S4).
                 await foreach (var e in events.Stream(aborted.Token).ConfigureAwait(false))
-                    Send(id, e.Name, e.Data);
+                    await QueueAsync(Frame(id, writer => Event(writer, e.Name, e.Data)), WebSocketMessageType.Text).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (aborted.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                // Cancelled by the client, or the connection is closing.
+                // Cancelled by the client, or the connection is closing or failed.
             }
             if (aborted.IsCancellationRequested)
             {
@@ -301,7 +303,8 @@ internal sealed class SocketSession(
         }
     }
 
-    // Queues a frame, completing with its size once it's on the socket, so a subscription doesn't run ahead of it.
+    // Queues a frame, completing with its size once it's on the socket, so a stream or subscription doesn't run ahead
+    // of it.
     private async Task<int> QueueAsync(byte[] frame, WebSocketMessageType type)
     {
         var sent = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -345,14 +348,20 @@ internal sealed class SocketSession(
         }
     });
 
-    private void Send(string id, string name, Action<Utf8JsonWriter> data) => Write(id, writer =>
+    private void Send(string id, string name, Action<Utf8JsonWriter> data) => Write(id, writer => Event(writer, name, data));
+
+    private static void Event(Utf8JsonWriter writer, string name, Action<Utf8JsonWriter> data)
     {
         writer.WriteString("event", name);
         writer.WritePropertyName("data");
         data(writer);
-    });
+    }
 
-    private void Write(string? id, Action<Utf8JsonWriter> rest)
+    // Queues a frame without waiting for the socket: for answers and ends, one for each request.
+    private void Write(string? id, Action<Utf8JsonWriter> rest) =>
+        _outgoing.Writer.TryWrite(new Outgoing(Frame(id, rest), WebSocketMessageType.Text, null));
+
+    private static byte[] Frame(string? id, Action<Utf8JsonWriter> rest)
     {
         var buffer = new ArrayBufferWriter<byte>();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -366,7 +375,7 @@ internal sealed class SocketSession(
             rest(writer);
             writer.WriteEndObject();
         }
-        _outgoing.Writer.TryWrite(new Outgoing(buffer.WrittenSpan.ToArray(), WebSocketMessageType.Text, null));
+        return buffer.WrittenSpan.ToArray();
     }
 
     // One sender, so frames never interleave. Once the socket fails, what's queued is let go, so nothing waits on it.
