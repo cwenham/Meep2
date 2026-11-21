@@ -17,6 +17,15 @@
     "Programming Languages"
   ],
   "activationEvents": [],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "In a folder you haven't trusted, Meeplang runs the meep command from your own settings only, never one the folder names.",
+      "restrictedConfigurations": [
+        "meeplang.meepPath"
+      ]
+    }
+  },
   "main": "./out/extension.js",
   "contributes": {
     "languages": [
@@ -45,7 +54,8 @@
         "meeplang.meepPath": {
           "type": "string",
           "default": "meep",
-          "description": "The meep command, which runs the language server with meep lsp. A full path if it isn't on your PATH."
+          "scope": "machine-overridable",
+          "description": "The meep command, which runs the language server with meep lsp. A full path if it isn't on your PATH. A folder you haven't trusted can't change it."
         }
       }
     },
@@ -97,7 +107,7 @@
   },
   "scripts": {
     "compile": "tsc -p ./",
-    "test": "node out/grammar.test.js",
+    "test": "node out/grammar.test.js && node out/manifest.test.js",
     "test:editor": "node out/test/runEditorTest.js"
   },
   "dependencies": {
