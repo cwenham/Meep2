@@ -221,6 +221,7 @@ Use `Computed<T>` for anything a pipeline writer might want to take from the mes
 - `Evaluate` throws `EvaluationException` when it can't work out a value, for instance when a member it reads isn't there. Catch it and emit an error, as the examples above do. Don't let it escape.
 - A message whose type the expression doesn't fit skips the module, as with `@bypass`. So `Where msg.minutesAway < 30` lets messages without `minutesAway` past untouched.
 - In C# code and tests, make one with `Computed<T>.Constant(value)` or `Computed<T>.From(message => …)`.
+- For text the message shouldn't steer, such as a path, call `Pieces(message)` on a `Computed<string>` instead. It gives the value in `TextPiece`s, marking each that came from a `{msg…}` hole (`FromMessage`), so a module can check those pieces alone, as Save and Fetch.File do with paths. A value made with `From` is one piece, from the message; one made with `Constant` is one piece, not.
 
 `[ForErrors]` marks a `Computed<T>` that's only worked out for errors, as `error-reply` is on a `Send` that replies. When a record has one, its other `Computed<T>` parameters are only for messages that aren't errors, so an expression written for one kind doesn't keep the other kind out of the module.
 

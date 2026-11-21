@@ -164,6 +164,114 @@ public class ModuleTests
     }
 
     [Test]
+    [Arguments("inside/{msg.Payload}", "../escaped.txt", "the message put '..' in it, which climbs out of the folder")]
+    [Arguments("inside/{msg.Payload}", "a/../../escaped.txt", "the message put '..' in it")]
+    [Arguments("inside/.{msg.Payload}", "./escaped.txt", "the message put '..' in it")]
+    [Arguments("{msg.Payload}", "~/escaped.txt", "the message started it with ~")]
+    [Arguments("{msg.Payload}", "/tmp/escaped.txt", "the message made it an absolute path")]
+    public async Task Save_refuses_a_path_the_message_steers_out_of_its_folder(string template, string payload, string why)
+    {
+        using var folder = new TemporaryFolder();
+        var run = await TestRun.Start($$"""
+            Interval 10ms count=1 payload='{{payload}}'
+                Save "{{template}}" root='{{folder.Path}}'
+                    Sink
+            """);
+
+        var error = run.At("Sink").OfType<ErrorMessage>().Single();
+        await Assert.That(error.Error).Contains($"isn't used, because {why}");
+        await Assert.That(error.Error).EndsWith("Set any-path=true if the message should choose any path.");
+        await Assert.That(File.Exists(Path.Combine(folder.Path, "escaped.txt"))).IsFalse();
+    }
+
+    [Test]
+    public async Task Save_refuses_a_path_the_message_steers_without_a_root()
+    {
+        using var folder = new TemporaryFolder();
+        var inside = Path.Combine(folder.Path, "inside");
+        var run = await TestRun.Start($$"""
+            Interval 10ms count=1 payload='../escaped.txt'
+                Save "{{inside}}/{msg.Payload}"
+                    Sink
+            """);
+
+        var error = run.At("Sink").OfType<ErrorMessage>().Single();
+        await Assert.That(error.Error).IsEqualTo(
+            $"Save refused a path: {inside}/../escaped.txt isn't used, because the message put '..' in it, which climbs out of the folder. Set any-path=true if the message should choose any path.");
+        await Assert.That(File.Exists(Path.Combine(folder.Path, "escaped.txt"))).IsFalse();
+    }
+
+    [Test]
+    public async Task Save_keeps_a_path_the_message_names_inside_its_folder()
+    {
+        using var folder = new TemporaryFolder();
+        var run = await TestRun.Start($$"""
+            Interval 10ms count=1 payload='sub/name..with..dots.txt'
+                Save "{{folder.Path}}/{msg.Payload}" mode=overwrite
+                    Sink
+            """);
+
+        await Assert.That(run.At("Sink").OfType<ErrorMessage>()).IsEmpty();
+        await Assert.That(File.Exists(Path.Combine(folder.Path, "sub", "name..with..dots.txt"))).IsTrue();
+    }
+
+    [Test]
+    public async Task Save_with_any_path_lets_the_message_choose()
+    {
+        using var folder = new TemporaryFolder();
+        var target = Path.Combine(folder.Path, "chosen.txt");
+        var run = await TestRun.Start($$"""
+            Interval 10ms count=1 payload='{{target}}'
+                Save "{msg.Payload}" any-path=true
+                    Sink
+            """);
+
+        await Assert.That(run.At("Sink").OfType<ErrorMessage>()).IsEmpty();
+        await Assert.That(File.Exists(target)).IsTrue();
+    }
+
+    [Test]
+    public async Task Save_with_a_root_keeps_every_path_inside_it()
+    {
+        using var folder = new TemporaryFolder();
+        var root = Path.Combine(folder.Path, "root");
+        var run = await TestRun.Start($$"""
+            Interval 10ms count=3 payload='x'
+                Save "{msg.Count}.txt" root='{{root}}' mode=overwrite
+                Save "../outside-{msg.Count}.txt" root='{{root}}'
+                    Sink
+            """);
+
+        await Assert.That(File.Exists(Path.Combine(root, "3.txt"))).IsTrue();
+        var errors = run.At("Sink").OfType<ErrorMessage>().Select(m => m.Error).ToList();
+        await Assert.That(errors).Contains($"Save refused a path: {Path.Combine(folder.Path, "outside-1.txt")} is outside {root}, the root= folder.");
+        await Assert.That(File.Exists(Path.Combine(folder.Path, "outside-1.txt"))).IsFalse();
+    }
+
+    [Test]
+    public async Task Fetch_refuses_a_file_path_the_message_steers()
+    {
+        using var folder = new TemporaryFolder();
+        folder.Write("inside.txt", "inside");
+        var run = await TestRun.Start($$"""
+            Interval 10ms count=1 payload='/etc/hosts'
+                Fetch "{msg.Payload}"
+                    Sink
+                Fetch "file://{msg.Payload}"
+                    Sink
+                Fetch "{{folder.Path}}/{msg.Count}/../inside.txt"
+                    Sink
+                Fetch "inside.txt" root='{{folder.Path}}'
+                    Sink
+            """);
+
+        var errors = run.At("Sink").OfType<ErrorMessage>().Select(m => m.Error).ToList();
+        await Assert.That(errors).Contains("Fetch refused a path: /etc/hosts isn't used, because the message made it an absolute path. Set any-path=true if the message should choose any path.");
+        await Assert.That(errors).Contains("Fetch refused a path: file:///etc/hosts isn't used, because the message gave part of a file:// address; write the path without file:// to have it checked. Set any-path=true if the message should choose any path.");
+        await Assert.That(run.At("Sink").OfType<FileText>().Select(f => f.Text).ToList()).IsEquivalentTo(["inside", "inside"]);
+    }
+
+    [Test]
     public async Task WriteLine_without_a_template_writes_each_message_as_text()
     {
         await using var server = Server();

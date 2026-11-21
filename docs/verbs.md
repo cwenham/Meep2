@@ -65,10 +65,12 @@ Fetches something for each message it receives.
 | Inflection | Addresses | Emits | Parameters |
 |---|---|---|---|
 | HTTP | `http://`, `https://` (GET) | `HttpResponse` | `timeout`, `stream`, `max-size` |
-| File | file paths, `file://` | `FileText` | `timeout`, `max-size` |
+| File | file paths, `file://` | `FileText` | `timeout`, `max-size`, `root`, `any-path` |
 
 - Positional: `url`
 - Example: `Fetch "https://api.example.com/stops/{msg.StopId}"`
+- What a `{msg…}` hole gives can't make a file path absolute, start it with `~`, climb out of its folder with `..`, or be part of a `file://` address, unless `any-path=true`. So `Fetch "~/stops/{msg.Name}.json"` reads only files in `~/stops`, whatever the message says. Holes that don't read the message, such as constants, aren't limited.
+- `root=` keeps every path inside a folder: relative paths start from it, and a path that leads anywhere else becomes an error. A Fetch with `root=` only reads files.
 
 ### Extract
 Reads a message's text as JSON and emits a `JsonMessage` for each value a JSONPath query matches.
@@ -152,8 +154,10 @@ Writes a line for each message to standard output.
 Saves each message's text to a file, appending by default.
 
 - Positional: `path`
-- Parameters: `mode` (`Append` or `Replace`)
+- Parameters: `mode` (`Append` or `Overwrite`), `root`, `any-path`
 - Example: `Save "~/bus/{msg.Created:yyyy-MM-dd}.jsonl"`
+- What a `{msg…}` hole gives can't make the path absolute, start it with `~` or climb out with `..`, unless `any-path=true`, so behind a Listen, `Save "~/inbox/{msg.Query['name']}.txt"` only writes in `~/inbox`. Holes that don't read the message, such as constants, aren't limited.
+- `root=` keeps every path inside a folder: relative paths start from it, and a path that leads anywhere else becomes an error, as in `Save "{msg.Name}.txt" root="~/inbox"`. It goes by the path as written, so a link inside the folder that points out of it is followed.
 
 ### Send
 Sends messages on. Every Send is a passthrough: messages carry on downstream before the send has finished. Chosen by whether there's an address, and its scheme.

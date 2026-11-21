@@ -28,6 +28,18 @@ internal static class ExpressionCompiler
         return Expression.Lambda<Func<Message, T>>(body, parameter).Compile();
     }
 
+    /// <summary>
+    /// Compiles a template for messages of one type into its pieces, each formatted as text, in order, without joining
+    /// them, so a module can tell the text written in the pipeline from what the message gave.
+    /// </summary>
+    /// <exception cref="BindException">The template doesn't fit messages of this type, or is wrong in itself.</exception>
+    public static Func<Message, string[]> CompilePieces(TemplateSyntax template, CompileScope scope, Type messageType, bool bigNumbers = false)
+    {
+        var parameter = Expression.Parameter(typeof(Message), "message");
+        var binder = new ExpressionBinder(scope, messageType, parameter, bigNumbers);
+        return Expression.Lambda<Func<Message, string[]>>(binder.TemplateParts(template), parameter).Compile();
+    }
+
     /// <summary>Works out an expression that doesn't depend on a message, such as a constant's value.</summary>
     /// <exception cref="BindException">The expression is wrong, uses msg or fam, or fails when worked out.</exception>
     public static ConstantValue Evaluate(ExpressionSyntax syntax, CompileScope scope)
@@ -152,7 +164,10 @@ internal sealed class ExpressionBinder(CompileScope scope, Type? messageType, Pa
         return $"a {FriendlyName(type)}";
     }
 
-    private Expression Template(TemplateSyntax template)
+    private Expression Template(TemplateSyntax template) => Expression.Call(Dynamic.ConcatMethod, TemplateParts(template));
+
+    /// <summary>A template's parts, each as text, in an array.</summary>
+    public Expression TemplateParts(TemplateSyntax template)
     {
         var parts = template.Parts.Select(part => part switch
         {
@@ -160,7 +175,7 @@ internal sealed class ExpressionBinder(CompileScope scope, Type? messageType, Pa
             HolePart hole => Format(Bind(hole.Expression), hole.Format),
             _ => throw new BindException("Unknown part of a template.", template.Span),
         });
-        return Expression.Call(Dynamic.ConcatMethod, Expression.NewArrayInit(typeof(string), parts));
+        return Expression.NewArrayInit(typeof(string), parts);
     }
 
     private Expression Name(NameSyntax name)

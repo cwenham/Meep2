@@ -45,7 +45,7 @@ public class VerbLoaderTests
         {
             var run = await TestRun.Start($$"""
                 Interval 10ms count=1 payload='{{path}}'
-                    Fetch "{msg.Payload}"
+                    Fetch "{msg.Payload}" any-path=true
                         Sink
                 """);
 

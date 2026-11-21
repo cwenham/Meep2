@@ -26,6 +26,8 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
     public static string? WhyNot(FetchParameters parameters, Message message)
     {
         ArgumentNullException.ThrowIfNull(parameters);
+        if (parameters.Root is not null)
+            return "reads files only when root= is set";
         var url = parameters.Url.Evaluate(message);
         return Addresses.IsWeb(url, out _) ? null : $"needs an http or https address, not {url}";
     }
@@ -318,7 +320,9 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
 /// </summary>
 /// <remarks>
 /// A path without a scheme is read as a file: <c>~</c> is the home folder, and other relative paths start from the
-/// current folder. A file that's missing, unreadable or over the size limit becomes an <see cref="ErrorMessage"/>.
+/// current folder, or from <c>root=</c>. A file that's missing, unreadable or over the size limit becomes an
+/// <see cref="ErrorMessage"/>. What a <c>{msg…}</c> hole gives can't make the path absolute, start it with <c>~</c>
+/// or climb out with <c>..</c>, unless <c>any-path=true</c>.
 /// </remarks>
 [Verb("Fetch", Inflection = "File")]
 [Emits(typeof(FileText))]
@@ -337,23 +341,33 @@ public sealed class FileFetch(FetchParameters parameters) : AInflection<Message>
     /// <inheritdoc/>
     protected override async ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
     {
-        string address;
+        IReadOnlyList<TextPiece> pieces;
         try
         {
-            address = parameters.Url.Evaluate(message);
+            pieces = parameters.Url.Pieces(message);
         }
         catch (EvaluationException exception)
         {
             context.EmitError(exception.Message, exception);
             return;
         }
-        if (Addresses.FilePath(address) is not { } file)
+        var address = string.Concat(pieces.Select(piece => piece.Text));
+        if (Addresses.FilePath(address) is null)
         {
             context.EmitError($"Fetch.File needs a file path or a file:// address, not {address}");
             return;
         }
 
-        var path = Paths.Expand(file);
+        string path;
+        try
+        {
+            path = Paths.Resolve(pieces, parameters.Root, parameters.AnyPath);
+        }
+        catch (PathRefusedException exception)
+        {
+            context.EmitError($"Fetch refused a path: {exception.Message}", exception);
+            return;
+        }
         try
         {
             var info = new FileInfo(path);
@@ -417,4 +431,16 @@ public sealed record FetchParameters
         get;
         init => field = value > 0 ? value : throw new ArgumentOutOfRangeException(nameof(MaxSize), "The size limit must be at least 1 byte.");
     } = 16 * 1024 * 1024;
+
+    /// <summary>
+    /// For files: a folder every path has to stay inside. Relative paths start from it, and a path that leads anywhere
+    /// else becomes an error. With it set, this Fetch only reads files.
+    /// </summary>
+    public string? Root { get; init; }
+
+    /// <summary>
+    /// For files: lets a message choose any path, through a <c>{msg…}</c> hole: an absolute one, one starting with
+    /// <c>~</c>, or one climbing out with <c>..</c>. Off unless set.
+    /// </summary>
+    public bool AnyPath { get; init; }
 }
