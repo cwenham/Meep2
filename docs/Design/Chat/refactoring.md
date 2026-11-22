@@ -82,7 +82,7 @@ The code is in good health: little is repeated, the hot paths are written with c
 
 ## 4. Performance
 
-**P1. Waiting on asynchronous work by blocking (medium).** Includes from a URL are fetched with `.GetAwaiter().GetResult()`, up to 30 seconds each (`PipelineSources.cs:255–257`); committing an edit blocks on `ssh-keygen` for up to 15 seconds (`PendingBranch.cs:100`); and Listen.HTTP starts a new route while holding a lock (`HttpListen.cs:121–122`). Each ties up a thread-pool thread, the last inside a lock. *Fix:* read includes asynchronously (or fetch them before parsing), make `PendingBranch.Commit` asynchronous, and start the new route outside the lock.
+**P1. Waiting on asynchronous work by blocking (medium).** Includes from a URL are fetched with `.GetAwaiter().GetResult()`, up to 30 seconds each (`PipelineSources.cs:255–257`); committing an edit blocks on `ssh-keygen` for up to 15 seconds (`PendingBranch.cs:100`); and Listen.HTTP starts a new route while holding a lock (`HttpListen.cs:121–122`). Each ties up a thread-pool thread, the last inside a lock. *Fix:* read includes asynchronously (or fetch them before parsing), make `PendingBranch.Commit` asynchronous, and start the new route outside the lock. When an include from a URL takes longer than its 30 seconds, say so ("… didn't arrive within 30s"), as Fetch does, rather than fail with a bare cancellation (Q243).
 
 **P2. Changes and flushes poll every millisecond while a module is busy (medium).** `RunBetweenMessagesAsync` waits for the loop with `Task.Delay(1)` in a loop (`InflectionNode.cs:189`), so a flush timer that fires while a module handles a slow message spins on timers until it's done. *Fix:* a completion the loop signals when it reaches the gap between messages.
 
