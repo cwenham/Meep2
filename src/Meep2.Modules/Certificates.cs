@@ -5,6 +5,27 @@ namespace Meep2.Modules;
 /// <summary>Loads certificates for https:// addresses.</summary>
 internal static class Certificates
 {
+    /// <summary>
+    /// Why a Listen's certificate and key don't suit its address, or null if they do: a secure address needs a
+    /// certificate, any other takes none, and the files have to exist.
+    /// </summary>
+    /// <param name="secureAddress">The kind of secure address, with its article, such as <c>an https://</c>, for the reason given.</param>
+    /// <param name="secure">Whether the address is secure.</param>
+    /// <param name="certificate">The certificate file given, if any.</param>
+    /// <param name="key">The key file given, if any.</param>
+    public static string? WhyNot(string secureAddress, bool secure, string? certificate, string? key)
+    {
+        if (secure && certificate is null)
+            return $"needs a certificate for {secureAddress} address, as in certificate=\"server.pem\"";
+        if (!secure && (certificate ?? key) is not null)
+            return $"only uses a certificate with {secureAddress} address";
+        if (certificate is not null && !File.Exists(certificate))
+            return $"can't find the certificate {certificate}";
+        if (key is not null && !File.Exists(key))
+            return $"can't find the key {key}";
+        return null;
+    }
+
     public static X509Certificate2 Load(string certificate, string? key)
     {
         var path = System.IO.Path.GetFullPath(certificate);

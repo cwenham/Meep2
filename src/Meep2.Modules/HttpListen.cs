@@ -42,15 +42,7 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
         ArgumentNullException.ThrowIfNull(parameters);
         if (!HttpAddress.TryParse(parameters.Url, out var address))
             return $"needs an http:// or https:// address, not {parameters.Url}";
-        if (address.Secure && parameters.Certificate is null)
-            return "needs a certificate for an https:// address, as in certificate=\"server.pem\"";
-        if (!address.Secure && (parameters.Certificate ?? parameters.Key) is not null)
-            return "only uses a certificate with an https:// address";
-        if (parameters.Certificate is { } certificate && !File.Exists(certificate))
-            return $"can't find the certificate {certificate}";
-        if (parameters.Key is { } key && !File.Exists(key))
-            return $"can't find the key {key}";
-        return null;
+        return Certificates.WhyNot("an https://", address.Secure, parameters.Certificate, parameters.Key);
     }
 
     /// <inheritdoc/>

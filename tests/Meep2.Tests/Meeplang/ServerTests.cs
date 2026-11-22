@@ -314,6 +314,23 @@ public class ServerTests
     }
 
     [Test]
+    public async Task Both_secure_listens_check_their_certificates_alike()
+    {
+        var message = new TextMessage("");
+        await Assert.That(WebSocketListen.WhyNot(new WebSocketListenParameters { Url = "wss://127.0.0.1:8443/" }, message))
+            .IsEqualTo("needs a certificate for a wss:// address, as in certificate=\"server.pem\"");
+        await Assert.That(WebSocketListen.WhyNot(new WebSocketListenParameters { Url = "ws://127.0.0.1:8080/", Key = "key.pem" }, message))
+            .IsEqualTo("only uses a certificate with a wss:// address");
+        await Assert.That(HttpListen.WhyNot(new HttpListenParameters { Url = "http://127.0.0.1:8080/", Certificate = "server.pem" }, message))
+            .IsEqualTo("only uses a certificate with an https:// address");
+        await Assert.That(HttpListen.WhyNot(new HttpListenParameters { Url = "https://127.0.0.1:8443/", Certificate = "/nowhere/server.pem" }, message))
+            .IsEqualTo("can't find the certificate /nowhere/server.pem");
+        await Assert.That(WebSocketListen.WhyNot(new WebSocketListenParameters { Url = "wss://127.0.0.1:8443/", Certificate = typeof(ServerTests).Assembly.Location, Key = "/nowhere/key.pem" }, message))
+            .IsEqualTo("can't find the key /nowhere/key.pem");
+        await Assert.That(HttpListen.WhyNot(new HttpListenParameters { Url = "http://127.0.0.1:8080/" }, message)).IsNull();
+    }
+
+    [Test]
     public async Task Send_without_a_value_sends_the_request_body_back()
     {
         var port = TestServer.FreePort();
