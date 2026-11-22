@@ -20,6 +20,10 @@ if (args is ["fam", ..])
 if (args is ["requests", ..])
     return await Meep2.Benchmarks.RequestRate.RunAsync(args);
 
+// What a flush costs while its module is busy (P2): dotnet run -c Release -- flush-wait [--modules 50] [--seconds 10]
+if (args is ["flush-wait", ..])
+    return await Meep2.Benchmarks.FlushWait.RunAsync(args);
+
 // Pick benchmarks from the command line, for example: dotnet run -c Release -- --filter '*Pipeline*'
 BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
 return 0;

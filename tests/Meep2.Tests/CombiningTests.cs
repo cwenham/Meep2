@@ -204,6 +204,41 @@ public class CombiningTests
         await Assert.That(lease.Closes).IsEqualTo(1);
     }
 
+    [Test]
+    public async Task A_flush_asked_for_while_a_message_is_handled_comes_before_the_next_message()
+    {
+        var events = new ConcurrentQueue<string>();
+        var builder = new PipelineBuilder("flushing");
+        builder.Chain(builder.AddSource(() => new Numbers(1, 2, 3)), builder.Add(() => new SlowFlusher(events)));
+        await using var pipeline = builder.Build();
+
+        await Wait.For(pipeline.RunAsync());
+
+        // The flush timer fires 1 ms into the first message's 150 ms; the flush waits for the gap after it (P2).
+        await Assert.That(string.Join(", ", events.Take(5))).IsEqualTo("start 1, end 1, flush, start 2, end 2");
+    }
+
+    // Asks to be flushed while it handles its first message, which takes a while.
+    private sealed class SlowFlusher(ConcurrentQueue<string> events) : AInflection<Number>
+    {
+        protected override async ValueTask HandleAsync(Number message, ModuleContext context, CancellationToken cancellationToken)
+        {
+            events.Enqueue($"start {message.Value}");
+            if (message.Value == 1)
+            {
+                context.FlushAfter(TimeSpan.FromMilliseconds(1));
+                await Task.Delay(150, cancellationToken);
+            }
+            events.Enqueue($"end {message.Value}");
+        }
+
+        protected internal override ValueTask FlushAsync(ModuleContext context, CancellationToken cancellationToken)
+        {
+            events.Enqueue("flush");
+            return ValueTask.CompletedTask;
+        }
+    }
+
     // Keeps everything, and doesn't flush.
     private sealed class Hoard : AInflection<Number>
     {

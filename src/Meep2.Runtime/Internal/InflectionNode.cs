@@ -167,28 +167,32 @@ internal sealed class InflectionNode : Node
     public void AbandonKept() => _context.AbandonKept();
 
     // Runs work between two messages, or at once if the loop is waiting for messages, and completes once it has run.
+    // Nothing polls (P2): whoever holds the module runs what's queued before letting go, then looks again.
     private async Task RunBetweenMessagesAsync(Func<ValueTask> work)
     {
         var job = new Job(work);
         _jobs.Enqueue(job);
         Interlocked.Increment(ref _jobCount);
-        while (!job.Done.Task.IsCompleted)
-        {
-            if (Interlocked.CompareExchange(ref _phase, Changing, Waiting) == Waiting)
-            {
-                try
-                {
-                    await RunJobsAsync().ConfigureAwait(false);
-                }
-                finally
-                {
-                    Volatile.Write(ref _phase, Waiting);
-                }
-                break;
-            }
-            await Task.WhenAny(job.Done.Task, Task.Delay(1)).ConfigureAwait(false);
-        }
+        await RunJobsIfWaitingAsync().ConfigureAwait(false);
         await job.Done.Task.ConfigureAwait(false);
+    }
+
+    // Runs what's queued if the loop is waiting for messages, and nobody else is running it, then looks again after
+    // letting go. Taking and letting go of the module are full fences, as is counting a job, so whoever lets go last
+    // sees every job counted before it did, and a job is never left queued with nobody to run it.
+    private async ValueTask RunJobsIfWaitingAsync()
+    {
+        while (Volatile.Read(ref _jobCount) != 0 && Interlocked.CompareExchange(ref _phase, Changing, Waiting) == Waiting)
+        {
+            try
+            {
+                await RunJobsAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _phase, Waiting);
+            }
+        }
     }
 
     // Runs what's waiting, on whichever thread holds the module: the loop, or a caller while the loop waits.
@@ -477,17 +481,20 @@ internal sealed class InflectionNode : Node
                 }
             }
 
-            // Nothing waiting: apply any change now, then let UpdateAsync apply them itself while the loop waits.
+            // Nothing waiting: apply any change now, then let UpdateAsync apply them itself while the loop waits,
+            // running any that came as it let go.
             if (Volatile.Read(ref _jobCount) != 0)
                 await RunJobsAsync().ConfigureAwait(false);
-            Volatile.Write(ref _phase, Waiting);
+            Interlocked.Exchange(ref _phase, Waiting);
+            await RunJobsIfWaitingAsync().ConfigureAwait(false);
             var more = await reader.WaitToReadAsync().ConfigureAwait(false);
             while (Interlocked.CompareExchange(ref _phase, Busy, Waiting) != Waiting)
                 await Task.Yield(); // a change is being applied
             if (!more)
                 break;
         }
-        Volatile.Write(ref _phase, Waiting); // so a change that arrives after the loop has ended is applied at once
+        Interlocked.Exchange(ref _phase, Waiting); // so a change that arrives after the loop has ended is applied at once
+        await RunJobsIfWaitingAsync().ConfigureAwait(false);
     }
 
     // The token a module gets: cancelled when the pipeline gives up, and when the message expires (Q12). A module
