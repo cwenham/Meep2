@@ -1,5 +1,4 @@
 using System.Security.Cryptography;
-using System.Text;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Crypto.Signers;
 
@@ -35,37 +34,46 @@ public sealed class PublicKey
                     throw new FormatException("its Ed25519 key isn't 32 bytes");
                 break;
             case "ecdsa-sha2-nistp256" or "ecdsa-sha2-nistp384" or "ecdsa-sha2-nistp521":
-            {
-                var curve = reader.ReadText();
-                if (curve != Type["ecdsa-sha2-".Length..])
-                    throw new FormatException($"its curve, {curve}, doesn't match its type, {Type}");
-                var point = reader.ReadBytes();
-                var size = FieldSize(Type);
-                if (point.Length != 1 + 2 * size || point[0] != 4)
-                    throw new FormatException("its point isn't an uncompressed point on its curve");
-                _ecdsa = new ECParameters
-                {
-                    Curve = Curve(Type),
-                    Q = new ECPoint { X = point[1..(1 + size)], Y = point[(1 + size)..] },
-                };
-                ECDsa.Create(_ecdsa).Dispose(); // importing checks the point is on the curve
+                _ecdsa = ReadEcdsa(ref reader, Type);
                 break;
-            }
             case Rsa:
-            {
-                var exponent = reader.ReadMpint();
-                var modulus = reader.ReadMpint();
-                if (modulus.Length * 8 < 2048)
-                    throw new FormatException($"it's an RSA key of {modulus.Length * 8} bits, and plugins need at least 2048");
-                _rsa = new RSAParameters { Exponent = exponent, Modulus = modulus };
+                _rsa = ReadRsa(ref reader);
                 break;
-            }
             default:
                 throw new FormatException(Type.StartsWith("sk-", StringComparison.Ordinal)
                     ? $"it's a security key ({Type}), which can't sign plugins yet"
                     : $"{Type} isn't a key type Meep knows. It knows ssh-ed25519, ecdsa-sha2-nistp256, 384 and 521, and ssh-rsa");
         }
         reader.End();
+    }
+
+    // An ECDSA key's curve and point, checked against its type and its curve.
+    private static ECParameters ReadEcdsa(ref SshReader reader, string type)
+    {
+        var curve = reader.ReadText();
+        if (curve != type["ecdsa-sha2-".Length..])
+            throw new FormatException($"its curve, {curve}, doesn't match its type, {type}");
+        var point = reader.ReadBytes();
+        var size = FieldSize(type);
+        if (point.Length != 1 + 2 * size || point[0] != 4)
+            throw new FormatException("its point isn't an uncompressed point on its curve");
+        var parameters = new ECParameters
+        {
+            Curve = Curve(type),
+            Q = new ECPoint { X = point[1..(1 + size)], Y = point[(1 + size)..] },
+        };
+        ECDsa.Create(parameters).Dispose(); // importing checks the point is on the curve
+        return parameters;
+    }
+
+    // An RSA key's exponent and modulus, of at least 2048 bits.
+    private static RSAParameters ReadRsa(ref SshReader reader)
+    {
+        var exponent = reader.ReadMpint();
+        var modulus = reader.ReadMpint();
+        if (modulus.Length * 8 < 2048)
+            throw new FormatException($"it's an RSA key of {modulus.Length * 8} bits, and plugins need at least 2048");
+        return new RSAParameters { Exponent = exponent, Modulus = modulus };
     }
 
     /// <summary>A label for the key, such as its owner's name. Only for display: the key itself is what's checked.</summary>
@@ -93,18 +101,7 @@ public sealed class PublicKey
     /// Reads one line of an allowed-signers file: <c>name [options] type base64 [comment]</c>. Of the options, only
     /// <c>namespaces</c> is used.
     /// </summary>
-    public static PublicKey Parse(string line)
-    {
-        ArgumentNullException.ThrowIfNull(line);
-        var words = Words(line.Trim());
-        if (words.Count < 3)
-            throw new FormatException($"A key is written as: name type base64, as in alice ssh-ed25519 AAAAC3Nz…. This isn't one: {line.Trim()}");
-        var name = words[0];
-        var options = words.Count > 3 && !LooksLikeType(words[1]) ? words[1] : null;
-        var at = options is null ? 1 : 2;
-        var key = Parse(name, string.Join(' ', words.Skip(at)));
-        return options is null ? key : key.WithOptions(options);
-    }
+    public static PublicKey Parse(string line) => AllowedSignersLine.Parse(line);
 
     /// <summary>Reads a key as a <c>.pub</c> file or GitHub has it, <c>type base64 [comment]</c>, and gives it a name.</summary>
     public static PublicKey Parse(string name, string key)
@@ -163,44 +160,50 @@ public sealed class PublicKey
             var algorithm = reader.ReadText();
             var signed = reader.ReadBytes();
             reader.End();
-            switch (Type)
+            return Type switch
             {
-                case Ed25519 when algorithm == Ed25519:
-                {
-                    var verifier = new Ed25519Signer();
-                    verifier.Init(false, new Ed25519PublicKeyParameters(_ed25519!));
-                    verifier.BlockUpdate(data, 0, data.Length);
-                    return verifier.VerifySignature(signed);
-                }
-                case Rsa when algorithm is "rsa-sha2-256" or "rsa-sha2-512":
-                {
-                    using var rsa = RSA.Create(_rsa);
-                    var hash = algorithm == "rsa-sha2-256" ? HashAlgorithmName.SHA256 : HashAlgorithmName.SHA512;
-                    return rsa.VerifyData(data, signed, hash, RSASignaturePadding.Pkcs1);
-                }
-                case not (Ed25519 or Rsa) when algorithm == Type:
-                {
-                    var size = FieldSize(Type);
-                    var numbers = new SshReader(signed);
-                    var r = numbers.ReadMpint();
-                    var s = numbers.ReadMpint();
-                    numbers.End();
-                    if (r.Length > size || s.Length > size)
-                        return false;
-                    var fixedSize = new byte[2 * size];
-                    r.CopyTo(fixedSize, size - r.Length);
-                    s.CopyTo(fixedSize, 2 * size - s.Length);
-                    using var ecdsa = ECDsa.Create(_ecdsa);
-                    return ecdsa.VerifyData(data, fixedSize, Hash(Type), DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
-                }
-                default:
-                    return false;
-            }
+                Ed25519 when algorithm == Ed25519 => VerifyEd25519(data, signed),
+                Rsa when algorithm is "rsa-sha2-256" or "rsa-sha2-512" => VerifyRsa(data, signed, algorithm),
+                not (Ed25519 or Rsa) when algorithm == Type => VerifyEcdsa(data, signed),
+                _ => false,
+            };
         }
         catch (FormatException)
         {
             return false;
         }
+    }
+
+    private bool VerifyEd25519(byte[] data, byte[] signed)
+    {
+        var verifier = new Ed25519Signer();
+        verifier.Init(false, new Ed25519PublicKeyParameters(_ed25519!));
+        verifier.BlockUpdate(data, 0, data.Length);
+        return verifier.VerifySignature(signed);
+    }
+
+    private bool VerifyRsa(byte[] data, byte[] signed, string algorithm)
+    {
+        using var rsa = RSA.Create(_rsa);
+        var hash = algorithm == "rsa-sha2-256" ? HashAlgorithmName.SHA256 : HashAlgorithmName.SHA512;
+        return rsa.VerifyData(data, signed, hash, RSASignaturePadding.Pkcs1);
+    }
+
+    // An ECDSA signature is two numbers, r and s, which .NET takes as one fixed-size field each.
+    private bool VerifyEcdsa(byte[] data, byte[] signed)
+    {
+        var size = FieldSize(Type);
+        var numbers = new SshReader(signed);
+        var r = numbers.ReadMpint();
+        var s = numbers.ReadMpint();
+        numbers.End();
+        if (r.Length > size || s.Length > size)
+            return false;
+        var fixedSize = new byte[2 * size];
+        r.CopyTo(fixedSize, size - r.Length);
+        s.CopyTo(fixedSize, 2 * size - s.Length);
+        using var ecdsa = ECDsa.Create(_ecdsa);
+        return ecdsa.VerifyData(data, fixedSize, Hash(Type), DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
     }
 
     /// <summary>The key's line in an allowed-signers file: <c>name type base64</c>.</summary>
@@ -227,43 +230,10 @@ public sealed class PublicKey
         _ => HashAlgorithmName.SHA512,
     };
 
-    private static bool LooksLikeType(string word) =>
+    /// <summary>The same key, allowed to sign only for <paramref name="namespaces"/>, or for any if null.</summary>
+    internal PublicKey WithNamespaces(IReadOnlyList<string>? namespaces) => new(Name, Blob) { Namespaces = namespaces };
+
+    /// <summary>Whether a word is a key type, rather than an allowed-signers line's options.</summary>
+    internal static bool IsType(string word) =>
         word is Ed25519 or Rsa || word.StartsWith("ecdsa-", StringComparison.Ordinal) || word.StartsWith("sk-", StringComparison.Ordinal);
-
-    private PublicKey WithOptions(string options)
-    {
-        string[]? namespaces = null;
-        foreach (var option in Split(options, ','))
-        {
-            if (option.StartsWith("namespaces=", StringComparison.OrdinalIgnoreCase))
-                namespaces = option["namespaces=".Length..].Trim('"').Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        }
-        return new PublicKey(Name, Blob) { Namespaces = namespaces };
-    }
-
-    private static List<string> Words(string text) => Split(text, ' ');
-
-    // Splits at a separator (or any space, for ' '), keeping quoted text whole, with its quotes.
-    private static List<string> Split(string text, char separator)
-    {
-        var parts = new List<string>();
-        var current = new StringBuilder();
-        var quoted = false;
-        foreach (var c in text)
-        {
-            if (c == '"')
-                quoted = !quoted;
-            if (!quoted && (c == separator || (separator == ' ' && char.IsWhiteSpace(c))))
-            {
-                if (current.Length > 0)
-                    parts.Add(current.ToString());
-                current.Clear();
-                continue;
-            }
-            current.Append(c);
-        }
-        if (current.Length > 0)
-            parts.Add(current.ToString());
-        return parts;
-    }
 }
