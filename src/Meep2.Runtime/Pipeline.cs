@@ -680,19 +680,8 @@ public sealed class Pipeline : IAsyncDisposable
     /// <summary>Stamps a message as emitted by <paramref name="from"/> and sends it downstream.</summary>
     /// <param name="emitter">The module, or its inflection, that the message records as emitting it.</param>
     /// <param name="defaultParent">The parent for a new message that doesn't name its own.</param>
-    internal void Emit(Node from, ModuleInfo emitter, Message message, Message? defaultParent)
-    {
-        List<TrackingScope>? created = null;
-        Stamper.Stamp(message, emitter, from, defaultParent, this, ref created);
-        from.CountEmitted();
-        if (from is SourceNode && message is not ErrorMessage)
-            _sourceWindow?.Add(message.Id);
-        if (Telemetry.Tracing)
-            Telemetry.Emitted(from, emitter, message);
-        from.Tapped(message);
-        Deliver(from, message);
-        ScopeSet.ReleaseAll(created);
-    }
+    internal void Emit(Node from, ModuleInfo emitter, Message message, Message? defaultParent) =>
+        StampAndDeliver(from, emitter, message, defaultParent, scope: null);
 
     /// <summary>Emits a new message carrying a lease, which stays open while the message or its descendants are in flight.</summary>
     /// <param name="holdUntilDone">
@@ -704,23 +693,13 @@ public sealed class Pipeline : IAsyncDisposable
         if (message.IsStamped)
             throw new ArgumentException("Only a new message can carry a lease, not one that has been emitted before.", nameof(message));
 
-        List<TrackingScope>? created = null;
-        Stamper.Stamp(message, emitter, from, defaultParent, this, ref created);
         if (!lease.IsAttached)
         {
             // A failure while the lease closes is reported as coming from the module that first emitted it.
             var maker = from.Info;
             lease.Attach((closing, exception) => ReportFault(maker, $"Couldn't close lease {closing.Number}", exception));
         }
-        message.Tracking = ScopeSet.Append(message.Tracking, lease.Scope);
-        from.CountEmitted();
-        if (from is SourceNode && message is not ErrorMessage)
-            _sourceWindow?.Add(message.Id);
-        if (Telemetry.Tracing)
-            Telemetry.Emitted(from, emitter, message);
-        from.Tapped(message);
-        Deliver(from, message);
-        ScopeSet.ReleaseAll(created);
+        StampAndDeliver(from, emitter, message, defaultParent, lease.Scope);
 
         // The module that made the lease held it until now, so it couldn't close before it was emitted. One that
         // handles messages keeps holding it until it has finished with the message it's on.
@@ -739,10 +718,23 @@ public sealed class Pipeline : IAsyncDisposable
         if (message.IsStamped)
             throw new ArgumentException("Only a new message can be tracked, not one that has been emitted before.", nameof(message));
 
+        var outcome = new OutcomeScope();
+        StampAndDeliver(from, emitter, message, defaultParent, outcome);
+
+        // Any new error was settled first, so an error that went nowhere is counted in the outcome.
+        outcome.Release();
+        return outcome.Task;
+    }
+
+    // Stamps, counts, traces and taps a message, then sends it downstream. A scope given here (a lease's, or a tracked
+    // emit's outcome) is added to what the message inherits from its parents. Scopes made for a new error are released
+    // once delivery is done.
+    private void StampAndDeliver(Node from, ModuleInfo emitter, Message message, Message? defaultParent, TrackingScope? scope)
+    {
         List<TrackingScope>? created = null;
         Stamper.Stamp(message, emitter, from, defaultParent, this, ref created);
-        var outcome = new OutcomeScope();
-        message.Tracking = ScopeSet.Append(message.Tracking, outcome);
+        if (scope is not null)
+            message.Tracking = ScopeSet.Append(message.Tracking, scope);
         from.CountEmitted();
         if (from is SourceNode && message is not ErrorMessage)
             _sourceWindow?.Add(message.Id);
@@ -750,11 +742,7 @@ public sealed class Pipeline : IAsyncDisposable
             Telemetry.Emitted(from, emitter, message);
         from.Tapped(message);
         Deliver(from, message);
-
-        // Settle any new error first, so an error that went nowhere is counted in the outcome.
         ScopeSet.ReleaseAll(created);
-        outcome.Release();
-        return outcome.Task;
     }
 
     /// <summary>Sends a message to each module <paramref name="from"/> feeds, or past one when it doesn't take it.</summary>
