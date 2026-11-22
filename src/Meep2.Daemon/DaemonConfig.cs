@@ -58,88 +58,20 @@ public sealed record DaemonConfig
         var full = System.IO.Path.GetFullPath(path);
         var folder = System.IO.Path.GetDirectoryName(full)!;
         var settings = MeeplangSettings.Read(MeeplangParser.Parse(new SourceFile(full, File.ReadAllText(full))));
-        var problems = new List<string>();
-        void Problem(SourceSpan span, string message) => problems.Add($"{full}({span.Line},{span.Column}): error: {message}");
-
-        var config = new DaemonConfig();
-        foreach (var (name, setting) in settings.Defaults)
-        {
-            switch (name)
-            {
-                case "otlp" when setting.Value is string otlp && Uri.TryCreate(otlp, UriKind.Absolute, out _):
-                    config = config with { Otlp = otlp };
-                    break;
-                case "otlp":
-                    Problem(setting.Span, "otlp is a collector's address, such as \"http://localhost:4318\".");
-                    break;
-                case "sample" when Share(setting.Value) is { } share:
-                    config = config with { Sample = share };
-                    break;
-                case "sample":
-                    Problem(setting.Span, "sample is the share of traces to record, more than 0 and at most 1, such as 0.1.");
-                    break;
-                case "meep-hosts" when setting.Value is string list
-                    && list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) is { Length: > 0 } hosts
-                    && hosts.All(h => Meep2.Modules.MeepHosts.Named(h) is not null):
-                    config = config with { MeepHosts = hosts };
-                    break;
-                case "meep-hosts":
-                    Problem(setting.Span, "meep-hosts is hosts known to be Meep, separated by commas, each a host or a host and port, as in \"studio.local, 10.0.0.5:8080\".");
-                    break;
-                case "meep-host-public" when setting.Value is bool open:
-                    config = config with { MeepHostPublic = open };
-                    break;
-                case "meep-host-public":
-                    Problem(setting.Span, "meep-host-public is true or false: whether Listens tell clients anywhere this daemon's ID, not only those on private addresses.");
-                    break;
-                default:
-                    Problem(setting.Span, $"The daemon has no setting called {name}. Its settings are otlp, sample, meep-hosts and meep-host-public.");
-                    break;
-            }
-        }
-
-        var start = new List<DaemonStart>();
-        foreach (var line in settings.Lines)
-        {
-            if (line.Word != "Start")
-            {
-                Problem(line.Span, $"The daemon's settings have Start lines, not {line.Word}, as in Start \"ticker.meep\".");
-                continue;
-            }
-            if (line.Value?.Value is not string file)
-            {
-                Problem(line.Span, "Start needs a pipeline file, as in Start \"ticker.meep\".");
-                continue;
-            }
-            bool Flag(string name)
-            {
-                if (!line.Named.TryGetValue(name, out var value))
-                    return false;
-                if (value.Value is bool flag)
-                    return flag;
-                Problem(value.Span, $"{name} is true or false.");
-                return false;
-            }
-            foreach (var (name, value) in line.Named)
-            {
-                if (name is not ("watch" or "dev"))
-                    Problem(value.Span, $"Start takes watch and dev, not {name}.");
-            }
-            start.Add(new DaemonStart(Resolve(file, folder), Flag("dev"), Flag("watch")));
-        }
-
-        if (problems.Count > 0)
-            throw new FormatException(string.Join(Environment.NewLine, problems));
+        var reader = new DaemonConfigReader(full, folder);
+        var config = reader.Defaults(settings.Defaults);
+        var start = reader.Starts(settings.Lines);
+        reader.ThrowIfProblems();
         return config with { Start = start };
     }
 
-    private static double? Share(object? value) =>
+    internal static double? Share(object? value) =>
         value is not null && double.TryParse(Convert.ToString(value, CultureInfo.InvariantCulture), NumberStyles.Float, CultureInfo.InvariantCulture, out var share) && share is > 0 and <= 1
             ? share
             : null;
 
     // ~ is the home folder, and a relative path is from the settings file's folder.
-    private static string Resolve(string file, string folder)
+    internal static string Resolve(string file, string folder)
     {
         return System.IO.Path.GetFullPath(HomeFolder.Expand(file), folder);
     }
