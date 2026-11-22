@@ -7,7 +7,7 @@ namespace Meep2.Runtime.Internal;
 /// The context for a module that handles messages. One instance is reused for every message, which works because
 /// the module handles one message at a time.
 /// </summary>
-internal sealed class InflectionContext(InflectionNode node) : ModuleContext
+internal sealed class InflectionContext(InflectionNode node) : NodeContext<InflectionNode>(node)
 {
     private Message? _current;
     private ModuleInfo? _emitter;
@@ -24,29 +24,11 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
     private List<Lease>? _made;
 
     // While handling a message, the inflection doing the work, so the messages it emits record it.
-    public override ModuleInfo Module => _emitter ?? node.Info;
+    public override ModuleInfo Module => _emitter ?? Node.Info;
 
-    public override CancellationToken Stopping => node.Pipeline.StoppingToken;
+    public override Outlet Outlet => new NodeOutlet(Node, Module);
 
-    public override string PipelineName => node.Pipeline.Name;
-
-    public override System.Collections.Concurrent.ConcurrentDictionary<string, object> Shared => node.Pipeline.Shared;
-
-    public override Outlet Outlet => new NodeOutlet(node, Module);
-
-    public override void CountBytes(long received, long sent) => node.CountBytes(received, sent);
-
-    public override void Listening(string? address) => node.ListeningAt = address;
-
-    public override string? HostId => node.Pipeline.Options.HostId;
-
-    public override string? Origin => node.Origin;
-
-    public override string? TraceParent => Telemetry.Tracing ? Telemetry.TraceParent(node, _current) : null;
-
-    public override Tally Arrival(string from) => node.ArrivalFrom(from);
-
-    public override Tally Destination(string endpoint) => node.DestinationAt(endpoint);
+    public override string? TraceParent => Telemetry.Tracing ? Telemetry.TraceParent(Node, _current) : null;
 
     /// <summary>Whether the module emitted the message it was given, passing it on unchanged.</summary>
     public bool PassedOn => _passedOn;
@@ -55,7 +37,7 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
 
     public override bool Finishing => _flushing && _finishing;
 
-    public override int BufferSize => node.Capacity;
+    public override int BufferSize => Node.Capacity;
 
     public int KeptCount
     {
@@ -100,7 +82,7 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
             if (!_kept.Add(message))
                 return;
         }
-        node.Pipeline.Keep(message);
+        Node.Pipeline.Keep(message);
     }
 
     public override void LetGo(Message message)
@@ -110,10 +92,10 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
         lock (_kept)
             removed = _kept.Count > 0 && _kept.Remove(message);
         if (removed)
-            node.Pipeline.LetGo(message, MessageOutcome.Completed);
+            Node.Pipeline.LetGo(message, MessageOutcome.Completed);
     }
 
-    public override void FlushAfter(TimeSpan delay) => node.FlushAfter(delay);
+    public override void FlushAfter(TimeSpan delay) => Node.FlushAfter(delay);
 
     /// <summary>Lets go of everything kept, as the pipeline halts with nothing left to make of it.</summary>
     public void AbandonKept()
@@ -125,7 +107,7 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
             _kept.Clear();
         }
         foreach (var message in kept)
-            node.Pipeline.LetGo(message, MessageOutcome.Abandoned);
+            Node.Pipeline.LetGo(message, MessageOutcome.Abandoned);
     }
 
     // A message made from kept messages carries them on, so the module stops keeping them once it's emitted.
@@ -145,7 +127,7 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
             }
         }
         foreach (var parent in released ?? [])
-            node.Pipeline.LetGo(parent, MessageOutcome.Completed);
+            Node.Pipeline.LetGo(parent, MessageOutcome.Completed);
     }
 
     public void End()
@@ -173,15 +155,15 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
         {
             // Passing the message on unchanged. A passthrough module's messages have already gone on.
             _passedOn = true;
-            if (!node.IsPassthrough)
+            if (!Node.IsPassthrough)
             {
-                node.CountPassed();
-                node.Tapped(message);
-                node.Pipeline.Deliver(node, message);
+                Node.CountPassed();
+                Node.Tapped(message);
+                Node.Pipeline.Deliver(Node, message);
             }
             return;
         }
-        node.Pipeline.Emit(node, Module, message, defaultParent: current);
+        Node.Pipeline.Emit(Node, Module, message, defaultParent: current);
         LetGoOfParents(message);
         LetGo(message); // a message it kept, passed on as it is
     }
@@ -191,7 +173,7 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
         ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(lease);
         var current = Current();
-        node.Pipeline.EmitLeased(node, Module, message, lease, defaultParent: current, holdUntilDone: _made ??= []);
+        Node.Pipeline.EmitLeased(Node, Module, message, lease, defaultParent: current, holdUntilDone: _made ??= []);
         LetGoOfParents(message);
     }
 
@@ -199,7 +181,7 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
     {
         ArgumentNullException.ThrowIfNull(message);
         var current = Current();
-        var outcome = node.Pipeline.EmitTracked(node, Module, message, defaultParent: current);
+        var outcome = Node.Pipeline.EmitTracked(Node, Module, message, defaultParent: current);
         LetGoOfParents(message);
         return outcome;
     }
@@ -211,9 +193,9 @@ internal sealed class InflectionContext(InflectionNode node) : ModuleContext
     public void EmitFailure(Message message, Exception exception)
     {
         var error = new ErrorMessage { Error = exception.Message, Exception = exception, Parents = new Parents(message) };
-        node.Pipeline.Emit(node, Module, error, defaultParent: message);
+        Node.Pipeline.Emit(Node, Module, error, defaultParent: message);
     }
 
     private InvalidOperationException NotHandling() =>
-        new($"{node.Info} tried to emit while it wasn't handling a message. Modules can only emit from HandleAsync and FlushAsync.");
+        new($"{Node.Info} tried to emit while it wasn't handling a message. Modules can only emit from HandleAsync and FlushAsync.");
 }
