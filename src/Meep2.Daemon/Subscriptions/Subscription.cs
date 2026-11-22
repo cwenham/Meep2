@@ -41,6 +41,12 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
     /// <summary>The totals for a pipeline or the host, by name.</summary>
     public static readonly string[] TotalNames = [.. ModuleCounts, "sourced", "bytesReceived", "bytesSent"];
 
+    // Where some counts are in ModuleCounts and TotalNames.
+    internal const int Emitted = 2;
+    internal const int Sourced = 12;
+    internal const int BytesReceived = 13;
+    internal const int BytesSent = 14;
+
     private readonly Lock _planning = new();
     private SubscriptionPlan _plan = plan;
     private TaskCompletionSource _input = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -225,15 +231,15 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
     {
         var wanted = new HashSet<Slot>();
         if (current.List is { } list)
-            wanted.Add(new Slot("list", "", list));
+            wanted.Add(new Slot(UpdateSection.List, "", list));
         if (current.Host is { } hostRate)
-            wanted.Add(new Slot("host", "", hostRate));
+            wanted.Add(new Slot(UpdateSection.Host, "", hostRate));
         if (current.Runtime is { } runtime)
-            wanted.Add(new Slot("runtime", "", runtime));
+            wanted.Add(new Slot(UpdateSection.Runtime, "", runtime));
         foreach (var (entry, pipeline) in current.Pipelines)
         {
             if (pipeline.Totals is { } totals)
-                wanted.Add(new Slot("totals", entry, totals));
+                wanted.Add(new Slot(UpdateSection.Totals, entry, totals));
             foreach (var kind in SubscriptionPlan.PerModule)
             {
                 foreach (var rate in pipeline.RatesOf(kind))
@@ -266,18 +272,18 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
             }
             if (pipeline.Totals is null)
                 sent.Totals.Clear();
-            Prune(sent.Modules, "modules");
-            Prune(sent.Links, "links");
-            Prune(sent.Bytes, "bytes");
-            Prune(sent.Timing, "timing");
-            Prune(sent.Arrivals, "arrivals");
-            Prune(sent.Destinations, "destinations");
-            if (!pipeline.Wants("destinations"))
+            Prune(sent.Modules, UpdateSection.Modules);
+            Prune(sent.Links, UpdateSection.Links);
+            Prune(sent.Bytes, UpdateSection.Bytes);
+            Prune(sent.Timing, UpdateSection.Timing);
+            Prune(sent.Arrivals, UpdateSection.Arrivals);
+            Prune(sent.Destinations, UpdateSection.Destinations);
+            if (!pipeline.Wants(UpdateSection.Destinations))
                 sent.Peers.Clear();
-            if (!pipeline.Wants("arrivals"))
+            if (!pipeline.Wants(UpdateSection.Arrivals))
                 sent.Clients.Clear();
 
-            void Prune<T>(Dictionary<string, T> values, string kind)
+            void Prune<T>(Dictionary<string, T> values, UpdateSection kind)
             {
                 foreach (var key in values.Keys.Where(k => pipeline.RateOf(kind, k) is null).ToList())
                     values.Remove(key);
@@ -307,11 +313,11 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         var sums = new Dictionary<string, long[]>(StringComparer.Ordinal); // totals worked out for this update
         var reads = new Reads();
 
-        if (due.Any(s => s.What == "list"))
+        if (due.Any(s => s.What == UpdateSection.List))
             update.List = List(listed);
-        if (due.Any(s => s.What == "host"))
+        if (due.Any(s => s.What == UpdateSection.Host))
             update.Host = Host(listed, sums, reads);
-        if (due.Any(s => s.What == "runtime"))
+        if (due.Any(s => s.What == UpdateSection.Runtime))
             update.Runtime = RuntimeChanges();
 
         // Pipelines that have gone from the daemon, for those that had been sent.
@@ -351,25 +357,25 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                 var atRate = read with { Every = slot.Every };
                 switch (slot.What)
                 {
-                    case "totals":
+                    case UpdateSection.Totals:
                         if (Changes(TotalsOf(hosted, pipeline, sums, reads), sent.Totals) is { Count: > 0 } totals)
                             read.Part.Totals = totals;
                         break;
-                    case "modules":
-                        CountEach(atRate, "modules", sent.Modules, Keyed(atRate), static (module, _) => module.Counts);
+                    case UpdateSection.Modules:
+                        CountEach(atRate, UpdateSection.Modules, sent.Modules, Keyed(atRate), static (module, _) => module.Counts);
                         break;
-                    case "links":
-                        CountEach(atRate, "links", sent.Links, pipeline.Links().Select(link => (link.Key, link)), static (link, _) => [link.Carried, link.Errors]);
+                    case UpdateSection.Links:
+                        CountEach(atRate, UpdateSection.Links, sent.Links, pipeline.Links().Select(link => (link.Key, link)), static (link, _) => [link.Carried, link.Errors]);
                         break;
-                    case "bytes":
+                    case UpdateSection.Bytes:
                         // Only modules that talk to the network have any.
-                        CountEach(atRate, "bytes", sent.Bytes, Keyed(atRate), static (module, sentBefore) =>
+                        CountEach(atRate, UpdateSection.Bytes, sent.Bytes, Keyed(atRate), static (module, sentBefore) =>
                             module.Traffic == default && !sentBefore ? null : [module.Traffic.Received, module.Traffic.Sent]);
                         break;
-                    case "timing":
+                    case UpdateSection.Timing:
                         Timing(atRate);
                         break;
-                    case "arrivals" or "destinations":
+                    case UpdateSection.Arrivals or UpdateSection.Destinations:
                         Places(atRate, slot.What);
                         break;
                 }
@@ -397,7 +403,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         public PipelinePart Part => Update.Pipeline(Name);
 
         /// <summary>Whether a module's or link's <paramref name="kind"/> is wanted at this rate.</summary>
-        public bool AtRate(string kind, string key) => Wanted.RateOf(kind, key) == Every;
+        public bool AtRate(UpdateSection kind, string key) => Wanted.RateOf(kind, key) == Every;
     }
 
     // Each module with a key, and its counts read for this update.
@@ -412,7 +418,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
 
     // The counts of each module or link wanted at this rate, if they changed, and those sent before that have gone.
     // countsOf is given whether the key's counts were sent before, and returns null to send nothing for it yet.
-    private static void CountEach<T>(PipelineRead read, string kind, Dictionary<string, long[]> sent, IEnumerable<(string Key, T Item)> items, Func<T, bool, long[]?> countsOf)
+    private static void CountEach<T>(PipelineRead read, UpdateSection kind, Dictionary<string, long[]> sent, IEnumerable<(string Key, T Item)> items, Func<T, bool, long[]?> countsOf)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (key, item) in items)
@@ -432,7 +438,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         var seen = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (key, module) in Keyed(read))
         {
-            if (!read.AtRate("timing", key))
+            if (!read.AtRate(UpdateSection.Timing, key))
                 continue;
             seen.Add(key);
             // The busy time moves whenever the histogram does, and costs far less to read than the histogram.
@@ -443,7 +449,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
             sent[key] = busy;
             (read.Part.Timing ??= []).Add((key, times));
         }
-        foreach (var key in sent.Keys.Where(k => !seen.Contains(k) && read.AtRate("timing", k)).ToList())
+        foreach (var key in sent.Keys.Where(k => !seen.Contains(k) && read.AtRate(UpdateSection.Timing, k)).ToList())
         {
             sent.Remove(key);
             (read.Part.Timing ??= []).Add((key, null));
@@ -455,9 +461,9 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
     // being quiet goes (null), and is named in the pipeline's folded, so a client moves its counts into *'s rather than
     // seeing *'s rate jump (Q215). For arrivals, the pipeline's clients names clients outside Meep, by address, once a
     // name is found (Q220); for destinations, its peers says which are Meep hosts, by ID.
-    private static void Places(PipelineRead read, string kind)
+    private static void Places(PipelineRead read, UpdateSection kind)
     {
-        var arrivals = kind == "arrivals";
+        var arrivals = kind == UpdateSection.Arrivals;
         var sent = read.Sent;
         var record = arrivals ? sent.Arrivals : sent.Destinations;
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -537,7 +543,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
     }
 
     // A module's or link's counts, if any changed since they were last sent.
-    private static void Counts(PipelineRead read, string kind, string key, long[] now, Dictionary<string, long[]> sent)
+    private static void Counts(PipelineRead read, UpdateSection kind, string key, long[] now, Dictionary<string, long[]> sent)
     {
         if (sent.TryGetValue(key, out var before))
         {
@@ -553,7 +559,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
     }
 
     // Modules or links that were sent at this rate and aren't there now, as when an edit removed them.
-    private static void Gone(PipelineRead read, string kind, Dictionary<string, long[]> sent, HashSet<string> seen)
+    private static void Gone(PipelineRead read, UpdateSection kind, Dictionary<string, long[]> sent, HashSet<string> seen)
     {
         foreach (var key in sent.Keys.Where(k => !seen.Contains(k) && read.AtRate(kind, k)).ToList())
         {
@@ -573,9 +579,9 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
             for (var i = 0; i < read.Counts.Length; i++)
                 totals[i] += read.Counts[i];
             if (read.Source)
-                totals[12] += read.Counts[2];
-            totals[13] += read.Traffic.Received;
-            totals[14] += read.Traffic.Sent;
+                totals[Sourced] += read.Counts[Emitted];
+            totals[BytesReceived] += read.Traffic.Received;
+            totals[BytesSent] += read.Traffic.Sent;
         }
         return sums[hosted.Name] = totals;
     }
@@ -720,14 +726,14 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         writer.Property("clock", HostIdentity.Microseconds(DateTimeOffset.UtcNow));
         writer.Name("counts");
         writer.StartMap(6);
-        Names(writer, "modules", ModuleCounts);
-        Names(writer, "links", LinkCounts);
-        Names(writer, "bytes", ByteCounts);
-        Names(writer, "arrivals", PeerCounts);
-        Names(writer, "destinations", PeerCounts);
-        Names(writer, "totals", TotalNames);
+        Names(writer, SubscriptionPlan.NameOf(UpdateSection.Modules), ModuleCounts);
+        Names(writer, SubscriptionPlan.NameOf(UpdateSection.Links), LinkCounts);
+        Names(writer, SubscriptionPlan.NameOf(UpdateSection.Bytes), ByteCounts);
+        Names(writer, SubscriptionPlan.NameOf(UpdateSection.Arrivals), PeerCounts);
+        Names(writer, SubscriptionPlan.NameOf(UpdateSection.Destinations), PeerCounts);
+        Names(writer, SubscriptionPlan.NameOf(UpdateSection.Totals), TotalNames);
         writer.EndMap();
-        writer.Name("timing");
+        writer.Name(SubscriptionPlan.NameOf(UpdateSection.Timing));
         writer.StartMap(2);
         writer.Property("scale", (long)HandlingTimes.Empty.Scale);
         writer.Property("unit", "s");
@@ -811,7 +817,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
     }
 
     /// <summary>One thing asked for: what, for which pipeline entry (or none), at what rate.</summary>
-    private readonly record struct Slot(string What, string Entry, TimeSpan Every);
+    private readonly record struct Slot(UpdateSection What, string Entry, TimeSpan Every);
 
     /// <summary>What was last sent for one pipeline.</summary>
     private sealed class PipelineSent(HostedPipeline hosted)
@@ -862,11 +868,11 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
 
         public List<(string Name, long Value)>? Totals { get; set; }
 
-        public Dictionary<string, List<(string Key, long[]? Now, long[]? Before)>> Counts { get; } = new(StringComparer.Ordinal);
+        public Dictionary<UpdateSection, List<(string Key, long[]? Now, long[]? Before)>> Counts { get; } = [];
 
         public List<(string Key, HandlingTimes? Times)>? Timing { get; set; }
 
-        public Dictionary<string, List<(string Key, List<(string Place, long[]? Now, long[]? Before)>? Places)>> Places { get; } = new(StringComparer.Ordinal);
+        public Dictionary<UpdateSection, List<(string Key, List<(string Place, long[]? Now, long[]? Before)>? Places)>> Places { get; } = [];
 
         public List<(string Endpoint, string? Id)>? Peers { get; set; }
 
@@ -882,14 +888,14 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
             places.Add(place);
         }
 
-        public void AddPlaces(string kind, string key, List<(string Place, long[]? Now, long[]? Before)>? places)
+        public void AddPlaces(UpdateSection kind, string key, List<(string Place, long[]? Now, long[]? Before)>? places)
         {
             if (!Places.TryGetValue(kind, out var list))
                 Places[kind] = list = [];
             list.Add((key, places));
         }
 
-        public void Add(string kind, string key, long[]? now, long[]? before)
+        public void Add(UpdateSection kind, string key, long[]? now, long[]? before)
         {
             if (!Counts.TryGetValue(kind, out var list))
                 Counts[kind] = list = [];
@@ -931,7 +937,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                 writer.Property("held", held);
             if (List is not null)
             {
-                writer.Name("list");
+                writer.Name(SubscriptionPlan.NameOf(UpdateSection.List));
                 writer.StartMap(List.Count);
                 foreach (var (name, summary) in List.OrderBy(l => l.Key, StringComparer.Ordinal))
                 {
@@ -945,11 +951,11 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
             }
             if (Host is { } hostPart)
             {
-                writer.Name("host");
+                writer.Name(SubscriptionPlan.NameOf(UpdateSection.Host));
                 writer.StartMap((hostPart.Totals is null ? 0 : 1) + (hostPart.States is null ? 0 : 1) + (hostPart.Listens is null ? 0 : 1) + (hostPart.Sends is null ? 0 : 1));
                 if (hostPart.Totals is { } totals)
                 {
-                    writer.Name("totals");
+                    writer.Name(SubscriptionPlan.NameOf(UpdateSection.Totals));
                     WriteNamed(writer, totals);
                 }
                 if (hostPart.States is { } states)
@@ -998,7 +1004,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
             }
             if (Runtime is not null)
             {
-                writer.Name("runtime");
+                writer.Name(SubscriptionPlan.NameOf(UpdateSection.Runtime));
                 writer.StartMap(Runtime.Count);
                 foreach (var (name, metric) in Runtime.OrderBy(r => r.Key, StringComparer.Ordinal))
                 {
@@ -1039,17 +1045,17 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                     }
                     if (part.Totals is { } totals)
                     {
-                        writer.Name("totals");
+                        writer.Name(SubscriptionPlan.NameOf(UpdateSection.Totals));
                         WriteNamed(writer, totals);
                     }
                     foreach (var (kind, counts) in part.Counts)
                     {
-                        writer.Name(kind);
+                        writer.Name(SubscriptionPlan.NameOf(kind));
                         WriteChanges(writer, counts);
                     }
                     foreach (var (kind, modules) in part.Places)
                     {
-                        writer.Name(kind);
+                        writer.Name(SubscriptionPlan.NameOf(kind));
                         writer.StartMap(modules.Count);
                         foreach (var (key, places) in modules)
                         {
@@ -1101,7 +1107,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                     }
                     if (part.Timing is { } timing)
                     {
-                        writer.Name("timing");
+                        writer.Name(SubscriptionPlan.NameOf(UpdateSection.Timing));
                         writer.StartMap(timing.Count);
                         foreach (var (key, times) in timing)
                         {

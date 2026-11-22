@@ -21,6 +21,18 @@ namespace Meep2.Tests;
 /// </summary>
 public class SubscriptionTests
 {
+    [Test]
+    public async Task Sections_and_totals_are_named_where_the_code_reaches_them()
+    {
+        foreach (var section in Enum.GetValues<UpdateSection>())
+            await Assert.That(SubscriptionPlan.NameOf(section)).IsEqualTo(section.ToString().ToLowerInvariant());
+        await Assert.That(Subscription.ModuleCounts[Subscription.Emitted]).IsEqualTo("emitted");
+        await Assert.That(Subscription.TotalNames[Subscription.Sourced]).IsEqualTo("sourced");
+        await Assert.That(Subscription.TotalNames[Subscription.BytesReceived]).IsEqualTo("bytesReceived");
+        await Assert.That(Subscription.TotalNames[Subscription.BytesSent]).IsEqualTo("bytesSent");
+        await Assert.That(Subscription.TotalNames.Length).IsEqualTo(Subscription.BytesSent + 1);
+    }
+
     private const string Tick = """
         Interval 20ms
             WriteLine "{msg.Count}"

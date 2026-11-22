@@ -42,7 +42,29 @@ internal sealed class SubscriptionPlan
     public static readonly TimeSpan Fastest = TimeSpan.FromMilliseconds(50);
 
     /// <summary>The kinds of thing a pipeline's entry can ask for, each module or link at a rate of its own.</summary>
-    public static readonly string[] PerModule = ["modules", "links", "timing", "bytes", "arrivals", "destinations"];
+    public static readonly UpdateSection[] PerModule =
+        [UpdateSection.Modules, UpdateSection.Links, UpdateSection.Timing, UpdateSection.Bytes, UpdateSection.Arrivals, UpdateSection.Destinations];
+
+    // Each section's name in plans and updates, in the order of UpdateSection.
+    private static readonly string[] s_names = ["list", "host", "runtime", "totals", "modules", "links", "timing", "bytes", "arrivals", "destinations"];
+
+    /// <summary>A section's name in plans and updates, such as <c>modules</c>.</summary>
+    public static string NameOf(UpdateSection section) => s_names[(int)section];
+
+    /// <summary>The kind a pipeline's entry names, if it's one asked for each module or link.</summary>
+    public static bool TryPerModule(string name, out UpdateSection kind)
+    {
+        foreach (var each in PerModule)
+        {
+            if (NameOf(each) == name)
+            {
+                kind = each;
+                return true;
+            }
+        }
+        kind = default;
+        return false;
+    }
 
     private SubscriptionPlan(JsonObject json, bool cbor, TimeSpan? list, TimeSpan? host, TimeSpan? runtime, TimeSpan heartbeat, long? budget, IReadOnlyDictionary<string, PipelinePlan> pipelines)
     {
@@ -170,36 +192,36 @@ internal sealed class SubscriptionPlan
 /// <summary>What a subscription asks for one pipeline.</summary>
 /// <param name="Totals">How often to send its totals, or null for never.</param>
 /// <param name="Rates">For modules, links, timing and bytes, the rate for each module or link by key, with <c>"*"</c> for the rest.</param>
-internal sealed record PipelinePlan(TimeSpan? Totals, IReadOnlyDictionary<string, IReadOnlyDictionary<string, TimeSpan>> Rates)
+internal sealed record PipelinePlan(TimeSpan? Totals, IReadOnlyDictionary<UpdateSection, IReadOnlyDictionary<string, TimeSpan>> Rates)
 {
     /// <summary>How often to send a kind of thing for one module or link, or null for never.</summary>
-    public TimeSpan? RateOf(string kind, string key) =>
+    public TimeSpan? RateOf(UpdateSection kind, string key) =>
         Rates.TryGetValue(kind, out var rates) && (rates.TryGetValue(key, out var rate) || rates.TryGetValue("*", out rate)) ? rate : null;
 
     /// <summary>Whether it asks for anything of a kind at all.</summary>
-    public bool Wants(string kind) => Rates.ContainsKey(kind);
+    public bool Wants(UpdateSection kind) => Rates.ContainsKey(kind);
 
     /// <summary>The rates it asks for a kind of thing at, without repeats.</summary>
-    public IEnumerable<TimeSpan> RatesOf(string kind) =>
+    public IEnumerable<TimeSpan> RatesOf(UpdateSection kind) =>
         Rates.TryGetValue(kind, out var rates) ? rates.Values.Distinct() : [];
 
     internal static PipelinePlan Of(string pipeline, JsonNode? node)
     {
         if (node is not JsonObject entry)
             throw new DaemonException(400, $"What's asked for {pipeline} is an object, such as {{\"totals\": \"1s\", \"modules\": {{\"*\": \"200ms\"}}}}.");
-        var rates = new Dictionary<string, IReadOnlyDictionary<string, TimeSpan>>(StringComparer.Ordinal);
+        var rates = new Dictionary<UpdateSection, IReadOnlyDictionary<string, TimeSpan>>();
         foreach (var (name, value) in entry)
         {
             if (name == "totals")
                 continue;
-            if (!SubscriptionPlan.PerModule.Contains(name))
+            if (!SubscriptionPlan.TryPerModule(name, out var kind))
                 throw new DaemonException(400, $"A pipeline's entry doesn't take {name}. It takes totals, modules, links, timing, bytes, arrivals and destinations.");
             if (value is not JsonObject keyed)
                 throw new DaemonException(400, $"{pipeline}'s {name} is an object from each key, or \"*\" for the rest, to a rate, such as {{\"*\": \"200ms\"}}.");
             var byKey = new Dictionary<string, TimeSpan>(StringComparer.Ordinal);
             foreach (var (key, rate) in keyed)
                 byKey[key] = SubscriptionPlan.Rate(rate, $"{pipeline}'s {name} for {key}") ?? throw new DaemonException(400, $"{pipeline}'s {name} for {key} needs a rate.");
-            rates[name] = byKey;
+            rates[kind] = byKey;
         }
         return new PipelinePlan(SubscriptionPlan.Rate(entry["totals"], $"{pipeline}'s totals"), rates);
     }
