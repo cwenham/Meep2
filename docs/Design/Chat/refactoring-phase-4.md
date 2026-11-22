@@ -181,9 +181,13 @@ The whole machine was about 15% faster for the second pair, which says how much 
 
 **Answer:** Yes, make it.
 
+Done: `LspGraphs.RegistryOfBaseAsync` compares with `PluginRegistries.LinesOf`.
+
 **Q246.** `GET /` and a subscription's host part each work out where Listens are bound, slightly differently (the subscription leaves out a pipeline that has no counts yet). Share one `DaemonApi.Listening(pipelines)`, as `Sending` is shared? I think the difference is only for a pipeline still loading, which has no Listens anyway, so sharing it changes nothing anyone sees, but I'd like your word before changing what a subscription sends.
 
 **Answer:** Yes, share it.
+
+Done: `DaemonApi.Listening(pipelines)`, which `SentState` uses too.
 
 **Q247.** Counting through `node.Counters` and offering taps through `node.Taps` costs one field load more for each count than counting on `Node` did. The benchmarks can't tell it apart from noise (0–5% either way), but if you'd rather it cost nothing, `NodeCounters` and `TapList` could be structs held in `Node`'s fields, which keeps the class and removes the load, at the price of structs that must never be copied. Leave them as classes, or make them structs? I'd leave them.
 
