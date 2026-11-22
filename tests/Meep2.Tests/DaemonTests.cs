@@ -221,6 +221,22 @@ public class DaemonTests
     }
 
     [Test]
+    public async Task A_pipeline_sent_as_text_can_be_as_large_as_one_from_a_url()
+    {
+        await using var lab = await DaemonLab.StartAsync();
+        // '<' is escaped in JSON as <, six bytes for one, so this body is far over the usual limit.
+        var comment = "// " + new string('<', MeepDaemon.MaxPipelineText - Ticker.Length - 16) + "\n";
+        var tooLong = "// " + new string('x', MeepDaemon.MaxPipelineText) + "\n" + Ticker;
+
+        var started = await lab.Client.StartTextAsync("large", comment + Ticker);
+        var refused = await Assert.That(async () => { await lab.Client.StartTextAsync("too-large", tooLong); }).Throws<DaemonException>();
+
+        await Assert.That(started.Name).IsEqualTo("large");
+        await Assert.That(refused!.Status).IsEqualTo(413);
+        await Assert.That(refused.Message).IsEqualTo("A pipeline's text can be at most 4 MiB, as one from a URL can.");
+    }
+
+    [Test]
     public async Task A_token_gives_only_the_capabilities_it_names()
     {
         await using var lab = await DaemonLab.StartAsync();

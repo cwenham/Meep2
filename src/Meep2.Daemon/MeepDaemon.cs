@@ -21,6 +21,7 @@ using Microsoft.AspNetCore.Connections;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 
 namespace Meep2.Daemon;
 
@@ -167,6 +168,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         {
             kestrel.AddServerHeader = false;
             // Bodies are read before a route's capability is checked, so they're kept small, as /ws frames are (S9).
+            // Starting a pipeline from its text, for a client allowed to, raises the limit for that request (Q236).
             kestrel.Limits.MaxRequestBodySize = MaxBody;
             kestrel.ListenUnixSocket(socket, listen => listen.Use(next => connection =>
             {
@@ -557,14 +559,34 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     /// <summary>The largest body a request to the control socket may have: 1 MiB, the same as a <c>/ws</c> frame.</summary>
     internal const int MaxBody = SocketSession.MaxFrame;
 
+    /// <summary>
+    /// The longest pipeline text a client may send to start (Q236): 4 MiB, as for a pipeline from a URL, counted in
+    /// UTF-8 once it's out of its JSON.
+    /// </summary>
+    internal const int MaxPipelineText = PipelineSources.MaxDownload;
+
+    /// <summary>
+    /// The largest body a request to start a pipeline may have, from a client that may start one: enough for
+    /// <see cref="MaxPipelineText"/> however JSON escapes it, which can be six bytes for one (<c>\u003C</c> for
+    /// <c>&lt;</c>), with room for the rest of the request.
+    /// </summary>
+    internal const int MaxStartBody = 6 * MaxPipelineText + 64 * 1024;
+
+    // The most a request's body may be: more for starting a pipeline, from a client allowed to, than for anything else.
+    private static int BodyLimit(Microsoft.AspNetCore.Http.HttpRequest request, Capabilities capabilities) =>
+        HttpMethods.IsPost(request.Method) && request.Path == "/pipelines" && capabilities.HasFlag(Capabilities.Control) ? MaxStartBody : MaxBody;
+
     // An HTTP request as the API sees it. Its body is JSON if it says so, and otherwise text.
     private static async Task<ApiRequest> ReadRequestAsync(HttpContext context, Capabilities capabilities)
     {
         var request = context.Request;
         string? text = null;
         JsonElement? json = null;
-        if (request.ContentLength > MaxBody)
-            throw new DaemonException(413, $"A request's body can be at most {MaxBody} bytes."); // before any of it is read
+        var limit = BodyLimit(request, capabilities);
+        if (request.ContentLength > limit)
+            throw new DaemonException(413, $"A request's body can be at most {limit} bytes."); // before any of it is read
+        if (limit != MaxBody && context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } size)
+            size.MaxRequestBodySize = limit;
         if (request.ContentLength > 0 || request.Headers.TransferEncoding.Count > 0)
         {
             using var reader = new StreamReader(request.Body, Encoding.UTF8);
@@ -575,7 +597,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
             }
             catch (Microsoft.AspNetCore.Http.BadHttpRequestException exception) when (exception.StatusCode == StatusCodes.Status413PayloadTooLarge)
             {
-                throw new DaemonException(413, $"A request's body can be at most {MaxBody} bytes.", innerException: exception);
+                throw new DaemonException(413, $"A request's body can be at most {limit} bytes.", innerException: exception);
             }
             if (request.ContentType?.StartsWith("application/json", StringComparison.OrdinalIgnoreCase) == true)
                 json = ParseJson(body);
@@ -642,6 +664,8 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
                 var start = request.Json is { } json
                     ? Deserialize(json, DaemonJson.Default.StartRequest)
                     : throw new DaemonException(400, "Starting a pipeline needs a JSON body, such as {\"path\": \"/home/you/ticker.meep\"}.");
+                if (start.Text is { } text && Encoding.UTF8.GetByteCount(text) > MaxPipelineText)
+                    throw new DaemonException(413, $"A pipeline's text can be at most {MaxPipelineText / (1024 * 1024)} MiB, as one from a URL can.");
                 var hosted = start.Text is not null
                     ? await StartPipelineAsync(new PipelineAddress(PipelineOrigin.Text, start.Name ?? "pipeline"), start.DeveloperMode, watch: false, start.Text, start.Name, request.Aborted).ConfigureAwait(false)
                     : await StartPipelineAsync(start.Path, start.DeveloperMode, start.Watch, request.Aborted).ConfigureAwait(false);
