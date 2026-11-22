@@ -297,6 +297,11 @@ context.Emit(new Batched { Parents = new Parents(_items) });
 
 `msg.Fam` (written `fam` in Meeplang) finds a message's ancestors by the name of the module that emitted them, so later modules can reach back to, say, the request a response came from.
 
+Since every message keeps its parents, whatever holds a message holds all its ancestors too, and Meep never cuts them off. So a module that keeps state between messages:
+
+- **Keeps values, not messages.** A cache of the last record split from a file should hold the record's text, not the record: the record holds the file it came from, all of it. Measured, keeping one record of a 5 MB file split into 10,000 kept the whole file in memory, about 10 MB as .NET text; keeping one record's text would keep 500 bytes.
+- **Starts each message afresh** rather than making it from the one before with `with { … }`. A message made with `with` is a child of the one it's made from, so each new one holds the last, and that one the one before: a running total made that way grows a chain that's never let go, about 88 bytes a message, or 72 MB a day at ten a second. Make a new message from the values instead: `new Count(total)`.
+
 ### Expiry
 
 A message's `Expires` is set to the earliest of its own and its parents' when it's emitted. A module can bring a deadline forward by setting `Expires` but can't put it back.
@@ -546,6 +551,7 @@ Before calling a verb done:
 - [ ] `[Role]` if the worked-out [role](#roles) isn't right: `Inlet` for a source fed from outside, `Filter` for a filter, `Outlet` for a module that sends messages out, passthrough or not.
 - [ ] Expected failures emitted as errors; `EvaluationException` caught.
 - [ ] Resources released in `Dispose` or `DisposeAsync`.
+- [ ] State kept as values, not messages, and each message made afresh rather than `with` the last ([why](#parents-and-family)).
 - [ ] Tests, including the load errors.
 - [ ] For a core verb, an entry in [verbs.md](verbs.md), and its summary table and counts updated.
 - [ ] An example in `examples/` if it opens up something new.
