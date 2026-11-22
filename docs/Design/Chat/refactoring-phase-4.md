@@ -175,8 +175,16 @@ The whole machine was about 15% faster for the second pair, which says how much 
 
 **Q244.** Ten parsers and number functions are still over 40 lines (listed under "Skipped"), each one rule of its grammar. Split them anyway, say into a method for each alternative of a rule, or leave them until they're next changed? I'd leave them: they read top to bottom as the grammar does.
 
+**Answer:** Leave them.
+
 **Q245.** `meep/setBase` reuses the document's registry when the running text has the same `#plugin` lines, compared without their `as` names, where everywhere else compares them with. Should it compare with the names too (`PluginRegistries.LinesOf`)? It's a one-line change, and it would load a running pipeline's plugins separately when it names one differently from the document. I'd make it.
+
+**Answer:** Yes, make it.
 
 **Q246.** `GET /` and a subscription's host part each work out where Listens are bound, slightly differently (the subscription leaves out a pipeline that has no counts yet). Share one `DaemonApi.Listening(pipelines)`, as `Sending` is shared? I think the difference is only for a pipeline still loading, which has no Listens anyway, so sharing it changes nothing anyone sees, but I'd like your word before changing what a subscription sends.
 
+**Answer:** Yes, share it.
+
 **Q247.** Counting through `node.Counters` and offering taps through `node.Taps` costs one field load more for each count than counting on `Node` did. The benchmarks can't tell it apart from noise (0–5% either way), but if you'd rather it cost nothing, `NodeCounters` and `TapList` could be structs held in `Node`'s fields, which keeps the class and removes the load, at the price of structs that must never be copied. Leave them as classes, or make them structs? I'd leave them.
+
+**Answer:** Leave them.
