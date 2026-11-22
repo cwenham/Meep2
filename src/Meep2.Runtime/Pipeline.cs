@@ -423,47 +423,48 @@ public sealed class Pipeline : IAsyncDisposable
     private async Task<PipelineChangeReport> ApplyCoreAsync(PipelineChange change)
     {
         var (specs, connections, options) = (change.Next.Specs, change.Next.Connections, change.Next.Options);
-        var before = _nodesByModule;
-        var nodes = new Node[specs.Length];
-        var created = new List<Node>();
-        var updates = new List<(Node Node, ModuleInfo Old, NodeSpec Spec, bool Reconfigure)>();
-        var kept = new HashSet<Node>();
-        var added = new List<ModuleInfo>();
-        var replaced = new List<ModuleInfo>();
-        var replacedOld = new HashSet<Node>();
-        for (var i = 0; i < specs.Length; i++)
+        var plan = ChangePlan.Of(change, _nodesByModule, _nodes, SameShape, NewNode);
+        await CreateAllAsync(plan.Created).ConfigureAwait(false);
+        var removed = _nodes.Where(node => !plan.Kept.Contains(node)).ToList();
+
+        // New modules are ready before anything feeds them, then everything is connected as the change says.
+        foreach (var node in plan.Created.OfType<InflectionNode>())
+            _ = node.Start();
+        var removedLinks = removed.ToDictionary(node => node, node => node.Links);
+        Wire(plan.Nodes, specs, connections);
+        foreach (var (node, links) in removedLinks)
+            node.Links = Remaining(links, plan);
+        Options = options;
+        Install(plan.Nodes, specs, options, plan.Updates.Select(u => (u.Old, u.Node)));
+
+        // Kept modules take their new specs, between messages.
+        var keptState = await Task.WhenAll(plan.Updates.Select(u => u.Node.UpdateAsync(u.Spec, u.Reconfigure))).ConfigureAwait(false);
+        var unchanged = new List<ModuleInfo>();
+        var reconfigured = new List<ModuleInfo>();
+        for (var i = 0; i < plan.Updates.Count; i++)
         {
-            var spec = specs[i];
-            Node? node = null;
-            if (change.KeptAs(spec.Info) is var (running, reconfigure) && before.TryGetValue(running, out var old) && _nodes.Contains(old))
-            {
-                if (old.Spec.IsSource != spec.IsSource)
-                    throw new ArgumentException($"{running} can't become {spec.Info}: only one of them is a source.", nameof(change));
-                if (!kept.Add(old))
-                    throw new ArgumentException($"{running} is kept as more than one module.", nameof(change));
-                if (SameShape(old, spec, options))
-                {
-                    node = old;
-                    updates.Add((old, running, spec, reconfigure));
-                }
-                else
-                {
-                    kept.Remove(old); // it goes, and a new one takes its place
-                    replaced.Add(spec.Info);
-                    replacedOld.Add(old);
-                }
-            }
-            if (node is null)
-            {
-                node = NewNode(spec, options);
-                created.Add(node);
-                if (!replaced.Contains(spec.Info))
-                    added.Add(spec.Info);
-            }
-            nodes[i] = node;
+            var info = plan.Updates[i].Spec.Info;
+            if (!plan.Updates[i].Reconfigure)
+                unchanged.Add(info);
+            else if (keptState[i])
+                reconfigured.Add(info);
+            else
+                plan.Replaced.Add(info);
         }
 
-        // The new modules' instances are made first, so a factory that throws leaves the pipeline as it was.
+        foreach (var source in plan.Created.OfType<SourceNode>())
+        {
+            _inFlight.Add(); // held until the source finishes
+            source.Start(StoppingToken);
+        }
+        await RemoveAsync(removed).ConfigureAwait(false);
+        return new PipelineChangeReport(plan.Added, [.. removed.Where(node => !plan.ReplacedOld.Contains(node)).Select(node => node.Spec.Info)], reconfigured, plan.Replaced, unchanged);
+    }
+
+
+    // The new modules' instances are made first, so a factory that throws leaves the pipeline as it was.
+    private static async Task CreateAllAsync(List<Node> created)
+    {
         try
         {
             foreach (var node in created)
@@ -475,44 +476,13 @@ public sealed class Pipeline : IAsyncDisposable
                 await node.DisposeModuleAsync().ConfigureAwait(false);
             throw;
         }
-        var removed = _nodes.Where(node => !kept.Contains(node)).ToList();
+    }
 
-        // New modules are ready before anything feeds them, then everything is connected as the change says.
-        foreach (var node in created.OfType<InflectionNode>())
-            _ = node.Start();
-        var removedLinks = removed.ToDictionary(node => node, node => node.Links);
-        Wire(nodes, specs, connections);
-        foreach (var (node, links) in removedLinks)
-        {
-            // They finish where they were going.
-            var still = Enumerable.Range(0, links.Targets.Length).Where(i => !kept.Contains(links.Targets[i]) || nodes.Contains(links.Targets[i])).ToList();
-            node.Links = new Fanout([.. still.Select(i => links.Targets[i])], [.. still.Select(i => links.Inputs[i])], [.. still.Select(i => links.Counts[i])]);
-        }
-        Options = options;
-        Install(nodes, specs, options, updates.Select(u => (u.Old, u.Node)));
-
-        // Kept modules take their new specs, between messages.
-        var keptState = await Task.WhenAll(updates.Select(u => u.Node.UpdateAsync(u.Spec, u.Reconfigure))).ConfigureAwait(false);
-        var unchanged = new List<ModuleInfo>();
-        var reconfigured = new List<ModuleInfo>();
-        for (var i = 0; i < updates.Count; i++)
-        {
-            var info = updates[i].Spec.Info;
-            if (!updates[i].Reconfigure)
-                unchanged.Add(info);
-            else if (keptState[i])
-                reconfigured.Add(info);
-            else
-                replaced.Add(info);
-        }
-
-        foreach (var source in created.OfType<SourceNode>())
-        {
-            _inFlight.Add(); // held until the source finishes
-            source.Start(StoppingToken);
-        }
-        await RemoveAsync(removed).ConfigureAwait(false);
-        return new PipelineChangeReport(added, [.. removed.Where(node => !replacedOld.Contains(node)).Select(node => node.Spec.Info)], reconfigured, replaced, unchanged);
+    // A removed module's links to the modules that are still there, so what it has finishes where it was going.
+    private static Fanout Remaining(Fanout links, ChangePlan plan)
+    {
+        var still = Enumerable.Range(0, links.Targets.Length).Where(i => !plan.Kept.Contains(links.Targets[i]) || plan.Nodes.Contains(links.Targets[i])).ToList();
+        return new Fanout([.. still.Select(i => links.Targets[i])], [.. still.Select(i => links.Inputs[i])], [.. still.Select(i => links.Counts[i])]);
     }
 
     // Whether a kept module can carry on in place: the same inflections, and the same size of buffer.
