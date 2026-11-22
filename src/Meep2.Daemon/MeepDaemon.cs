@@ -789,26 +789,16 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         draft.Update(live.Syntax, live.Registry);
 
         // Texts with other #plugin lines than the running one's have their plugins installed, as the change will.
-        var held = new List<IDisposable>();
-        static string Plugins(Meep2.Meeplang.Syntax.PipelineSyntax syntax) => string.Join('\n', syntax.Plugins.Select(p => $"{p} as {p.Alias}"));
-        async Task<Meep2.Meeplang.Syntax.WithDiagnostics<ModuleRegistry>> RegistryFor(Meep2.Meeplang.Syntax.PipelineSyntax syntax, CancellationToken token)
-        {
-            if (Plugins(syntax) == Plugins(live.Syntax))
-                return new(live.Registry, []);
-            var installed = await Install.InstallAllAsync(syntax, hosted.BaseRegistry, new PluginInstaller(hosted.Plugins), new PluginCatalog(), saveLock: false, token).ConfigureAwait(false);
-            held.AddRange(installed.Holds);
-            return installed.Problems.Count > 0 ? new(null, installed.Problems) : new(installed.Registry, installed.Warnings);
-        }
-        try
-        {
-            var path = live.Syntax.Source.Path;
-            var made = await DraftEditor.ApplyAsync(draft, live.Syntax, edits, text => Meep2.Meeplang.Parsing.MeeplangParser.Parse(new Meep2.Meeplang.Syntax.SourceFile(path, text)), RegistryFor, cancellationToken).ConfigureAwait(false);
-            return made.Syntax;
-        }
-        finally
-        {
-            Build.Release(held);
-        }
+        using var plugins = new PluginRegistries(new PluginInstaller(hosted.Plugins), new PluginCatalog());
+        var path = live.Syntax.Source.Path;
+        var made = await DraftEditor.ApplyAsync(
+            draft,
+            live.Syntax,
+            edits,
+            text => Meep2.Meeplang.Parsing.MeeplangParser.Parse(new Meep2.Meeplang.Syntax.SourceFile(path, text)),
+            plugins.Reusing(live.Syntax, live.Registry, hosted.BaseRegistry),
+            cancellationToken).ConfigureAwait(false);
+        return made.Syntax;
     }
 
     // Edits the running pipeline's text, changes the pipeline to match, and commits the text to pending (Q32).

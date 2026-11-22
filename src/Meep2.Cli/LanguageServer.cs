@@ -44,11 +44,9 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
 
     private readonly Dictionary<string, Document> _documents = new(StringComparer.Ordinal);
     private readonly ModuleRegistry _registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly);
-    private readonly PluginInstaller? _installer = plugins is null ? null : new PluginInstaller(plugins with { Offline = true, DeveloperMode = false });
-    private readonly PluginCatalog _catalog = new();
 
     // Each open file's plugins, kept loaded while its #plugin lines stay the same.
-    private readonly Dictionary<string, (string Lines, InstalledPlugins Installed)> _loaded = new(StringComparer.Ordinal);
+    private readonly PluginRegistries? _plugins = plugins is null ? null : new PluginRegistries(new PluginInstaller(plugins with { Offline = true, DeveloperMode = false }), new PluginCatalog());
     private bool _shuttingDown;
     private int _tokenResults;
 
@@ -102,8 +100,7 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
                         await RespondAsync(id, null, cancellationToken).ConfigureAwait(false);
                         break;
                     case "exit":
-                        foreach (var uri in _loaded.Keys.ToList())
-                            Unload(uri);
+                        _plugins?.Dispose();
                         return _shuttingDown ? 0 : 1;
                     case "textDocument/didOpen":
                         await ChangedAsync(
@@ -241,32 +238,19 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
             Unload(key);
             return new(registry, []);
         }
-        if (_installer is null)
+        if (_plugins is null)
             return new(null, syntax.Diagnostics);
-        var lines = string.Join("\n", syntax.Plugins.Select(p => $"{p} as {p.Alias}"));
-        if (!_loaded.TryGetValue(key, out var loaded) || loaded.Lines != lines)
-        {
-            Unload(key);
-            loaded = (lines, await Install.InstallAllAsync(syntax, registry, _installer, _catalog, saveLock: false, cancellationToken).ConfigureAwait(false));
-            _loaded[key] = loaded;
-        }
-        if (loaded.Installed.Problems.Count > 0)
-            return new(null, [.. syntax.Diagnostics, .. loaded.Installed.Warnings, .. loaded.Installed.Problems]);
-        return new(loaded.Installed.Registry, loaded.Installed.Warnings);
+        var loaded = await _plugins.RegistryForAsync(key, syntax, registry, cancellationToken).ConfigureAwait(false);
+        return loaded.Value is null ? loaded with { Diagnostics = [.. syntax.Diagnostics, .. loaded.Diagnostics] } : loaded;
     }
 
     // Lets go of a file's plugins.
-    private void Unload(string uri)
-    {
-        if (_loaded.Remove(uri, out var loaded))
-            Build.Release(loaded.Installed.Holds);
-    }
+    private void Unload(string uri) => _plugins?.Unload(uri);
 
     // The verbs a file can use: the core modules', and its plugins' once they've loaded.
     private ModuleRegistry RegistryFor(JsonNode? parameters) =>
-        parameters?["textDocument"]?["uri"]?.GetValue<string>() is { } uri
-        && _loaded.TryGetValue(uri, out var loaded) && loaded.Installed.Problems.Count == 0
-            ? loaded.Installed.Registry
+        parameters?["textDocument"]?["uri"]?.GetValue<string>() is { } uri && _plugins?.Loaded(uri) is { } loaded
+            ? loaded
             : _registry;
 
     private async Task ChangedAsync(string uri, string text, int version, CancellationToken cancellationToken)
@@ -725,9 +709,9 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
 
         // Each text the edits make is loaded with the document's verbs while its #plugin lines are the same.
         var scratch = uri + EditsSuffix;
-        var plugins = Plugins(syntax);
+        var plugins = PluginRegistries.LinesOf(syntax);
         async Task<WithDiagnostics<ModuleRegistry>> RegistryOf(PipelineSyntax text, CancellationToken token) =>
-            Plugins(text) == plugins && document.Registry is { } registry
+            PluginRegistries.LinesOf(text) == plugins && document.Registry is { } registry
                 ? new(registry, [])
                 : await RegistryForAsync(scratch, text, token).ConfigureAwait(false);
         DraftEdits result;
@@ -773,8 +757,6 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
                 answer["renamed"] = new JsonObject([.. result.Update.Renamed.Select(r => KeyValuePair.Create(r.Key, (JsonNode?)r.Value))]);
         }
         return answer;
-
-        static string Plugins(PipelineSyntax text) => string.Join("\n", text.Plugins.Select(p => $"{p} as {p.Alias}"));
     }
 
     // textDocument/semanticTokens/full, and /full/delta when the client has the last result: Meep's parser's colours.
