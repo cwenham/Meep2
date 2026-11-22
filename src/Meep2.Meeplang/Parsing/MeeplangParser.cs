@@ -76,8 +76,8 @@ public static class MeeplangParser
                 if (root.Included.Any(i => i.Source.Path == path))
                     continue; // included once already, by another file
                 var bytes = includes.Read(path, pinned: include.Sha256 is not null);
-                if (bytes is not null && include.Sha256 is { } pin && Convert.ToHexStringLower(SHA256.HashData(bytes)) is var sha && sha != pin)
-                    throw new IncludeException($"it has the SHA-256 {sha}, not the {pin} the #include line pins, so it has changed.");
+                if (bytes is not null && PinMismatch(bytes, include) is { } mismatch)
+                    throw new IncludeException(mismatch);
                 text = bytes is null ? null : Text(bytes);
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or IncludeException)
@@ -106,8 +106,14 @@ public static class MeeplangParser
 
     private static byte[]? ReadFromDisk(string path) => File.Exists(path) ? File.ReadAllBytes(path) : null;
 
+    // Why an included file isn't the one its #include line pins, or null if it is, or the line doesn't pin it.
+    internal static string? PinMismatch(byte[] bytes, IncludeDirective include) =>
+        include.Sha256 is { } pin && Convert.ToHexStringLower(SHA256.HashData(bytes)) is var sha && sha != pin
+            ? $"it has the SHA-256 {sha}, not the {pin} the #include line pins, so it has changed."
+            : null;
+
     // A file's text from its bytes, as UTF-8, without the mark some editors put at the start.
-    private static string Text(byte[] bytes) =>
+    internal static string Text(byte[] bytes) =>
         bytes.AsSpan().StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF]) ? Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3) : Encoding.UTF8.GetString(bytes);
 
     private static string Full(string path)

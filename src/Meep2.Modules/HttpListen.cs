@@ -92,29 +92,45 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
         ArgumentNullException.ThrowIfNull(next);
         if (!HttpAddress.TryParse(next.Url, out var address) || next.Certificate != old.Certificate || next.Key != old.Key)
             return false;
+        Listening listening;
         lock (_changing)
         {
-            if (_listening is not { } listening)
+            if (_listening is not { } current)
             {
                 // Not listening yet, or any more: it starts with the new parameters, if it starts at all.
                 _parameters = next;
                 return true;
             }
-            if (address.Secure != listening.Address.Secure || address.Host != listening.Address.Host || address.Port != listening.Address.Port)
+            if (address.Secure != current.Address.Secure || address.Host != current.Address.Host || address.Port != current.Address.Port)
                 return false;
             _parameters = next;
-            if (address.Path == listening.Address.Path)
+            if (address.Path == current.Address.Path)
                 return true;
-
-            var certificate = address.Secure ? Certificates.Load(next.Certificate!, next.Key) : null;
-            var route = HttpServer.AddAsync(listening.Endpoint, certificate, address.Path, http => AcceptAsync(http, listening.Context, listening.Stopping), listening.Stopping)
-                .GetAwaiter().GetResult();
-            var replaced = listening.Route;
-            _listening = listening with { Address = address, Route = route };
-            _ = replaced.DisposeAsync().AsTask();
-            listening.Context.Listening(Where(address, listening.Endpoint));
-            return true;
+            listening = current;
         }
+
+        // The new path is added outside the lock (P1): adding it waits for any other Listen starting a server, and
+        // nothing else should wait on this one meanwhile. IReconfigurable is synchronous, so it still waits here.
+        var certificate = address.Secure ? Certificates.Load(next.Certificate!, next.Key) : null;
+        var route = HttpServer.AddAsync(listening.Endpoint, certificate, address.Path, http => AcceptAsync(http, listening.Context, listening.Stopping), listening.Stopping)
+            .GetAwaiter().GetResult();
+        HttpServer.Route replaced;
+        lock (_changing)
+        {
+            if (ReferenceEquals(_listening, listening))
+            {
+                replaced = listening.Route;
+                _listening = listening with { Address = address, Route = route };
+            }
+            else
+            {
+                replaced = route; // it stopped, or moved, while the path was added
+            }
+        }
+        _ = replaced.DisposeAsync().AsTask();
+        if (!ReferenceEquals(replaced, route))
+            listening.Context.Listening(Where(address, listening.Endpoint));
+        return true;
     }
 
     // Where it's listening, as it tells the runtime: the address it's bound to, and its path.

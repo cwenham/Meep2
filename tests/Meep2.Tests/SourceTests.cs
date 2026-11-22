@@ -130,6 +130,66 @@ public class SourceTests
     }
 
     [Test]
+    public async Task A_pipeline_or_include_from_a_url_that_takes_too_long_says_so()
+    {
+        var main = "#include \"slow.meep\"\nInterval 10ms count=1\n    Say\n";
+        using var stop = new CancellationTokenSource();
+        await using var server = new TestServer(async context =>
+        {
+            var path = context.Request.Url!.AbsolutePath;
+            if (path == "/p/main.meep")
+                await TestServer.Reply(context, 200, main, "text/plain");
+            else if (path is "/p/slow.meep" or "/p/stuck.meep")
+                await Task.Delay(Timeout.Infinite, stop.Token).ContinueWith(_ => { }, TaskScheduler.Default);
+            else
+                await TestServer.Reply(context, 404, "", "text/plain");
+        });
+        using var home = new TemporaryFolder();
+        var options = new PluginOptions { Home = home.Path, Trusted = TrustedKeys.None, DeveloperMode = true };
+        var limit = TimeSpan.FromMilliseconds(300);
+
+        var stuck = await Assert.That(async () => await PipelineSources.ReadAsync(PipelineAddress.Parse($"{server.Url}/p/stuck.meep"), options, null, limit, CancellationToken.None))
+            .Throws<PipelineSourceException>();
+        var text = await PipelineSources.ReadAsync(PipelineAddress.Parse($"{server.Url}/p/main.meep"), options, null, limit, CancellationToken.None);
+        var parsed = Meep2.Meeplang.Parsing.MeeplangParser.Parse(new Meep2.Meeplang.Syntax.SourceFile(text.Path, text.Text), text.Includes!);
+        await stop.CancelAsync();
+
+        await Assert.That(stuck!.Message).IsEqualTo($"{server.Url}/p/stuck.meep didn't arrive within 300ms.");
+        await Assert.That(parsed.Diagnostics.Select(d => d.Message)).Contains($"Couldn't include slow.meep: {server.Url}/p/slow.meep didn't arrive within 300ms.");
+    }
+
+    [Test]
+    public async Task Includes_from_a_url_are_fetched_before_parsing_with_what_they_include()
+    {
+        var main = "#include \"lib/say.meep\"\n#include \"loop.meep\"\nInterval 10ms count=2\n    Say\n";
+        var say = "#include \"words.meep\"\ntemplate Say\n    WriteLine \"{Word} {msg.Count}\"\n";
+        var words = "const Word = \"tick\"\n";
+        var loop = "#include \"loop.meep\"\n";
+        var asked = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var files = new Dictionary<string, string> { ["/p/main.meep"] = main, ["/p/lib/say.meep"] = say, ["/p/lib/words.meep"] = words, ["/p/loop.meep"] = loop };
+        await using var server = new TestServer(async context =>
+        {
+            asked.Enqueue(context.Request.Url!.AbsolutePath);
+            if (files.TryGetValue(context.Request.Url!.AbsolutePath, out var body))
+                await TestServer.Reply(context, 200, body, "text/plain");
+            else
+                await TestServer.Reply(context, 404, "", "text/plain");
+        });
+        using var home = new TemporaryFolder();
+        var options = new PluginOptions { Home = home.Path, Trusted = TrustedKeys.None, DeveloperMode = true };
+
+        var text = await PipelineSources.ReadAsync(PipelineAddress.Parse($"{server.Url}/p/main.meep"), options, null, CancellationToken.None);
+        var before = asked.Count;
+        var parsed = Meep2.Meeplang.Parsing.MeeplangParser.Parse(new Meep2.Meeplang.Syntax.SourceFile(text.Path, text.Text), text.Includes!);
+
+        await Assert.That(asked.Count).IsEqualTo(before); // parsing asked for nothing more
+        await Assert.That(asked).Contains("/p/lib/words.meep"); // relative to the file that includes it
+        await Assert.That(asked.Count(path => path == "/p/loop.meep")).IsEqualTo(1);
+        await Assert.That(parsed.Included.Select(i => i.Source.Path)).IsEquivalentTo([$"{server.Url}/p/lib/say.meep", $"{server.Url}/p/lib/words.meep", $"{server.Url}/p/loop.meep"]);
+        await Assert.That(parsed.Diagnostics.Select(d => d.Message)).Contains("loop.meep is already being included, so including it here would go round in a loop.");
+    }
+
+    [Test]
     public async Task Plain_http_is_only_for_this_machine_where_developer_mode_needs_no_signature()
     {
         await using var server = Serve(new() { ["/p/ticker.meep"] = Ticker });

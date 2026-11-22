@@ -272,15 +272,16 @@ internal sealed class DaemonApi(MeepDaemon daemon)
             daemon.Log($"[{hosted.Name}] wrote the edit to {hosted.Path}");
             return result with { WrittenTo = hosted.Path };
         }
-        return Commit(hosted, edit, text, described, result);
+        return await CommitAsync(hosted, edit, text, described, result).ConfigureAwait(false);
     }
 
-    private ChangeResult Commit(HostedPipeline hosted, EditRequest edit, string text, List<string> described, ChangeResult result)
+    // Not cancelled when the client goes: the running pipeline has the edit by now, so its commit is made whatever.
+    private async Task<ChangeResult> CommitAsync(HostedPipeline hosted, EditRequest edit, string text, List<string> described, ChangeResult result)
     {
         var message = edit.Message ?? $"Edit {hosted.Name} while it runs\n\n{string.Join("\n", described.Select(e => "- " + char.ToUpperInvariant(e[0]) + e[1..]))}";
         try
         {
-            var commit = Meep2.Git.PendingBranch.Commit(hosted.Path, text, message, edit.Branch ?? Meep2.Git.PendingBranch.Default);
+            var commit = await Meep2.Git.PendingBranch.CommitAsync(hosted.Path, text, message, edit.Branch ?? Meep2.Git.PendingBranch.Default).ConfigureAwait(false);
             hosted.EditedApart(described, commit.Sha);
             daemon.Log($"[{hosted.Name}] committed to {commit.Branch} as {commit.Sha[..7]}{(commit.Unsigned is null ? ", signed" : $", unsigned: {commit.Unsigned}")}");
             return result with { Saved = new SavedCommit(commit.Branch, commit.Sha, commit.Repository, commit.Path) { Unsigned = commit.Unsigned } };

@@ -39,34 +39,27 @@ public static class PendingBranch
         return tip?[path]?.Target is Blob blob ? blob.GetContentText() : null;
     }
 
-    /// <summary>Commits text as the file's content on a branch.</summary>
+    /// <summary>Commits text as the file's content on a branch, signed with your SSH key where there is one (Q126).</summary>
     /// <param name="file">The pipeline file, on disk in a repository's working tree.</param>
     /// <param name="text">Its new text.</param>
     /// <param name="message">The commit message.</param>
     /// <param name="branch">The branch, <c>pending</c> unless given.</param>
+    /// <param name="cancellationToken">Stops signing, which runs <c>ssh-keygen</c>; nothing is committed then.</param>
     /// <exception cref="PendingBranchException">The file isn't in a repository, the branch is checked out, or the repository has no commits to start from.</exception>
-    public static PendingCommit Commit(string file, string text, string message, string branch = Default)
+    public static async Task<PendingCommit> CommitAsync(string file, string text, string message, string branch = Default, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(file);
         ArgumentNullException.ThrowIfNull(text);
         ArgumentException.ThrowIfNullOrWhiteSpace(message);
         ArgumentException.ThrowIfNullOrWhiteSpace(branch);
         using var repository = Open(file, out var path);
-        if (!Reference.IsValidName("refs/heads/" + branch))
-            throw new PendingBranchException($"{branch} isn't a name Git allows for a branch.");
-        if (!repository.Info.IsHeadDetached && repository.Head.FriendlyName == branch)
-        {
-            throw new PendingBranchException(
-                $"{branch} is checked out in {repository.Info.WorkingDirectory}, so committing to it would leave your working tree behind. Check out another branch, or name another for the edit.");
-        }
-
-        var existing = repository.Branches[branch];
-        var parent = existing?.Tip ?? repository.Head.Tip
-            ?? throw new PendingBranchException($"The repository at {repository.Info.WorkingDirectory} has no commits yet, so there's nothing for {branch} to start from.");
-
+        var tip = BranchTip.Find(repository, branch);
         try
         {
-            return CommitTo(repository, existing, parent, path, text, message, branch);
+            var tree = TreeWith(repository, tip.Parent, path, text);
+            var (id, unsigned) = await CreateCommitAsync(repository, tip.Parent, tree, message, cancellationToken).ConfigureAwait(false);
+            tip.MoveTo(repository, id, message);
+            return new PendingCommit(branch, id.Sha, Path.GetFullPath(repository.Info.WorkingDirectory), path) { Unsigned = unsigned };
         }
         catch (LibGit2SharpException exception)
         {
@@ -74,43 +67,33 @@ public static class PendingBranch
         }
     }
 
-    private static PendingCommit CommitTo(Repository repository, Branch? existing, Commit parent, string path, string text, string message, string branch)
+    // The parent's tree with the file's new text in it.
+    private static Tree TreeWith(Repository repository, Commit parent, string path, string text)
     {
         var blob = repository.ObjectDatabase.CreateBlob(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(text)));
         var tree = TreeDefinition.From(parent.Tree);
         tree.Add(path, blob, Mode.NonExecutableFile);
-        var newTree = repository.ObjectDatabase.CreateTree(tree);
-        var signature = SignatureOf(repository);
+        return repository.ObjectDatabase.CreateTree(tree);
+    }
 
-        // Signed with your SSH key where there is one (Q126); otherwise committed unsigned, saying why.
-        ObjectId id;
-        string? unsigned = null;
+    // The commit, signed with your SSH key where there is one; otherwise unsigned, saying why.
+    private static async Task<(ObjectId Id, string? Unsigned)> CreateCommitAsync(Repository repository, Commit parent, Tree tree, string message, CancellationToken cancellationToken)
+    {
+        var signature = SignatureOf(repository);
         var key = CommitSigning.KeyFor(repository);
-        var content = LibGit2Sharp.Commit.CreateBuffer(signature, signature, message, newTree, [parent], prettifyMessage: true, commentChar: null);
+        var content = LibGit2Sharp.Commit.CreateBuffer(signature, signature, message, tree, [parent], prettifyMessage: true, commentChar: null);
         ValueOrWhyNot<string> signing;
         try
         {
-            signing = key.ThenAsync(found => CommitSigning.SignAsync(content, found)).GetAwaiter().GetResult();
+            signing = await key.ThenAsync(found => CommitSigning.SignAsync(content, found, cancellationToken)).ConfigureAwait(false);
         }
         finally
         {
             CommitSigning.LetGo(key.Value);
         }
-        if (signing.TryGet(out var signed, out var whyNot))
-        {
-            id = repository.ObjectDatabase.CreateCommitWithSignature(content, signed);
-        }
-        else
-        {
-            unsigned = whyNot;
-            id = repository.ObjectDatabase.CreateCommit(signature, signature, message, newTree, [parent], prettifyMessage: true).Id;
-        }
-
-        if (existing is null)
-            repository.Branches.Add(branch, repository.Lookup<Commit>(id));
-        else
-            repository.Refs.UpdateTarget(existing.Reference, id, $"meep: {message.Split('\n')[0]}");
-        return new PendingCommit(branch, id.Sha, Path.GetFullPath(repository.Info.WorkingDirectory), path) { Unsigned = unsigned };
+        return signing.TryGet(out var signed, out var whyNot)
+            ? (repository.ObjectDatabase.CreateCommitWithSignature(content, signed), null)
+            : (repository.ObjectDatabase.CreateCommit(signature, signature, message, tree, [parent], prettifyMessage: true).Id, whyNot);
     }
 
     /// <summary>

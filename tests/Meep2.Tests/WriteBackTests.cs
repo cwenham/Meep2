@@ -53,8 +53,8 @@ public class WriteBackTests
         var file = folder.Write("ticker.meep", Ticker);
         GitRepo.Init(folder.Path);
 
-        var first = PendingBranch.Commit(file, Ticker.Replace("20ms", "50ms", StringComparison.Ordinal), "Slower");
-        var second = PendingBranch.Commit(file, Ticker.Replace("20ms", "1s", StringComparison.Ordinal), "Slower still");
+        var first = await PendingBranch.CommitAsync(file, Ticker.Replace("20ms", "50ms", StringComparison.Ordinal), "Slower");
+        var second = await PendingBranch.CommitAsync(file, Ticker.Replace("20ms", "1s", StringComparison.Ordinal), "Slower still");
 
         await Assert.That(first.Branch).IsEqualTo("pending");
         await Assert.That(first.Path).IsEqualTo("ticker.meep");
@@ -77,7 +77,7 @@ public class WriteBackTests
         GitRepo.Init(folder.Path);
         GitRepo.Run(folder.Path, "config", "user.signingkey", Path.Combine(folder.Path, "no-such-key"));
 
-        var commit = PendingBranch.Commit(file, Ticker + "\n", "Edit");
+        var commit = await PendingBranch.CommitAsync(file, Ticker + "\n", "Edit");
 
         await Assert.That(commit.Unsigned).IsEqualTo($"user.signingkey names {Path.Combine(folder.Path, "no-such-key")}, which isn't there");
         await Assert.That(GitRepo.Run(folder.Path, "log", "-1", "--format=%G?", "pending").Output).IsEqualTo("N");
@@ -117,8 +117,8 @@ public class WriteBackTests
         var file = folder.Write("ticker.meep", Ticker);
         GitRepo.Init(folder.Path);
 
-        await Assert.That(() => PendingBranch.Commit(loose, "x", "Edit")).Throws<PendingBranchException>().WithMessageContaining("isn't in a Git repository");
-        await Assert.That(() => PendingBranch.Commit(file, "x", "Edit", "main")).Throws<PendingBranchException>().WithMessageContaining("main is checked out");
+        await Assert.That(async () => await PendingBranch.CommitAsync(loose, "x", "Edit")).Throws<PendingBranchException>().WithMessageContaining("isn't in a Git repository");
+        await Assert.That(async () => await PendingBranch.CommitAsync(file, "x", "Edit", "main")).Throws<PendingBranchException>().WithMessageContaining("main is checked out");
     }
 
     [Test]

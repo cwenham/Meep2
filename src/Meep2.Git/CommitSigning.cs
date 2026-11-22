@@ -59,12 +59,14 @@ internal static class CommitSigning
     }
 
     /// <summary>Signs a commit's content, returning the armoured signature, or why ssh-keygen couldn't.</summary>
-    public static async Task<ValueOrWhyNot<string>> SignAsync(string content, string key)
+    /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> was cancelled.</exception>
+    public static async Task<ValueOrWhyNot<string>> SignAsync(string content, string key, CancellationToken cancellationToken)
     {
         ProgramResult signed;
         try
         {
-            using var limit = new CancellationTokenSource(s_limit);
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            limit.CancelAfter(s_limit);
             signed = await ProgramRunner.RunAsync(
                 "ssh-keygen",
                 ["-Y", "sign", "-n", "git", "-f", key],
@@ -76,7 +78,7 @@ internal static class CommitSigning
         {
             return ValueOrWhyNot<string>.Not("ssh-keygen isn't on this machine");
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             return ValueOrWhyNot<string>.Not($"ssh-keygen didn't finish signing with {key}; a key with a passphrase needs to be in ssh-agent");
         }
