@@ -366,8 +366,8 @@ public sealed class Pipeline : IAsyncDisposable
 
         List<TrackingScope>? created = null;
         Stamper.StampInjected(message, this, ref created);
-        if (Telemetry.Tracing)
-            Telemetry.Injected(this, message);
+        if (Tracing.IsOn)
+            Tracing.Injected(this, message);
         if (node is InflectionNode target)
         {
             DeliverTo(target, message, depth: 0, input: 0, LinkCount.Nowhere);
@@ -613,6 +613,7 @@ public sealed class Pipeline : IAsyncDisposable
             foreach (var node in _nodes)
                 node.CreateModule();
             s_running.TryAdd(this, 0);
+            Metrics.Publish();
 
             // The pipeline's traces start with its own sources, not inside the span of whatever started it, such as
             // the Host module. The modules' tasks, started below, inherit this.
@@ -738,8 +739,8 @@ public sealed class Pipeline : IAsyncDisposable
         from.Counters.Emitted();
         if (from is SourceNode && message is not ErrorMessage)
             _sourceWindow?.Add(message.Id);
-        if (Telemetry.Tracing)
-            Telemetry.Emitted(from, emitter, message);
+        if (Tracing.IsOn)
+            Tracing.Emitted(from, emitter, message);
         from.Taps.Offer(message);
         Deliver(from, message);
         TrackingScope.ReleaseAll(created);

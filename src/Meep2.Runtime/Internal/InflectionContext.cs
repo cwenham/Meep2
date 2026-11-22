@@ -28,7 +28,7 @@ internal sealed class InflectionContext(InflectionNode node) : NodeContext<Infle
 
     public override Outlet Outlet => new NodeOutlet(Node, Module);
 
-    public override string? TraceParent => Telemetry.Tracing ? Telemetry.TraceParent(Node, _current) : null;
+    public override string? TraceParent => Tracing.IsOn ? Tracing.TraceParent(Node, _current) : null;
 
     /// <summary>Whether the module emitted the message it was given, passing it on unchanged.</summary>
     public bool PassedOn => _passedOn;

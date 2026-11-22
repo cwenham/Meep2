@@ -432,7 +432,7 @@ internal sealed class InflectionNode : Node
                 var cancellationToken = TokenFor(message, abort);
                 var outcome = MessageOutcome.Completed;
                 Exception? failure = null;
-                var span = Telemetry.Tracing ? Telemetry.StartHandling(this, slot.Spec.Info, message) : null;
+                var span = Tracing.IsOn ? Tracing.StartHandling(this, slot.Spec.Info, message) : null;
                 var started = Stopwatch.GetTimestamp();
                 _context.Begin(message, slot.Spec.Info, arrival.Input);
                 try
@@ -469,10 +469,10 @@ internal sealed class InflectionNode : Node
                     ResetExpiry(cancellationToken);
                     var took = Stopwatch.GetTimestamp() - started;
                     Timing.Record(took);
-                    if (Telemetry.Duration.Enabled)
-                        Telemetry.RecordDuration(this, took);
+                    if (Metrics.Duration.Enabled)
+                        Metrics.RecordDuration(this, took);
                     if (span is not null)
-                        Telemetry.EndHandling(this, span, outcome, failure);
+                        Tracing.EndHandling(this, span, outcome, failure);
                     Pipeline.Release(message, outcome);
                 }
             }
