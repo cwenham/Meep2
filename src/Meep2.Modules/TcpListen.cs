@@ -142,7 +142,7 @@ public sealed class TcpListen(TcpListenParameters parameters) : ASource, IChosen
 }
 
 /// <summary>Parameters for <see cref="TcpListen"/>.</summary>
-public sealed record TcpListenParameters
+public sealed record TcpListenParameters : ConnectionParameters
 {
     /// <summary>The address to listen at, such as <c>tcp://0.0.0.0:7000</c>. Host 0.0.0.0 listens on every network.</summary>
     [Positional]
@@ -164,14 +164,4 @@ public sealed record TcpListenParameters
         get;
         init => field = value is null or > 0 ? value : throw new ArgumentOutOfRangeException(nameof(Length), "A message's length must be at least 1 byte.");
     }
-
-    /// <summary>Also emits <see cref="TcpConnected"/> and <see cref="TcpDisconnected"/> as clients come and go.</summary>
-    public bool Connections { get; init; }
-
-    /// <summary>The longest message to read, in bytes. 1 MiB unless set, or <see cref="Length"/> if that's longer.</summary>
-    public long MaxSize
-    {
-        get;
-        init => field = value > 0 ? value : throw new ArgumentOutOfRangeException(nameof(MaxSize), "The size limit must be at least 1 byte.");
-    } = 1024 * 1024;
 }

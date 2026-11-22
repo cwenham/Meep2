@@ -451,6 +451,13 @@ public class LanguageServerGraphTests
         await Assert.That(Parameter(fetch, "stream")["default"]!.GetValue<string>()).IsEqualTo("false");
         await Assert.That(fetch["emits"]!.AsArray().Select(e => e!["type"]!.GetValue<string>())).Contains("HttpResponse");
 
+        // Parameters a record inherits are documented, and listed, as its own are, positional first.
+        var sendTcp = Find("Send", "TCP");
+        await Assert.That(sendTcp["parameters"]![0]!["name"]!.GetValue<string>()).IsEqualTo("url");
+        await Assert.That(Parameter(sendTcp, "tries")["description"]!.GetValue<string>()).IsEqualTo("How many times to try connecting before giving up (Q157). 3 unless set.");
+        await Assert.That(Parameter(sendTcp, "tries")["default"]!.GetValue<string>()).IsEqualTo("3");
+        await Assert.That(Parameter(Find("Listen", "TCP"), "max-size")["description"]!.GetValue<string>()).StartsWith("The longest message to read, in bytes.");
+
         var source = fetch["source"]!;
         var file = source["file"]!.GetValue<string>();
         var line = source["line"]!.GetValue<int>();

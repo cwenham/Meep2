@@ -285,7 +285,7 @@ public sealed class WebSocketListen(WebSocketListenParameters parameters) : ASou
 }
 
 /// <summary>Parameters for <see cref="WebSocketListen"/>.</summary>
-public sealed record WebSocketListenParameters
+public sealed record WebSocketListenParameters : ConnectionParameters
 {
     /// <summary>
     /// The address to listen at, such as <c>ws://0.0.0.0:8080/chat/</c>. Host 0.0.0.0 listens on every network, and the
@@ -305,16 +305,6 @@ public sealed record WebSocketListenParameters
     /// <c>"https://a.example, https://b.example"</c>, or <c>"*"</c> for any (Q151).
     /// </summary>
     public string? Origins { get; init; }
-
-    /// <summary>Also emits <see cref="WebSocketConnected"/> and <see cref="WebSocketDisconnected"/> as clients come and go.</summary>
-    public bool Connections { get; init; }
-
-    /// <summary>The longest message to read, in bytes. 1 MiB unless set.</summary>
-    public long MaxSize
-    {
-        get;
-        init => field = value > 0 ? value : throw new ArgumentOutOfRangeException(nameof(MaxSize), "The size limit must be at least 1 byte.");
-    } = 1024 * 1024;
 
     /// <summary>How often to ping each client, closing connections that stop answering. 30 seconds unless set; 0 turns it off.</summary>
     public TimeSpan Ping

@@ -90,7 +90,8 @@ public static class VerbCatalogue
                 PerMessage = perMessage,
                 Default = value,
                 Choices = choices,
-                Description = docs.Summary(type, $"P:{type.FullName}.{property.Name}"),
+                // An inherited parameter is documented on the record that declares it.
+                Description = docs.Summary(property.DeclaringType ?? type, $"P:{(property.DeclaringType ?? type).FullName}.{property.Name}"),
             });
         }
         return [.. parameters.OrderByDescending(p => p.Positional)];

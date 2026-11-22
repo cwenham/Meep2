@@ -334,7 +334,7 @@ public sealed class SendWebSocket(SendWebSocketParameters parameters) : APassthr
         if (origin is not null)
             _connections.Leave(WebSocketClient.Key(uri!, own ? null : origin));
         var client = _connections.Join(WebSocketClient.Key(uri!, own ? origin : null), context, parameters.Connections, () => new WebSocketClient(uri!, parameters, hostId, own ? origin : null));
-        await Connections.SendAsync(client, message, text, null, parameters.Tries, parameters.RetryDelay, parameters.Timeout, context, cancellationToken).ConfigureAwait(false);
+        await Connections.SendAsync(client, message, text, null, parameters, context, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Leaves the connections it used, which close once nothing uses them.</summary>
@@ -342,46 +342,8 @@ public sealed class SendWebSocket(SendWebSocketParameters parameters) : APassthr
 }
 
 /// <summary>Parameters for <see cref="SendWebSocket"/>.</summary>
-public sealed record SendWebSocketParameters
+public sealed record SendWebSocketParameters : SendConnectionParameters
 {
-    /// <summary>The address to send to, such as <c>wss://feed.example.com/prices</c>, worked out for each message.</summary>
-    [Positional]
-    public required Computed<string> Url { get; init; }
-
-    /// <summary>What to send, worked out for each message. Without it, Send sends the message itself.</summary>
-    public Computed<string>? Text { get; init; }
-
-    /// <summary>How long to wait for a message to be sent, connecting included. 30 seconds unless set.</summary>
-    public TimeSpan Timeout
-    {
-        get;
-        init => field = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(Timeout), "The timeout must be longer than zero.");
-    } = TimeSpan.FromSeconds(30);
-
-    /// <summary>How many times to try connecting before giving up (Q157). 3 unless set.</summary>
-    public int Tries
-    {
-        get;
-        init => field = value > 0 ? value : throw new ArgumentOutOfRangeException(nameof(Tries), "Send has to try at least once.");
-    } = 3;
-
-    /// <summary>How long to wait between tries. 1 second unless set.</summary>
-    public TimeSpan RetryDelay
-    {
-        get;
-        init => field = value >= TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(RetryDelay), "The delay can't be less than zero.");
-    } = TimeSpan.FromSeconds(1);
-
-    /// <summary>Also emits <see cref="WebSocketConnected"/> and <see cref="WebSocketDisconnected"/> as the connection opens and ends.</summary>
-    public bool Connections { get; init; }
-
-    /// <summary>The longest message to read from the server, in bytes. 1 MiB unless set.</summary>
-    public long MaxSize
-    {
-        get;
-        init => field = value > 0 ? value : throw new ArgumentOutOfRangeException(nameof(MaxSize), "The size limit must be at least 1 byte.");
-    } = 1024 * 1024;
-
     /// <summary>How often to ping the server, closing the connection if it stops answering. 30 seconds unless set; 0 turns it off.</summary>
     public TimeSpan Ping
     {
@@ -462,7 +424,7 @@ public sealed class SendTcp(SendTcpParameters parameters) : APassthrough<Message
         }
 
         var client = _connections.Join(TcpServerClient.Key(host, port), context, parameters.Connections, () => new TcpServerClient(url, host, port, parameters));
-        await Connections.SendAsync(client, message, text, parameters.End, parameters.Tries, parameters.RetryDelay, parameters.Timeout, context, cancellationToken).ConfigureAwait(false);
+        await Connections.SendAsync(client, message, text, parameters.End, parameters, context, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>Leaves the connections it used, which close once nothing uses them.</summary>
@@ -470,15 +432,8 @@ public sealed class SendTcp(SendTcpParameters parameters) : APassthrough<Message
 }
 
 /// <summary>Parameters for <see cref="SendTcp"/>.</summary>
-public sealed record SendTcpParameters
+public sealed record SendTcpParameters : SendConnectionParameters
 {
-    /// <summary>The address to send to, such as <c>tcp://printer.local:9100</c>, worked out for each message.</summary>
-    [Positional]
-    public required Computed<string> Url { get; init; }
-
-    /// <summary>What to send, worked out for each message. Without it, Send sends the message's text.</summary>
-    public Computed<string>? Text { get; init; }
-
     /// <summary>
     /// The text that ends each message, both ways, such as <c>"\r\n.\r\n"</c>. Without it, or <see cref="Length"/>, each
     /// line is a message.
@@ -495,37 +450,6 @@ public sealed record SendTcpParameters
         get;
         init => field = value is null or > 0 ? value : throw new ArgumentOutOfRangeException(nameof(Length), "A message's length must be at least 1 byte.");
     }
-
-    /// <summary>How long to wait for a message to be sent, connecting included. 30 seconds unless set.</summary>
-    public TimeSpan Timeout
-    {
-        get;
-        init => field = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(Timeout), "The timeout must be longer than zero.");
-    } = TimeSpan.FromSeconds(30);
-
-    /// <summary>How many times to try connecting before giving up (Q157). 3 unless set.</summary>
-    public int Tries
-    {
-        get;
-        init => field = value > 0 ? value : throw new ArgumentOutOfRangeException(nameof(Tries), "Send has to try at least once.");
-    } = 3;
-
-    /// <summary>How long to wait between tries. 1 second unless set.</summary>
-    public TimeSpan RetryDelay
-    {
-        get;
-        init => field = value >= TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(RetryDelay), "The delay can't be less than zero.");
-    } = TimeSpan.FromSeconds(1);
-
-    /// <summary>Also emits <see cref="TcpConnected"/> and <see cref="TcpDisconnected"/> as the connection opens and ends.</summary>
-    public bool Connections { get; init; }
-
-    /// <summary>The longest message to read from the server, in bytes. 1 MiB unless set, or <see cref="Length"/> if that's longer.</summary>
-    public long MaxSize
-    {
-        get;
-        init => field = value > 0 ? value : throw new ArgumentOutOfRangeException(nameof(MaxSize), "The size limit must be at least 1 byte.");
-    } = 1024 * 1024;
 }
 
 /// <summary>
@@ -711,14 +635,22 @@ internal sealed class Connections : IAsyncDisposable
     }
 
     /// <summary>Sends a message, turning a failure or a timeout into an error made from it.</summary>
-    public static async Task SendAsync(SharedClient client, Message message, string? text, string? end, int tries, TimeSpan retryDelay, TimeSpan timeout, ModuleContext context, CancellationToken cancellationToken)
+    /// <param name="client">The connection to send through.</param>
+    /// <param name="message">The message, for its body when there's no text, and to make an error from.</param>
+    /// <param name="text">What to send, worked out from the message, or null to send the message itself.</param>
+    /// <param name="end">What ends the message on TCP, or null for the connection's own.</param>
+    /// <param name="parameters">How hard to try: the Send's timeout, tries and the delay between them.</param>
+    /// <param name="context">The Send's context, for counting and for errors.</param>
+    /// <param name="cancellationToken">Cancelled when the pipeline stops.</param>
+    public static async Task SendAsync(SharedClient client, Message message, string? text, string? end, SendConnectionParameters parameters, ModuleContext context, CancellationToken cancellationToken)
     {
+        var timeout = parameters.Timeout;
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         limit.CancelAfter(timeout);
         var tally = context.Destination(client.Endpoint);
         try
         {
-            var sent = await client.SendAsync(message, text, end, tries, retryDelay, limit.Token).ConfigureAwait(false);
+            var sent = await client.SendAsync(message, text, end, parameters.Tries, parameters.RetryDelay, limit.Token).ConfigureAwait(false);
             context.CountBytes(0, sent);
             tally.Count(sent: 1, bytesSent: sent);
             tally.Meep(client.MeepId);
