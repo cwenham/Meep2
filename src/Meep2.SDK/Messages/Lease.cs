@@ -101,22 +101,12 @@ public abstract class Lease
     internal bool TakeMakersHold() => Interlocked.Exchange(ref _emitted, 1) == 0;
 
     /// <summary>The leases in a message's tracking scopes.</summary>
-    internal static IEnumerable<Lease> In(object? tracking)
+    internal static IEnumerable<Lease> In(TrackingScopes tracking)
     {
-        switch (tracking)
+        foreach (var each in tracking)
         {
-            case null:
-                yield break;
-            case LeaseScope scope:
-                yield return scope.Lease;
-                yield break;
-            case TrackingScope[] scopes:
-                foreach (var each in scopes)
-                {
-                    if (each is LeaseScope leased)
-                        yield return leased.Lease;
-                }
-                yield break;
+            if (each is LeaseScope leased)
+                yield return leased.Lease;
         }
     }
 

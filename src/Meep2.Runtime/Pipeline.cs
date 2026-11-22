@@ -377,7 +377,7 @@ public sealed class Pipeline : IAsyncDisposable
             node.Tapped(message);
             Deliver(node, message);
         }
-        ScopeSet.ReleaseAll(created);
+        TrackingScope.ReleaseAll(created);
     }
 
     /// <summary>What injected messages record as emitting them.</summary>
@@ -734,7 +734,7 @@ public sealed class Pipeline : IAsyncDisposable
         List<TrackingScope>? created = null;
         Stamper.Stamp(message, emitter, from, defaultParent, this, ref created);
         if (scope is not null)
-            message.Tracking = ScopeSet.Append(message.Tracking, scope);
+            message.Tracking = message.Tracking.Append(scope);
         from.CountEmitted();
         if (from is SourceNode && message is not ErrorMessage)
             _sourceWindow?.Add(message.Id);
@@ -742,7 +742,7 @@ public sealed class Pipeline : IAsyncDisposable
             Telemetry.Emitted(from, emitter, message);
         from.Tapped(message);
         Deliver(from, message);
-        ScopeSet.ReleaseAll(created);
+        TrackingScope.ReleaseAll(created);
     }
 
     /// <summary>Sends a message to each module <paramref name="from"/> feeds, or past one when it doesn't take it.</summary>
@@ -776,7 +776,7 @@ public sealed class Pipeline : IAsyncDisposable
         {
             // The error policy stopped this module's branch. An error dropped here is reported as unhandled.
             target.CountDropped();
-            ScopeSet.Flag(message.Tracking, MessageOutcome.Dropped);
+            message.Tracking.Flag(MessageOutcome.Dropped);
             return;
         }
         if (target.Router is { } router)
@@ -800,7 +800,7 @@ public sealed class Pipeline : IAsyncDisposable
             {
                 // Expired messages stop at the next module that would take them (Q12).
                 target.CountExpired();
-                ScopeSet.Flag(message.Tracking, MessageOutcome.Expired);
+                message.Tracking.Flag(MessageOutcome.Expired);
             }
             else
             {
@@ -866,14 +866,14 @@ public sealed class Pipeline : IAsyncDisposable
     /// <summary>Keeps a message a module has finished handling, with its leases open (<see cref="ModuleContext.Keep"/>).</summary>
     internal void Keep(Message message)
     {
-        ScopeSet.AddRef(message.Tracking);
+        message.Tracking.AddRef();
         Interlocked.Increment(ref _kept);
     }
 
     /// <summary>Stops keeping a message, which finishes unless something made from it is still in flight.</summary>
     internal void LetGo(Message message, MessageOutcome outcome)
     {
-        ScopeSet.Release(message.Tracking, outcome);
+        message.Tracking.Release(outcome);
         Interlocked.Decrement(ref _kept);
     }
 
@@ -884,13 +884,13 @@ public sealed class Pipeline : IAsyncDisposable
     internal void AddRef(Message message)
     {
         _inFlight.Add();
-        ScopeSet.AddRef(message.Tracking);
+        message.Tracking.AddRef();
     }
 
     /// <summary>Counts a message out of a buffer or handler.</summary>
     internal void Release(Message message, MessageOutcome outcome)
     {
-        ScopeSet.Release(message.Tracking, outcome);
+        message.Tracking.Release(outcome);
         ReleaseHold();
     }
 
@@ -934,7 +934,7 @@ public sealed class Pipeline : IAsyncDisposable
     {
         var answered = error.AnsweredBy is not null;
         if (!answered)
-            ScopeSet.Flag(error.Tracking, MessageOutcome.UnhandledError);
+            error.Tracking.Flag(MessageOutcome.UnhandledError);
         var policy = error.EmittedBy is { } emitter && _nodesByModule.TryGetValue(emitter, out var node)
             ? node.Policy
             : Options.ErrorPolicy;

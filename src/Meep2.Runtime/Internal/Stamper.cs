@@ -31,13 +31,13 @@ internal static class Stamper
             message.SetParents(new Parents(defaultParent));
 
         var expires = message.ExpiresTimestamp;
-        object? tracking = null;
+        var tracking = TrackingScopes.None;
         foreach (var parent in message.Parents)
         {
             // A parent the module made but didn't emit, such as an intermediate copy, is stamped first.
             Stamp(parent, emitter, from, defaultParent, pipeline, ref created);
             expires = Deadline.Earliest(expires, parent.ExpiresTimestamp);
-            tracking = ScopeSet.Union(tracking, parent.Tracking);
+            tracking = tracking.Union(parent.Tracking);
         }
 
         // @expires replaces what the message would inherit. A source's own messages get the pipeline's default.
@@ -51,7 +51,7 @@ internal static class Stamper
             // Every error is tracked, so the runtime can tell whether anything handled it.
             var scope = new ErrorScope(error, pipeline);
             (created ??= []).Add(scope);
-            tracking = ScopeSet.Prepend(scope, tracking);
+            tracking = tracking.Prepend(scope);
         }
 
         message.ExpiresTimestamp = expires;
@@ -66,7 +66,7 @@ internal static class Stamper
         {
             var scope = new ErrorScope(error, pipeline);
             (created ??= []).Add(scope);
-            message.Tracking = scope;
+            message.Tracking = new TrackingScopes(scope);
         }
         message.EmittedBy = Pipeline.Injector;
     }

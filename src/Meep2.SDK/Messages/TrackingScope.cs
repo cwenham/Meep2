@@ -32,4 +32,13 @@ internal abstract class TrackingScope
     }
 
     protected abstract void OnFinished(MessageOutcome outcome);
+
+    /// <summary>Releases each scope in a list, such as those made for new errors while a message was emitted.</summary>
+    public static void ReleaseAll(List<TrackingScope>? scopes)
+    {
+        if (scopes is null)
+            return;
+        foreach (var scope in scopes)
+            scope.Release();
+    }
 }
