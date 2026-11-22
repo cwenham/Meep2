@@ -94,8 +94,13 @@ Listen's three inflections already sit in three files, so their order depends on
 
 **Q238.** Should the order of a verb's inflections be stated outright, instead of following the files? For example, an order on `[Verb]` (`[Verb("Send", Order = 1)]`), or by rank and then name, with the catalogue sorted by verb name. Once it is, `Send.cs` can become `Send/` and Fetch's two inflections can each have a file, in a small commit after it. I'd recommend an explicit order on `[Verb]`, made in phase 3 along with H3's base records.
 
-**Answer:**
+**Answer:** Not at this time.
 
 **Q239.** I split some files with two classes in them as well (listed above), since your rule is one class to a file. Is that what you wanted, or should section 9's count of "more than two" have been the limit?
 
-**Answer:**
+**Answer:** That's fine. I'll bring up any exceptions if I think it's necessary.
+
+## After your answers
+
+- **Q238 (inflection order):** not now. A verb's inflections keep following the order of the files, so `Send.cs` stays whole and Fetch's two inflections stay together in `Fetch.cs`. Anyone splitting either should first check that the order stays the same, or the loader may try a different inflection first.
+- **Q239 (files with two classes):** the splits stand. You'll raise any exceptions as you find them.
