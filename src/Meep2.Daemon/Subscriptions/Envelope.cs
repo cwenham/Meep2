@@ -16,18 +16,25 @@ internal static class Envelope
     /// </summary>
     public static byte[] Json(string id, string name, Action<UpdateWriter> data)
     {
-        var buffer = new ArrayBufferWriter<byte>();
-        using (var writer = new Utf8JsonWriter(buffer, Relaxed))
+        var buffer = ScratchBuffer.Rent();
+        try
         {
-            writer.WriteStartObject();
-            writer.WritePropertyName("id");
-            writer.WriteRawValue(id, skipInputValidation: true);
-            writer.WriteString("event", name);
-            writer.WritePropertyName("data");
-            data(new JsonUpdateWriter(writer));
-            writer.WriteEndObject();
+            using (var writer = new Utf8JsonWriter(buffer, Relaxed))
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("id");
+                writer.WriteRawValue(id, skipInputValidation: true);
+                writer.WriteString("event", name);
+                writer.WritePropertyName("data");
+                data(new JsonUpdateWriter(writer));
+                writer.WriteEndObject();
+            }
+            return buffer.WrittenSpan.ToArray();
         }
-        return buffer.WrittenSpan.ToArray();
+        finally
+        {
+            ScratchBuffer.Return(buffer);
+        }
     }
 
     /// <summary>The same event as a CBOR map with the same three keys, for a binary frame.</summary>

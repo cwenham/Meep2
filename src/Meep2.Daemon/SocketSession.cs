@@ -319,19 +319,26 @@ internal sealed class SocketSession(
 
     private static byte[] Frame(string? id, Action<Utf8JsonWriter> rest)
     {
-        var buffer = new ArrayBufferWriter<byte>();
-        using (var writer = new Utf8JsonWriter(buffer))
+        var buffer = ScratchBuffer.Rent();
+        try
         {
-            writer.WriteStartObject();
-            writer.WritePropertyName("id");
-            if (id is null)
-                writer.WriteNullValue();
-            else
-                writer.WriteRawValue(id, skipInputValidation: true);
-            rest(writer);
-            writer.WriteEndObject();
+            using (var writer = new Utf8JsonWriter(buffer))
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("id");
+                if (id is null)
+                    writer.WriteNullValue();
+                else
+                    writer.WriteRawValue(id, skipInputValidation: true);
+                rest(writer);
+                writer.WriteEndObject();
+            }
+            return buffer.WrittenSpan.ToArray();
         }
-        return buffer.WrittenSpan.ToArray();
+        finally
+        {
+            ScratchBuffer.Return(buffer);
+        }
     }
 
     // One sender, so frames never interleave. Once the socket fails, what's queued is let go, so nothing waits on it.

@@ -222,10 +222,17 @@ internal sealed class ControlSocket(DaemonAccess access, Func<ApiRequest, Task<A
 
     private static async Task WriteAsync(HttpContext context, Action<Utf8JsonWriter> body)
     {
-        var buffer = new ArrayBufferWriter<byte>();
-        using (var writer = new Utf8JsonWriter(buffer))
-            body(writer);
-        await context.Response.Body.WriteAsync(buffer.WrittenMemory, context.RequestAborted).ConfigureAwait(false);
+        var buffer = ScratchBuffer.Rent();
+        try
+        {
+            using (var writer = new Utf8JsonWriter(buffer))
+                body(writer);
+            await context.Response.Body.WriteAsync(buffer.WrittenMemory, context.RequestAborted).ConfigureAwait(false);
+        }
+        finally
+        {
+            ScratchBuffer.Return(buffer);
+        }
     }
 
     private static async Task StartEventsAsync(HttpContext context)
@@ -239,12 +246,19 @@ internal sealed class ControlSocket(DaemonAccess access, Func<ApiRequest, Task<A
     // One server-sent event, its data a line of JSON.
     private static async Task SendEventAsync(HttpContext context, ApiEvent e)
     {
-        var buffer = new ArrayBufferWriter<byte>();
-        buffer.Write(Encoding.UTF8.GetBytes($"event: {e.Name}\ndata: "));
-        using (var writer = new Utf8JsonWriter(buffer))
-            e.Data(writer);
-        buffer.Write("\n\n"u8);
-        await context.Response.Body.WriteAsync(buffer.WrittenMemory, context.RequestAborted).ConfigureAwait(false);
-        await context.Response.Body.FlushAsync(context.RequestAborted).ConfigureAwait(false);
+        var buffer = ScratchBuffer.Rent();
+        try
+        {
+            buffer.Write(Encoding.UTF8.GetBytes($"event: {e.Name}\ndata: "));
+            using (var writer = new Utf8JsonWriter(buffer))
+                e.Data(writer);
+            buffer.Write("\n\n"u8);
+            await context.Response.Body.WriteAsync(buffer.WrittenMemory, context.RequestAborted).ConfigureAwait(false);
+            await context.Response.Body.FlushAsync(context.RequestAborted).ConfigureAwait(false);
+        }
+        finally
+        {
+            ScratchBuffer.Return(buffer);
+        }
     }
 }
