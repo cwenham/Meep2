@@ -113,13 +113,7 @@ public sealed class ModuleRegistration
     // A call to the class's MostAtOnce, if it says how many messages it can emit at once.
     private static Func<object, long?>? FindMostAtOnce(Type moduleType, Type? parametersType)
     {
-        if (parametersType is null)
-            return null;
-        var contract = moduleType.GetInterfaces().FirstOrDefault(i =>
-            i.IsGenericType
-            && i.GetGenericTypeDefinition() == typeof(IEmitsAtOnce<>)
-            && i.GetGenericArguments()[0].IsAssignableFrom(parametersType));
-        if (contract is null)
+        if (FindContract(moduleType, parametersType, typeof(IEmitsAtOnce<>)) is not { } contract)
             return null;
         var argument = contract.GetGenericArguments()[0];
         var method = moduleType.GetMethod("MostAtOnce", BindingFlags.Public | BindingFlags.Static, [argument]);
@@ -135,6 +129,21 @@ public sealed class ModuleRegistration
     /// can't take them.
     /// </summary>
     internal Func<AModule, object?, object?, bool>? Reconfigure { get; }
+
+    /// <summary>
+    /// The generic interface a module's class implements for its parameters record, such as
+    /// <c>IChosenByParameters&lt;TParameters&gt;</c>, taking that record or one it derives from; null if it has none.
+    /// </summary>
+    /// <param name="moduleType">The module's class.</param>
+    /// <param name="parametersType">Its parameters record, or null if it takes none.</param>
+    /// <param name="contract">The interface's generic definition, such as <c>typeof(IReconfigurable&lt;&gt;)</c>.</param>
+    internal static Type? FindContract(Type moduleType, Type? parametersType, Type contract) =>
+        parametersType is null
+            ? null
+            : moduleType.GetInterfaces().FirstOrDefault(i =>
+                i.IsGenericType
+                && i.GetGenericTypeDefinition() == contract
+                && i.GetGenericArguments()[0].IsAssignableFrom(parametersType));
 
     // The bool parameter an [Emits(When = ...)] names.
     private static PropertyInfo SwitchFor(Type moduleType, Type? parametersType, EmitsAttribute emits)
@@ -171,13 +180,7 @@ public sealed class ModuleRegistration
     // A call to the class's ParametersChanged, if it takes new parameters of its record's type.
     private static Func<AModule, object?, object?, bool>? FindReconfigure(Type moduleType, Type? parametersType)
     {
-        if (parametersType is null)
-            return null;
-        var contract = moduleType.GetInterfaces().FirstOrDefault(i =>
-            i.IsGenericType
-            && i.GetGenericTypeDefinition() == typeof(IReconfigurable<>)
-            && i.GetGenericArguments()[0].IsAssignableFrom(parametersType));
-        if (contract is null)
+        if (FindContract(moduleType, parametersType, typeof(IReconfigurable<>)) is not { } contract)
             return null;
 
         var module = Expression.Parameter(typeof(AModule), "module");
@@ -198,13 +201,7 @@ public sealed class ModuleRegistration
     // implementation, and compiles a call to it.
     private static Func<object, Message, string?>? FindWhyNot(Type moduleType, Type? parametersType)
     {
-        if (parametersType is null)
-            return null;
-        var contract = moduleType.GetInterfaces().FirstOrDefault(i =>
-            i.IsGenericType
-            && i.GetGenericTypeDefinition() == typeof(IChosenByParameters<>)
-            && i.GetGenericArguments()[0].IsAssignableFrom(parametersType));
-        if (contract is null)
+        if (FindContract(moduleType, parametersType, typeof(IChosenByParameters<>)) is not { } contract)
             return null;
 
         var argument = contract.GetGenericArguments()[0];
