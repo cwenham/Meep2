@@ -5,37 +5,6 @@ using Meep2.SDK.Modules;
 
 namespace Meep2.Meeplang.Compilation;
 
-/// <summary>A compiled expression the loader can check against message types before the pipeline runs.</summary>
-internal interface ICheckedComputed
-{
-    /// <summary>The expression as written.</summary>
-    string Text { get; }
-
-    /// <summary>Whether the expression fits messages of this type.</summary>
-    bool AppliesTo(Type messageType);
-
-    /// <summary>Why the expression doesn't fit messages of this type, and where, or null if it does.</summary>
-    (string Problem, SourceSpan Span)? ProblemWith(Type messageType);
-
-    /// <summary>
-    /// Which messages the parameter is worked out for: null for all, true for errors only, false for the rest
-    /// (<see cref="ForErrorsAttribute"/>).
-    /// </summary>
-    bool? ForErrors { get; set; }
-}
-
-/// <summary>Checks expressions against message types, minding which messages each is worked out for.</summary>
-internal static class CheckedComputed
-{
-    /// <summary>Whether the parameter is worked out for messages of this type.</summary>
-    public static bool IsUsedFor(this ICheckedComputed computed, Type messageType) =>
-        computed.ForErrors is not { } errors || errors == typeof(ErrorMessage).IsAssignableFrom(messageType);
-
-    /// <summary>Whether messages of this type can go into the module as far as this parameter is concerned.</summary>
-    public static bool Fits(this ICheckedComputed computed, Type messageType) =>
-        !computed.IsUsedFor(messageType) || computed.AppliesTo(messageType);
-}
-
 /// <summary>
 /// A parameter compiled from a Meeplang expression. It's compiled separately for each message type it meets, the
 /// first time it meets it, and the result is remembered. Types it doesn't fit skip the module.

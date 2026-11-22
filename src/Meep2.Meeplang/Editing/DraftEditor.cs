@@ -1,22 +1,7 @@
 using System.Globalization;
-using Meep2.Meeplang.Loading;
 using Meep2.Meeplang.Syntax;
 
 namespace Meep2.Meeplang.Editing;
-
-/// <summary>A module an <c>add</c> or <c>insert</c> edit writes, and the key it will have.</summary>
-/// <param name="Edit">Which edit wrote it, counting from 0 through the list.</param>
-/// <param name="Key">The key it has once the text is changed.</param>
-public sealed record AddedModule(int Edit, string Key);
-
-/// <summary>What a list of edits would make of a draft's text (<see cref="DraftEditor.ApplyAsync"/>).</summary>
-/// <param name="Syntax">The text after the edits, parsed.</param>
-/// <param name="Update">Its shape, keyed as <see cref="PipelineDraft.Update"/> will key it.</param>
-/// <param name="Added">
-/// The modules the <c>add</c> and <c>insert</c> edits wrote, with their keys, in the order of the edits. A template's
-/// line is copied into each of its uses, so a module added to a template is one for each use.
-/// </param>
-public sealed record DraftEdits(PipelineSyntax Syntax, DraftUpdate Update, IReadOnlyList<AddedModule> Added);
 
 /// <summary>A list of edits couldn't be made. The message says which edit, and why.</summary>
 /// <param name="edit">The edit to blame, counting from 0, or -1 if it isn't one edit's doing.</param>
@@ -30,9 +15,6 @@ public sealed class DraftEditException(int edit, string message, IReadOnlyList<D
     /// <summary>What Meeplang found wrong with the text the edits made, if that's why.</summary>
     public IReadOnlyList<Diagnostic> Problems { get; } = problems;
 }
-
-/// <summary>The verbs a text can use, or null with the reasons when its plugins can't be loaded.</summary>
-public delegate Task<(ModuleRegistry? Registry, IReadOnlyList<Diagnostic> Problems)> RegistryLookup(PipelineSyntax syntax, CancellationToken cancellationToken);
 
 /// <summary>
 /// Makes a list of <see cref="SourceEditor"/> edits to a draft's text without changing the draft, for an editor that

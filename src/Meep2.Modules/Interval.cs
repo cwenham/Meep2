@@ -1,0 +1,83 @@
+using Meep2.SDK.Modules;
+
+namespace Meep2.Modules;
+
+/// <summary>
+/// Emits a <see cref="Tick"/> straight away, then again every period, until stopped or until it has emitted
+/// <c>count</c> ticks. In Meeplang: <c>Interval 1m</c> or <c>Interval 500ms count=3</c>. Ticks are numbered from 1, or
+/// from <c>count-start</c>, as in <c>Interval 1s count-start=0</c>.
+/// </summary>
+[Verb("Interval")]
+[Emits(typeof(Tick))]
+public sealed class Interval(IntervalParameters parameters) : ASource, IReconfigurable<IntervalParameters>
+{
+    private volatile IntervalParameters _parameters = parameters;
+    private volatile PeriodicTimer? _timer;
+
+    /// <inheritdoc/>
+    protected override async Task RunAsync(ModuleContext context, CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(_parameters.Period);
+        _timer = timer;
+        for (long count = 1; ; count++)
+        {
+            var current = _parameters;
+            context.Emit(new Tick(current.CountStart + count - 1) { Payload = current.Payload });
+            if (count >= current.Count)
+                return;
+            if (!await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
+                return;
+        }
+    }
+
+    /// <summary>
+    /// Takes a new period, count, count start and payload while it runs, carrying on its count (Q121). A new count it
+    /// has already reached ends it at the next tick, and a new count start numbers the ticks after it from there.
+    /// </summary>
+    public bool ParametersChanged(IntervalParameters old, IntervalParameters next)
+    {
+        ArgumentNullException.ThrowIfNull(old);
+        ArgumentNullException.ThrowIfNull(next);
+        _parameters = next;
+        if (next.Period != old.Period && _timer is { } timer)
+        {
+            try
+            {
+                timer.Period = next.Period;
+            }
+            catch (ObjectDisposedException)
+            {
+                // It has finished meanwhile.
+            }
+        }
+        return true;
+    }
+}
+
+/// <summary>Parameters for <see cref="Interval"/>.</summary>
+public sealed record IntervalParameters
+{
+    /// <summary>How long between ticks.</summary>
+    [Positional]
+    public required TimeSpan Period
+    {
+        get;
+        init => field = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(Period), "The period must be longer than zero.");
+    }
+
+    /// <summary>How many ticks to emit before finishing. Without it, Interval runs until stopped.</summary>
+    public long? Count
+    {
+        get;
+        init => field = value is null or > 0 ? value : throw new ArgumentOutOfRangeException(nameof(Count), "The count must be at least 1.");
+    }
+
+    /// <summary>
+    /// The number of the first tick, such as 0 to match Enumerate's index (Q163). 1 unless set. It doesn't change how
+    /// many ticks <see cref="Count"/> emits.
+    /// </summary>
+    public long CountStart { get; init; } = 1;
+
+    /// <summary>Text to put in each tick, for telling intervals apart.</summary>
+    public string? Payload { get; init; }
+}

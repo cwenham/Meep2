@@ -5,28 +5,6 @@ using Meep2.SDK.Modules;
 
 namespace Meep2.Daemon.Subscriptions;
 
-/// <summary>Who a daemon is, as a subscription's <c>hello</c> and <c>GET /</c> say it.</summary>
-/// <param name="Id">Its lasting ID (<see cref="HostIdentity.IdOf"/>).</param>
-/// <param name="Names">The machine's names.</param>
-/// <param name="Addresses">The machine's addresses.</param>
-/// <param name="Version">Meep's version.</param>
-/// <param name="ProcessId">The daemon's process.</param>
-internal sealed record HostInfo(string Id, IReadOnlyList<string> Names, IReadOnlyList<string> Addresses, string Version, int ProcessId);
-
-/// <summary>What a subscription reads from the daemon.</summary>
-internal interface ISubscriptionHost
-{
-    HostInfo Identity { get; }
-
-    /// <summary>The pipelines listed now.</summary>
-    IReadOnlyCollection<HostedPipeline> Listed { get; }
-
-    RuntimeMetrics Runtime { get; }
-
-    /// <summary>Completes at the next change worth telling straight away: a pipeline's graph changing, or the list.</summary>
-    Task Changed { get; }
-}
-
 /// <summary>
 /// One subscription on a <c>/ws</c> connection: what the client asked for, each at its own rate, sent as updates
 /// carrying only what changed since the last one sent (Q202). See <see cref="SubscriptionPlan"/> for what it takes, and

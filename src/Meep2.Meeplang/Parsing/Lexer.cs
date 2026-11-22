@@ -5,36 +5,6 @@ using Meep2.SDK.Numbers;
 
 namespace Meep2.Meeplang.Parsing;
 
-internal enum TokenKind
-{
-    Identifier,
-    Number,
-    Duration,
-    String,
-    RawString,
-    Symbol,
-    End,
-}
-
-/// <summary>A token on one line. <see cref="Column"/> counts from 1, as in the source file.</summary>
-/// <param name="Text">For identifiers and symbols, the text; for double-quoted strings, the content between the quotes as written.</param>
-/// <param name="Value">For numbers, durations and single-quoted strings, the value.</param>
-internal readonly record struct Token(TokenKind Kind, string Text, int Line, int Column, int Length, object? Value = null, string? File = null)
-{
-    public SourceSpan Span => new(Line, Column, Length, File);
-
-    public bool Is(string symbol) => Kind == TokenKind.Symbol && Text == symbol;
-
-    public bool IsWord(string word) => Kind == TokenKind.Identifier && Text == word;
-
-    public override string ToString() => Kind switch
-    {
-        TokenKind.End => "the end of the line",
-        TokenKind.String => $"\"{Text}\"",
-        _ => $"'{Text}'",
-    };
-}
-
 /// <summary>
 /// Splits one line of Meeplang (or one <c>{…}</c> hole in a template) into tokens. Comments start with <c>//</c>
 /// outside a string and run to the end of the line.
@@ -339,26 +309,4 @@ internal sealed class Lexer
         _tokens.Add(new Token(kind, text, _line, Column(start), Math.Max(text.Length, 1), value, _diagnostics.SpanFile));
 
     private SourceSpan Span(int start) => new(_line, Column(start), Math.Max(_position - start, 1), _diagnostics.SpanFile);
-}
-
-/// <summary>Collects diagnostics for one file.</summary>
-internal sealed class Diagnostics(string? path)
-{
-    private readonly List<Diagnostic> _items = [];
-
-    /// <summary>
-    /// The file to record in the spans of tokens lexed with these diagnostics: set for an included file, so its
-    /// templates still point at it once copied into a pipeline.
-    /// </summary>
-    public string? SpanFile { get; init; }
-
-    public IReadOnlyList<Diagnostic> Items => _items;
-
-    public bool HasErrors => _items.Any(d => d.IsError);
-
-    public void Error(string message, SourceSpan span) => _items.Add(new Diagnostic(DiagnosticSeverity.Error, message, span, path));
-
-    public void Warning(string message, SourceSpan span) => _items.Add(new Diagnostic(DiagnosticSeverity.Warning, message, span, path));
-
-    public void Add(Diagnostic diagnostic) => _items.Add(diagnostic);
 }
