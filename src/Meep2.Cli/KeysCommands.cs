@@ -2,7 +2,7 @@ using System.ComponentModel;
 using System.Net;
 using Meep2.Daemon;
 using Meep2.Plugins;
-using Meep2.SDK.Modules;
+using Meep2.Shared;
 
 namespace Meep2.Cli;
 
@@ -235,7 +235,7 @@ internal static class KeysCommands
 
     private static async Task AppendAsync(string path, string line, CancellationToken cancellationToken)
     {
-        Meep2.SDK.Modules.PrivateFolders.Create(Path.GetDirectoryName(Path.GetFullPath(path))!);
+        Meep2.Shared.PrivateFolders.Create(Path.GetDirectoryName(Path.GetFullPath(path))!);
         await File.AppendAllTextAsync(path, line + Environment.NewLine, cancellationToken).ConfigureAwait(false);
     }
 }

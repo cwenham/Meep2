@@ -6,7 +6,7 @@ using Meep2.Daemon;
 using Meep2.Modules;
 using Meep2.Runtime;
 using Meep2.SDK.Messages;
-using Meep2.SDK.Modules;
+using Meep2.Shared;
 using Meep2.Tests.Support;
 using OpenTelemetry.Trace;
 using Numbers = Meep2.Tests.Support.Numbers;

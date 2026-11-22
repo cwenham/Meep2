@@ -2,7 +2,7 @@ using System.Globalization;
 using Meep2.Meeplang.Loading;
 using Meep2.Meeplang.Syntax;
 using Meep2.Runtime;
-using Meep2.SDK.Modules;
+using Meep2.Shared;
 
 namespace Meep2.Meeplang.Editing;
 

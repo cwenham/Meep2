@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace Meep2.SDK.Modules;
+namespace Meep2.Shared;
 
 /// <summary>
 /// Runs programs Meep relies on, such as ssh-keygen, launchctl and systemctl, with arguments as a list (never through

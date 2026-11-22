@@ -1,7 +1,7 @@
 using Meep2.Daemon;
 using Meep2.Modules;
 using Meep2.Plugins;
-using Meep2.SDK.Modules;
+using Meep2.Shared;
 using Meep2.Tests.Support;
 
 namespace Meep2.Tests;

@@ -1,6 +1,6 @@
 using System.Security;
 using System.Text;
-using Meep2.SDK.Modules;
+using Meep2.Shared;
 
 namespace Meep2.Daemon;
 
@@ -127,7 +127,7 @@ public static class DaemonService
     public static async Task InstallAsync(ServicePlan plan, string home, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        Meep2.SDK.Modules.PrivateFolders.Create(Path.Combine(home, "daemon"));
+        Meep2.Shared.PrivateFolders.Create(Path.Combine(home, "daemon"));
         Directory.CreateDirectory(Path.GetDirectoryName(plan.File)!);
         await File.WriteAllTextAsync(plan.File, plan.Content, cancellationToken).ConfigureAwait(false);
         foreach (var command in plan.Install)

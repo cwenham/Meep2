@@ -151,6 +151,8 @@ Every row is within its error bars or a little faster on the branch, and allocat
 
 **Answer:** Move to Meep2.Shared.
 
+Done: the six helpers are in `src/Meep2.Shared`, namespace `Meep2.Shared`, which every Meep project references and nothing in the SDK does. `Meep2.Git` now references `Meep2.Shared` instead of the SDK.
+
 **Q241.** Should Send and Listen share framing too: a base record for WebSocket framing (`ping`, `max-queued`) and one for TCP framing (`end`, `length`)? A record takes one base, so it would mean framing records derived from `ConnectionParameters`, and Send's retries (`timeout`, `tries`, `retry-delay`) written out twice again, or an interface for those. `max-queued` also means "wait" on a Send and "drop" on a Listen. I'd leave them as they are.
 
 **Answer:** Leave as they are.

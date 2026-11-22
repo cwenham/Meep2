@@ -8,7 +8,7 @@
   </ItemGroup>
   <ItemGroup>
     <!-- For the helpers Meep's assemblies share: running programs, and finding your home folder and SSH key. -->
-    <ProjectReference Include="..\Meep2.SDK\Meep2.SDK.csproj" />
+    <ProjectReference Include="..\Meep2.Shared\Meep2.Shared.csproj" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Meep2.Tests" />

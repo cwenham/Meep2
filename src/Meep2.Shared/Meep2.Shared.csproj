@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Helpers Meep's own assemblies share: running programs, finding your home folder, private folders, writing
+    durations, and a value or why there isn't one. Public so every Meep assembly can use them, but not promised to
+    plugins: plugins compile against Meep2.SDK only, and this assembly isn't packaged with it (Q240).
+  -->
+  <PropertyGroup>
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+</Project>

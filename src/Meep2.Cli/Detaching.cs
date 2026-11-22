@@ -42,7 +42,7 @@ internal static class Detaching
         var file = address.IsFile ? address.Location : address.ToString();
         var name = address.Name;
         // Kept to you, since what a pipeline writes can be private (S7).
-        var logs = Meep2.SDK.Modules.PrivateFolders.Create(Path.Combine(home, "logs"));
+        var logs = Meep2.Shared.PrivateFolders.Create(Path.Combine(home, "logs"));
         var log = Path.Combine(logs, name + ".log");
         var before = File.Exists(log) ? new FileInfo(log).Length : 0;
 

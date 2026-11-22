@@ -1,4 +1,4 @@
-namespace Meep2.SDK.Modules;
+namespace Meep2.Shared;
 
 /// <summary>The user's home folder: paths written with <c>~</c>, and the SSH key Meep signs with by default.</summary>
 public static class HomeFolder

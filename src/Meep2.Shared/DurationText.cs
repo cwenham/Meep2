@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace Meep2.SDK.Modules;
+namespace Meep2.Shared;
 
 /// <summary>Durations written as Meeplang writes them, such as 250ms, 30s or 1h30m, for messages and pipeline text.</summary>
 public static class DurationText

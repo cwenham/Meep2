@@ -1,4 +1,4 @@
-namespace Meep2.SDK.Modules;
+namespace Meep2.Shared;
 
 /// <summary>What a program <see cref="ProgramRunner"/> ran said, and how it ended.</summary>
 /// <param name="ExitCode">The code it exited with: 0 for success.</param>

@@ -49,7 +49,7 @@ public static class HostIdentity
             Replace(file, moved, machine);
             return moved;
         }
-        Meep2.SDK.Modules.PrivateFolders.Create(Path.GetDirectoryName(file)!);
+        Meep2.Shared.PrivateFolders.Create(Path.GetDirectoryName(file)!);
         var made = Guid.NewGuid().ToString();
         try
         {

@@ -1,4 +1,4 @@
-namespace Meep2.SDK.Modules;
+namespace Meep2.Shared;
 
 /// <summary>
 /// Folders and files kept to the user who runs Meep (S7): <c>~/.meep</c> and what's in it, such as detached pipelines'

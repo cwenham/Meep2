@@ -343,11 +343,11 @@ public sealed class BayesTree
                 // they learned (S7). A folder named with file= is made as usual.
                 var folder = System.IO.Path.GetDirectoryName(Path)!;
                 if (System.IO.Path.GetFullPath(folder) == System.IO.Path.GetFullPath(DefaultFolder))
-                    Meep2.SDK.Modules.PrivateFolders.Create(folder);
+                    Meep2.Shared.PrivateFolders.Create(folder);
                 else
                     Directory.CreateDirectory(folder);
                 var temporary = Path + ".saving";
-                var stream = new FileStream(temporary, Meep2.SDK.Modules.PrivateFolders.NewFile(FileMode.Create));
+                var stream = new FileStream(temporary, Meep2.Shared.PrivateFolders.NewFile(FileMode.Create));
                 await using (stream.ConfigureAwait(false))
                     await stream.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(snapshot, TreeJson.Default.SavedTree), cancellationToken).ConfigureAwait(false);
                 File.Move(temporary, Path, overwrite: true);

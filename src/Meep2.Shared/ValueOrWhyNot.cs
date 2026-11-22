@@ -1,4 +1,4 @@
-namespace Meep2.SDK.Modules;
+namespace Meep2.Shared;
 
 /// <summary>
 /// A value, or why it couldn't be made: what a function returns when failing is ordinary, such as finding a key to

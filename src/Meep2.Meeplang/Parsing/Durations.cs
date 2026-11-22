@@ -18,5 +18,5 @@ public static class Durations
     }
 
     /// <summary>Writes a duration as Meeplang does, such as 250ms, 30s or 1h30m.</summary>
-    public static string Format(TimeSpan duration) => Meep2.SDK.Modules.DurationText.Write(duration);
+    public static string Format(TimeSpan duration) => Meep2.Shared.DurationText.Write(duration);
 }
