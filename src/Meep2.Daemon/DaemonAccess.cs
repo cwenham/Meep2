@@ -7,8 +7,13 @@ namespace Meep2.Daemon;
 /// <param name="tokensFile">The tokens file, read again whenever it changes.</param>
 internal sealed class DaemonAccess(string tokensFile)
 {
+    // How long the tokens file is trusted not to have changed before it's looked at again.
+    private static readonly TimeSpan s_lookEvery = TimeSpan.FromSeconds(1);
+
+    private readonly Lock _reading = new();
     private DaemonTokens _tokens = DaemonTokens.Load("");
     private DateTime _tokensWritten;
+    private long _lookedAt = long.MinValue;
 
     /// <summary>What a client may do, by its <c>Authorization</c> header, or else by the user the system says <paramref name="peer"/> is.</summary>
     /// <exception cref="DaemonException">The token isn't known, or the client isn't the daemon's user.</exception>
@@ -16,7 +21,8 @@ internal sealed class DaemonAccess(string tokensFile)
     {
         if (authorization.StartsWith("Bearer ", StringComparison.Ordinal))
         {
-            return Tokens().Find(authorization["Bearer ".Length..].Trim())?.Capabilities
+            var token = authorization["Bearer ".Length..].Trim();
+            return (Tokens(fresh: false).Find(token) ?? Tokens(fresh: true).Find(token))?.Capabilities
                 ?? throw new DaemonException(401, "That token isn't one this daemon knows.");
         }
         var owner = PeerCredentials.CurrentUser;
@@ -33,15 +39,25 @@ internal sealed class DaemonAccess(string tokensFile)
             throw new DaemonException(403, $"That needs the {CapabilityNames.Of(need)[0]} capability, and you have {(have == Capabilities.None ? "none" : string.Join(", ", CapabilityNames.Of(have)))}.");
     }
 
-    // The tokens file, read again when it changes.
-    private DaemonTokens Tokens()
+    // The tokens file, read again when it changes. Requests come on many threads at once, so the tokens and when
+    // their file was written are kept together, under a lock (P3). The file is looked at no more than once a second,
+    // unless a token isn't found (fresh), so a token made a moment ago works at once, and one taken out stops
+    // working within a second.
+    private DaemonTokens Tokens(bool fresh)
     {
-        var written = File.Exists(tokensFile) ? File.GetLastWriteTimeUtc(tokensFile) : default;
-        if (written != _tokensWritten)
+        lock (_reading)
         {
-            _tokens = DaemonTokens.Load(tokensFile);
-            _tokensWritten = written;
+            var now = Environment.TickCount64;
+            if (!fresh && now - _lookedAt < (long)s_lookEvery.TotalMilliseconds)
+                return _tokens;
+            _lookedAt = now;
+            var written = File.Exists(tokensFile) ? File.GetLastWriteTimeUtc(tokensFile) : default;
+            if (written != _tokensWritten)
+            {
+                _tokens = DaemonTokens.Load(tokensFile);
+                _tokensWritten = written;
+            }
+            return _tokens;
         }
-        return _tokens;
     }
 }

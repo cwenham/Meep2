@@ -16,6 +16,10 @@ if (args is ["flows", ..])
 if (args is ["fam", ..])
     return await Meep2.Benchmarks.FamCost.RunAsync(args);
 
+// API requests a second with a token (P3): dotnet run -c Release -- requests [--clients 8] [--seconds 10]
+if (args is ["requests", ..])
+    return await Meep2.Benchmarks.RequestRate.RunAsync(args);
+
 // Pick benchmarks from the command line, for example: dotnet run -c Release -- --filter '*Pipeline*'
 BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
 return 0;

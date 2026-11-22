@@ -275,6 +275,26 @@ public class DaemonTests
     }
 
     [Test]
+    public async Task A_new_token_works_at_once_and_one_taken_out_stops_within_a_second()
+    {
+        using var folder = new TemporaryFolder();
+        var file = Path.Combine(folder.Path, "tokens");
+        var first = DaemonTokens.Create(file, "first", Capabilities.Observe);
+        var access = new DaemonAccess(file);
+        var before = access.CapabilitiesOf("Bearer " + first, null);
+
+        var second = DaemonTokens.Create(file, "second", Capabilities.Control);
+        var made = access.CapabilitiesOf("Bearer " + second, null); // the file is read again for a token it doesn't know
+        File.WriteAllLines(file, File.ReadAllLines(file).Where(line => !line.StartsWith("first ", StringComparison.Ordinal)));
+        await Task.Delay(TimeSpan.FromSeconds(1.2));
+        var gone = await Assert.That(() => access.CapabilitiesOf("Bearer " + first, null)).Throws<DaemonException>();
+
+        await Assert.That(before).IsEqualTo(Capabilities.Observe);
+        await Assert.That(made).IsEqualTo(Capabilities.Control);
+        await Assert.That(gone!.Status).IsEqualTo(401);
+    }
+
+    [Test]
     public async Task The_daemon_knows_which_user_connected()
     {
         Skip.When(OperatingSystem.IsWindows(), "Windows doesn't report who's at the other end of a local socket.");
