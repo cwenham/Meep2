@@ -127,41 +127,55 @@ internal static class KeysCommands
             files = paths;
         }
 
-        SshSignature signature;
-        string list;
+        if (await SignFolderAsync(folder, files, keyPath, error, cancellationToken).ConfigureAwait(false) is not { } signed)
+            return 1;
+        await ReportSignedAsync(signed, folder, options, output).ConfigureAwait(false);
+        return 0;
+    }
+
+    // Signs the files in a folder (or all of it) with ssh-keygen, writing the list of files and the signature there.
+    // Null, having said why, if it couldn't.
+    private static async Task<SignedFolder?> SignFolderAsync(string folder, IEnumerable<string>? files, string keyPath, TextWriter error, CancellationToken cancellationToken)
+    {
         try
         {
-            list = PluginSignature.WriteList(folder, files);
+            var list = PluginSignature.WriteList(folder, files);
             var signaturePath = Path.Combine(folder, PluginSignature.FileName);
             File.Delete(signaturePath);
             var signed = await SshKeygenAsync(["-Y", "sign", "-n", PluginSignature.Namespace, "-f", keyPath, list], cancellationToken).ConfigureAwait(false);
             if (!signed.Succeeded || !File.Exists(signaturePath))
             {
                 await error.WriteLineAsync($"ssh-keygen couldn't sign {list}: {signed.Said}").ConfigureAwait(false);
-                return 1;
+                return null;
             }
-            signature = PluginSignature.Read(folder)!;
+            return new SignedFolder(list, PluginSignature.Read(folder)!);
         }
         catch (Win32Exception)
         {
             await error.WriteLineAsync("meep sign uses ssh-keygen, which comes with OpenSSH. Install it, or put it on your PATH.").ConfigureAwait(false);
-            return 1;
+            return null;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or FormatException)
         {
             await error.WriteLineAsync(exception.Message).ConfigureAwait(false);
-            return 1;
+            return null;
         }
+    }
 
-        var count = File.ReadLines(list).Count(line => line.Length > 0);
-        var key = signature.Key;
+    // How many files were signed, with which key, and how people can trust it.
+    private static async Task ReportSignedAsync(SignedFolder signed, string folder, PluginOptions options, TextWriter output)
+    {
+        var count = File.ReadLines(signed.List).Count(line => line.Length > 0);
+        var key = signed.Signature.Key;
         await output.WriteLineAsync($"Signed {count} file{(count == 1 ? "" : "s")} with the {key.Type} key {key.Fingerprint}, in {Path.Combine(folder, PluginSignature.FileName)}.").ConfigureAwait(false);
         var trust = $"meep keys trust {Environment.UserName} {key.Text}";
         if (TrustedKeys.Load(options.TrustedKeysFile).Find(key) is null)
             await output.WriteLineAsync($"You don't trust this key yet, so meep won't load the plugin here until you do: {trust}").ConfigureAwait(false);
         await output.WriteLineAsync($"People using the plugin can trust your key with {trust}, or with meep keys trust github:<you> if it's on your GitHub account.").ConfigureAwait(false);
-        return 0;
     }
+
+    // The list of files signed, and the signature over it.
+    private sealed record SignedFolder(string List, SshSignature Signature);
 
     // The keys on a GitHub account, from github.com/<user>.keys.
     private static async Task<List<PublicKey>> GitHubKeysAsync(string user, PluginOptions options, TextWriter output, CancellationToken cancellationToken)

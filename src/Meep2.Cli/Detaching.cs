@@ -46,21 +46,7 @@ internal static class Detaching
         var log = Path.Combine(logs, name + ".log");
         var before = File.Exists(log) ? new FileInfo(log).Length : 0;
 
-        // All three of its standard handles are pipes of its own. The .NET runtime keeps copies of the handles a
-        // process starts with, so if it were given the terminal's, it would hold them open for as long as it runs.
-        var command = MeepExecutable.Command();
-        var start = new ProcessStartInfo(command[0])
-        {
-            UseShellExecute = false,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        foreach (var word in command.Skip(1).Concat(["run", .. settings.Options(), "--detached-to", log, file]))
-            start.ArgumentList.Add(word);
-        start.Environment["MEEP_HOME"] = home;
-        using var child = Process.Start(start) ?? throw new InvalidOperationException("Couldn't start meep in the background.");
-        child.StandardInput.Close();
+        using var child = StartChild(["run", .. settings.Options(), "--detached-to", log, file], home);
         _ = child.StandardError.ReadToEndAsync(cancellationToken); // it goes to the log, but in case anything comes first
 
         string? said;
@@ -85,13 +71,38 @@ internal static class Detaching
 
         // It ended without running: show what it said, as the foreground would have.
         await child.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
-        await using (var reading = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-        {
-            reading.Seek(before, SeekOrigin.Begin);
-            using var reader = new StreamReader(reading);
-            await error.WriteAsync(await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
-        }
+        await CopyLogAsync(log, before, error, cancellationToken).ConfigureAwait(false);
         return child.ExitCode == 0 ? 1 : child.ExitCode;
+    }
+
+    // Starts meep with these arguments, in Meep's folder home. All three of its standard handles are pipes of its own:
+    // the .NET runtime keeps copies of the handles a process starts with, so if it were given the terminal's, it
+    // would hold them open for as long as it runs.
+    private static Process StartChild(IEnumerable<string> arguments, string home)
+    {
+        var command = MeepExecutable.Command();
+        var start = new ProcessStartInfo(command[0])
+        {
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (var word in command.Skip(1).Concat(arguments))
+            start.ArgumentList.Add(word);
+        start.Environment["MEEP_HOME"] = home;
+        var child = Process.Start(start) ?? throw new InvalidOperationException("Couldn't start meep in the background.");
+        child.StandardInput.Close();
+        return child;
+    }
+
+    // What was written to a log after the first `from` bytes.
+    private static async Task CopyLogAsync(string log, long from, TextWriter to, CancellationToken cancellationToken)
+    {
+        await using var reading = new FileStream(log, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        reading.Seek(from, SeekOrigin.Begin);
+        using var reader = new StreamReader(reading);
+        await to.WriteAsync(await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false)).ConfigureAwait(false);
     }
 
     /// <summary>
