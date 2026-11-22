@@ -284,17 +284,10 @@ internal sealed class SocketSession(
         if (!frame.TryGetProperty("path", out var p) || p.ValueKind != JsonValueKind.String || p.GetString() is not { Length: > 0 } path)
             throw new DaemonException(400, "A request needs a path, as the HTTP API has it, such as \"/pipelines\".");
         var uri = new Uri(new Uri("http://meep/"), path);
-        var query = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var pair in uri.Query.TrimStart('?').Split('&', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var equals = pair.IndexOf('=', StringComparison.Ordinal);
-            var key = Uri.UnescapeDataString(equals < 0 ? pair : pair[..equals]);
-            query[key] = equals < 0 ? "" : Uri.UnescapeDataString(pair[(equals + 1)..].Replace('+', ' '));
-        }
         return new ApiRequest(
             method,
             uri.AbsolutePath.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.UnescapeDataString).ToArray(),
-            query,
+            ApiRequest.QueryOf(uri.Query),
             frame.TryGetProperty("text", out var text) && text.ValueKind == JsonValueKind.String ? text.GetString() : null,
             frame.TryGetProperty("json", out var json) ? json : null,
             capabilities,

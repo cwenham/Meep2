@@ -1,5 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
+using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.Primitives;
 
 namespace Meep2.Daemon;
 
@@ -18,7 +20,15 @@ internal sealed record ApiRequest(
     string? Text,
     JsonElement? Json,
     Capabilities Capabilities,
-    CancellationToken Aborted);
+    CancellationToken Aborted)
+{
+    /// <summary>A query's values by name, as ASP.NET reads them, so the HTTP API and the WebSocket agree.</summary>
+    public static IReadOnlyDictionary<string, string> QueryOf(IEnumerable<KeyValuePair<string, StringValues>> query) =>
+        query.ToDictionary(q => q.Key, q => q.Value.ToString(), StringComparer.Ordinal);
+
+    /// <summary>A query string's values by name, such as <c>?force=true</c>'s, as <see cref="QueryOf(IEnumerable{KeyValuePair{string, StringValues}})"/> reads them.</summary>
+    public static IReadOnlyDictionary<string, string> QueryOf(string query) => QueryOf(QueryHelpers.ParseQuery(query));
+}
 
 /// <summary>What the API gives back: an <see cref="Answer"/>, or a stream of <see cref="Events"/>.</summary>
 internal abstract record ApiReply;

@@ -607,7 +607,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         return new ApiRequest(
             request.Method,
             request.Path.Value!.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.UnescapeDataString).ToArray(),
-            request.Query.ToDictionary(q => q.Key, q => q.Value.ToString(), StringComparer.Ordinal),
+            ApiRequest.QueryOf(request.Query),
             text,
             json,
             capabilities,

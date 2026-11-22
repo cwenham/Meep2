@@ -12,6 +12,18 @@ namespace Meep2.Tests;
 /// <summary>The daemon and its control API, and the meep commands that use it (step 7).</summary>
 public class DaemonTests
 {
+    [Test]
+    public async Task The_websocket_api_reads_a_query_as_the_http_api_does()
+    {
+        // As ASP.NET reads a query: + is a space, a name given twice keeps both values, and names match in any case.
+        var query = ApiRequest.QueryOf("?force=true&name=a+b%21&tag=x&tag=y&Empty=");
+        await Assert.That(query["force"]).IsEqualTo("true");
+        await Assert.That(query["name"]).IsEqualTo("a b!");
+        await Assert.That(query["tag"]).IsEqualTo("x,y");
+        await Assert.That(query["Empty"]).IsEqualTo("");
+        await Assert.That(ApiRequest.QueryOf("").Count).IsEqualTo(0);
+    }
+
     private const string Ticker = """
         Interval 20ms
             WriteLine "{msg}"
