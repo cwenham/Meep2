@@ -367,6 +367,35 @@ public class HostingTests
     }
 
     [Test]
+    [NotInParallel("meep-host-public")]
+    public async Task Meep_run_can_tell_clients_anywhere_its_id()
+    {
+        var settings = HostSettings.Parse(["--meep-host-public", "ticker.meep"], new SharedText());
+        await Assert.That(settings!.MeepHostPublic).IsTrue();
+        await Assert.That(settings.Options()).Contains("--meep-host-public"); // so --detach and the service keep it
+        await Assert.That(HostSettings.Parse(["ticker.meep"], new SharedText())!.MeepHostPublic).IsFalse();
+
+        using var folder = new TemporaryFolder();
+        var file = folder.Write("counted.meep", """
+            Interval 10ms count=1
+                WriteLine "{msg.Count}"
+            """);
+        var before = MeepHosts.AnswerAnyone;
+        try
+        {
+            MeepHosts.AnswerAnyone = false;
+            var code = await Wait.For(MeepCommand.RunAsync(["run", "--meep-host-public", file], new SharedText(), new SharedText(), folder.Path, CancellationToken.None));
+
+            await Assert.That(code).IsEqualTo(0);
+            await Assert.That(MeepHosts.AnswerAnyone).IsTrue();
+        }
+        finally
+        {
+            MeepHosts.AnswerAnyone = before;
+        }
+    }
+
+    [Test]
     public async Task Meep_run_refuses_a_share_it_cant_use()
     {
         var error = new SharedText();

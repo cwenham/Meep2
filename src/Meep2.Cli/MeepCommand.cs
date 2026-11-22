@@ -14,7 +14,7 @@ public static class MeepCommand
 {
     private const string Usage = """
         Usage:
-          meep run [--dev] [--watch] [--otlp <url>] [--sample <share>] [--detach] <pipeline>
+          meep run [--dev] [--watch] [--otlp <url>] [--sample <share>] [--meep-host-public] [--detach] <pipeline>
                                                 Run a pipeline until it halts, or until Ctrl+C. It's a file,
                                                 - for standard input, an https:// URL, or a file in Git, as
                                                 git+https://host/repo.git#file.meep@ref. One from a URL or Git
@@ -24,8 +24,10 @@ public static class MeepCommand
                                                 --watch changes the running pipeline when the file changes.
                                                 --otlp sends spans and metrics to an OpenTelemetry collector.
                                                 --sample records that share of traces: 0.1 unless it says (1 is all).
+                                                --meep-host-public tells clients anywhere this run's ID, when they
+                                                ask a Listen, not only those on private addresses.
                                                 --detach runs it in the background, with its output in a log.
-          meep daemon [--dev] [--otlp <url>] [--sample <share>] [--config <file>] [<file.meep> ...]
+          meep daemon [--dev] [--otlp <url>] [--sample <share>] [--meep-host-public] [--config <file>] [<file.meep> ...]
                                                 Run the daemon, which hosts pipelines, until Ctrl+C. It starts
                                                 the files given, and those its settings file lists.
           meep daemon install [options] [<file.meep> ...]
@@ -109,7 +111,7 @@ public static class MeepCommand
             {
                 if (HostSettings.Parse(rest, error) is not { Files: [_], Config: null } run)
                 {
-                    await error.WriteLineAsync("meep run takes one pipeline file, with --dev, --otlp <url>, --sample <share> or --detach.").ConfigureAwait(false);
+                    await error.WriteLineAsync("meep run takes one pipeline file, with --dev, --watch, --otlp <url>, --sample <share>, --meep-host-public or --detach.").ConfigureAwait(false);
                     return 2;
                 }
                 if (run.Detach)
@@ -118,6 +120,8 @@ public static class MeepCommand
                 // it, and its spans and metrics carry it as service.instance.id.
                 var instance = Guid.NewGuid().ToString();
                 using var telemetry = Telemetry.Start(run.Otlp, run.Sample, instance);
+                if (run.MeepHostPublic)
+                    MeepHosts.AnswerAnyone = true;
                 return await RunFileAsync(run.Files[0], Options(run.DeveloperMode), run.Watch, output, error, cancellationToken, instance).ConfigureAwait(false);
             }
             case ["daemon", "token", var name, .. var capabilities] when capabilities.Length > 0:
@@ -134,7 +138,7 @@ public static class MeepCommand
             {
                 if (HostSettings.Parse(rest, error) is not { Detach: false } daemon)
                 {
-                    await error.WriteLineAsync("meep daemon takes pipeline files to start, with --dev, --otlp <url>, --sample <share> or --config <file>. To run it in the background, use meep daemon install.").ConfigureAwait(false);
+                    await error.WriteLineAsync("meep daemon takes pipeline files to start, with --dev, --otlp <url>, --sample <share>, --meep-host-public or --config <file>. To run it in the background, use meep daemon install.").ConfigureAwait(false);
                     return 2;
                 }
                 return await DaemonCommands.RunAsync(daemon, Options(daemon.DeveloperMode), output, error, cancellationToken).ConfigureAwait(false);

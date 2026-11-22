@@ -56,7 +56,7 @@ Receives messages from the network, each carrying a lease so `Send` can reply. C
 
 - Positional: `url`
 - Example: `Listen "ws://0.0.0.0:8080/chat/" as Room`
-- HTTP and WebSocket Listens tell a client that asks with `Meep-Host: ?` the daemon's ID only if it's on this machine or a private address, unless the daemon's settings have `meep-host-public = true`. An origin a client gives is counted as it says; it's a claim, not proof.
+- HTTP and WebSocket Listens tell a client that asks with `Meep-Host: ?` the daemon's ID only if it's on this machine or a private address, unless the daemon's settings have `meep-host-public = true` (or `meep run` or `meep daemon` is given `--meep-host-public`). An origin a client gives is counted as it says; it's a claim, not proof.
 
 ## Getting and reshaping data
 

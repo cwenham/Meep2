@@ -18,6 +18,12 @@ internal sealed record HostSettings
     /// <summary>--sample: the share of traces to record, more than 0 and at most 1.</summary>
     public double? Sample { get; set; }
 
+    /// <summary>
+    /// --meep-host-public: Listens tell clients anywhere this host's ID, not only those on this machine or a private
+    /// address (Q230), as <c>meep-host-public = true</c> does in the daemon's settings.
+    /// </summary>
+    public bool MeepHostPublic { get; set; }
+
     /// <summary>--detach: run in the background (meep run only).</summary>
     public bool Detach { get; set; }
 
@@ -37,6 +43,8 @@ internal sealed record HostSettings
             yield return "--dev";
         if (Watch)
             yield return "--watch";
+        if (MeepHostPublic)
+            yield return "--meep-host-public";
         if (Otlp is not null)
         {
             yield return "--otlp";
@@ -72,6 +80,9 @@ internal sealed record HostSettings
                     break;
                 case "--watch":
                     settings.Watch = true;
+                    break;
+                case "--meep-host-public":
+                    settings.MeepHostPublic = true;
                     break;
                 case "--otlp" when next is not null && Uri.TryCreate(next, UriKind.Absolute, out _):
                     settings.Otlp = next;
