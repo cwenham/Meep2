@@ -125,101 +125,116 @@ public static class MessageJson
 
     private static void WriteValue(Utf8JsonWriter writer, object? value, int depth)
     {
+        if (TryWriteSimple(writer, value))
+            return;
+        if (depth >= MaxDepth)
+        {
+            writer.WriteStringValue(value!.ToString());
+            return;
+        }
+        if (value is IEnumerable items)
+            WriteItems(writer, items, depth);
+        else
+            WriteProperties(writer, value!, depth);
+    }
+
+    // A value written as it is, or as text: true if it was one.
+    private static bool TryWriteSimple(Utf8JsonWriter writer, object? value)
+    {
         switch (value)
         {
             case null:
                 writer.WriteNullValue();
-                return;
+                return true;
             case string text:
                 writer.WriteStringValue(text.Length > MaxText ? string.Concat(text.AsSpan(0, MaxText), "…") : text);
-                return;
+                return true;
             case bool flag:
                 writer.WriteBooleanValue(flag);
-                return;
+                return true;
             case int or long or short or byte or sbyte or ushort or uint:
                 writer.WriteNumberValue(Convert.ToInt64(value, CultureInfo.InvariantCulture));
-                return;
+                return true;
             case ulong number:
                 writer.WriteNumberValue(number);
-                return;
+                return true;
             case decimal number:
                 writer.WriteNumberValue(number);
-                return;
+                return true;
             case double or float:
                 var real = Convert.ToDouble(value, CultureInfo.InvariantCulture);
                 if (double.IsFinite(real))
                     writer.WriteNumberValue(real);
                 else
                     writer.WriteStringValue(real.ToString(CultureInfo.InvariantCulture));
-                return;
+                return true;
             case DateTime time:
                 writer.WriteStringValue(time.ToString("O", CultureInfo.InvariantCulture));
-                return;
+                return true;
             case DateTimeOffset time:
                 writer.WriteStringValue(time.ToString("O", CultureInfo.InvariantCulture));
-                return;
+                return true;
             case Guid or TimeSpan or Enum or ModuleInfo or Lease or Uri or IFormattable:
                 writer.WriteStringValue(Convert.ToString(value, CultureInfo.InvariantCulture));
-                return;
+                return true;
             case JsonElement element:
                 element.WriteTo(writer);
-                return;
+                return true;
             case ReadOnlyMemory<byte> bytes:
                 writer.WriteStringValue($"{bytes.Length} bytes");
-                return;
+                return true;
             case byte[] bytes:
                 writer.WriteStringValue($"{bytes.Length} bytes");
-                return;
+                return true;
             case Message message:
                 writer.WriteStartObject();
                 WriteIdentity(writer, message);
                 writer.WriteEndObject();
-                return;
+                return true;
             case Exception exception:
                 writer.WriteStartObject();
                 writer.WriteString("type", exception.GetType().Name);
                 writer.WriteString("message", exception.Message);
                 writer.WriteEndObject();
-                return;
+                return true;
             case Delegate or Stream or Task:
                 writer.WriteStringValue($"({value.GetType().Name})");
-                return;
+                return true;
         }
+        return false;
+    }
 
-        if (depth >= MaxDepth)
+    // A dictionary as an object, and anything else enumerable as an array, each up to MaxItems.
+    private static void WriteItems(Utf8JsonWriter writer, IEnumerable items, int depth)
+    {
+        if (Pairs(items) is { } pairs)
         {
-            writer.WriteStringValue(value.ToString());
-            return;
-        }
-        if (value is IEnumerable items)
-        {
-            if (Pairs(value) is { } pairs)
+            writer.WriteStartObject();
+            foreach (var (key, item) in pairs.Take(MaxItems))
             {
-                writer.WriteStartObject();
-                foreach (var (key, item) in pairs.Take(MaxItems))
-                {
-                    writer.WritePropertyName(key);
-                    WriteValue(writer, item, depth + 1);
-                }
-                writer.WriteEndObject();
-                return;
-            }
-            writer.WriteStartArray();
-            var count = 0;
-            foreach (var item in items)
-            {
-                if (count++ == MaxItems)
-                {
-                    writer.WriteStringValue("…");
-                    break;
-                }
+                writer.WritePropertyName(key);
                 WriteValue(writer, item, depth + 1);
             }
-            writer.WriteEndArray();
+            writer.WriteEndObject();
             return;
         }
+        writer.WriteStartArray();
+        var count = 0;
+        foreach (var item in items)
+        {
+            if (count++ == MaxItems)
+            {
+                writer.WriteStringValue("…");
+                break;
+            }
+            WriteValue(writer, item, depth + 1);
+        }
+        writer.WriteEndArray();
+    }
 
-        // Anything else: its public properties, or its text if it has none.
+    // Anything else: its public properties, or its text if it has none.
+    private static void WriteProperties(Utf8JsonWriter writer, object value, int depth)
+    {
         var properties = PropertiesOf(value.GetType());
         if (properties.Length == 0)
         {
