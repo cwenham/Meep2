@@ -199,13 +199,23 @@ Requests a second are the same or a little better. Each request allocates about 
 
 230. S11's setting: is `meep-host-public = true`, under `defaults` in `daemon.meep`, the name and place you want? And should `meep run` be able to set it, with a command-line option, or is private-only right for it?
 
+**Answer:** Yes to both.
+
 231. What counts as private for S11: loopback, the three private IPv4 ranges, link-local, 100.64/10 and IPv6's unique-local range. 100.64/10 is the shared range carriers use too, so on a carrier's network others' machines may be in it; I included it for Tailscale, whose machines are given addresses there. Keep it, or leave it out and let Tailscale users name hosts in `meep-hosts`? And a name counts as private only if every address it resolves to is; is a lookup each 30 seconds acceptable, or would you rather names were never private unless `meep-hosts` names them?
+
+**Answer:** Leave it out. 30 second lookups are fine.
 
 232. Q224 said origins go only to private and named hosts. I went a step further: Fetch and Send don't ask public hosts `Meep-Host: ?` either, since they'd never be told anything, and asking says the client runs Meep. So a public Meep host is never learned and must be named in `meep-hosts` to get origins. Agree?
 
+**Answer:** Yes.
+
 233. M2: a tree kept only in memory (`save-every=0`) now leaves memory when no pipeline uses it, so a pipeline started again later starts with an empty tree. Is that what `save-every=0` should mean, or should such trees stay until the daemon stops (which leaves M2's leak for them)?
 
+**Answer:** Yes.
+
 234. S8: declaring `limited` support for untrusted workspaces turns Meeplang's highlighting, checking and completion on in folders you haven't trusted, which were off before, running `meep lsp` from your own setting. Keep that, or declare `supported: false`, which keeps it off there as before, with the setting's scope still fixed?
+
+**Answer:** Keep that.
 
 235. Q7, with M8's numbers: holding one record of a split file holds the whole file, and a module that makes each message from the one before (`last with { … }`) grows a chain without end, 88 bytes a message, about 72 MB a day at ten a second. Options:
 
@@ -216,9 +226,15 @@ Requests a second are the same or a little better. Each request allocates about 
 
      I'd suggest (a) now, and (b) when a pipeline needs it; (c) makes `fam` depend on how far back something is, and (d) only covers sources.
 
+**Answer:** (a)
+
 236. S9 limits a request's body to 1 MiB, so a pipeline sent to the daemon as text (`meep start -`, `StartTextAsync`) can be at most 1 MiB, though one from a URL can be 4 MiB (S5). Raise the control socket's limit to 4 MiB for starting pipelines, or keep 1 MiB for everything?
 
+**Answer:** Raise to 4 MiB.
+
 237. S2's `root=` goes by the path as written, so a link inside the folder that points out of it is followed. Should it resolve links, refusing a path whose real location is outside the folder? That costs a look at each folder on the path for each message.
+
+**Answer:** No.
 
 ## The test run
 
