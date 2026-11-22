@@ -225,7 +225,7 @@ internal sealed class SentState
 
     private List<SendInfo>? SendsChanged(IReadOnlyList<HostedPipeline> listed)
     {
-        var sends = MeepDaemon.Sending(listed);
+        var sends = DaemonApi.Sending(listed);
         var print = string.Join('\n', sends.Select(s => $"{s.Pipeline}|{s.Module}|{s.Label}|{s.Address}|{s.Computed}|{s.Endpoint}"));
         if (print == _sends)
             return null;

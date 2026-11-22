@@ -1,27 +1,9 @@
-using System.Buffers;
 using System.Collections.Concurrent;
-using System.Net.Sockets;
 using System.Reflection;
-using System.Runtime.CompilerServices;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization.Metadata;
-using Meep2.Meeplang.Compilation;
-using Meep2.Meeplang.Editing;
-using Meep2.Meeplang.Hosting;
+using Meep2.Daemon.Subscriptions;
 using Meep2.Meeplang.Loading;
 using Meep2.Modules;
-using Meep2.Plugins;
-using Meep2.Daemon.Subscriptions;
 using Meep2.Runtime;
-using Meep2.SDK.Messages;
-using Meep2.SDK.Modules;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Connections;
-using Microsoft.AspNetCore.Connections.Features;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Http.Features;
 
 namespace Meep2.Daemon;
 
@@ -68,8 +50,6 @@ namespace Meep2.Daemon;
 /// </remarks>
 public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
 {
-    private const string PeerKey = "meep.peer";
-
     private readonly Lazy<RuntimeMetrics> _runtime = new(() => new RuntimeMetrics());
     private readonly Lock _signalling = new();
     private TaskCompletionSource _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -82,9 +62,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     private readonly CancellationTokenSource _stopping = new();
     private readonly TaskCompletionSource _stopRequested = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Lock _logging = new();
-    private WebApplication? _app;
-    private DaemonTokens _tokens = DaemonTokens.Load("");
-    private DateTime _tokensWritten;
+    private ControlSocket? _control;
     private int _stopped;
 
     /// <summary>Makes a daemon. Start it with <see cref="StartAsync"/> or <see cref="RunAsync"/>.</summary>
@@ -110,10 +88,16 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     /// <summary>How many pipelines are listed now, without taking off those that have stayed long enough, for tests.</summary>
     internal int ListedNow => _pipelines.Count;
 
+    /// <summary>The names of the pipelines listed now.</summary>
+    internal ICollection<string> Names => _pipelines.Keys;
+
+    /// <summary>The pipelines listed now, without pruning.</summary>
+    internal ICollection<HostedPipeline> Hosted => _pipelines.Values;
+
     /// <summary>Completes when someone asks the daemon to stop, through the API.</summary>
     public Task StopRequested => _stopRequested.Task;
 
-    private static string Version =>
+    internal static string Version =>
         typeof(MeepDaemon).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0] ?? "?";
 
     /// <summary>The daemon's lasting ID, kept in <c>daemon/id</c> in Meep's folder (<see cref="HostIdentity"/>).</summary>
@@ -152,7 +136,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     public async Task StartAsync(CancellationToken cancellationToken = default)
     {
         var socket = Path.GetFullPath(SocketPath);
-        PrepareSocket(socket);
+        ControlSocket.Prepare(socket);
         _identity = new HostInfo(HostIdentity.IdOf(_options.Plugins.Home), await HostIdentity.NamesAsync(cancellationToken).ConfigureAwait(false), HostIdentity.Addresses(), Version, Environment.ProcessId);
         // Meep hosts the settings name, and those learned before, get origins from the first request (Q213).
         Meep2.Modules.MeepHosts.Configure(_options.MeepHosts);
@@ -162,32 +146,16 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
             Meep2.Modules.MeepHosts.AnswerAnyone = true;
         _meepHosts = Meep2.Modules.MeepHosts.Keep(_options.MeepHostsFile);
 
-        var builder = WebApplication.CreateEmptyBuilder(new WebApplicationOptions());
-        builder.WebHost.UseKestrelCore();
-        builder.WebHost.ConfigureKestrel(kestrel =>
-        {
-            kestrel.AddServerHeader = false;
-            // Bodies are read before a route's capability is checked, so they're kept small, as /ws frames are (S9).
-            // Starting a pipeline from its text, for a client allowed to, raises the limit for that request (Q236).
-            kestrel.Limits.MaxRequestBodySize = MaxBody;
-            kestrel.ListenUnixSocket(socket, listen => listen.Use(next => connection =>
-            {
-                // Who's connecting, as the system tells it, for HandleAsync to decide what they may do.
-                if (connection.Features.Get<IConnectionSocketFeature>()?.Socket is { } peer)
-                    connection.Items[PeerKey] = PeerCredentials.UserOf(peer);
-                return next(connection);
-            }));
-        });
-        _app = builder.Build();
-        _app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
-        _app.Run(HandleAsync);
-        await _app.StartAsync(cancellationToken).ConfigureAwait(false);
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(socket, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        _control = new ControlSocket(new DaemonAccess(_options.TokensFile), new DaemonApi(this).RouteAsync, _stopping.Token);
+        await _control.StartAsync(socket, cancellationToken).ConfigureAwait(false);
         Log($"meep daemon {Version} is listening on {socket}");
         _pruning = PruneEveryAsync(_stopping.Token);
+        await StartConfiguredAsync(cancellationToken).ConfigureAwait(false);
+    }
 
-        // The pipelines its command line and settings file name. A file that doesn't load is logged, not fatal.
+    // The pipelines its command line and settings file name. A file that doesn't load is logged, not fatal.
+    private async Task StartConfiguredAsync(CancellationToken cancellationToken)
+    {
         foreach (var start in _options.Start)
         {
             try
@@ -228,11 +196,8 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         await _stopping.CancelAsync().ConfigureAwait(false);
         await Task.WhenAll(_pipelines.Values.Select(hosted => hosted.Finished)).ConfigureAwait(false);
         await _pruning.ConfigureAwait(false);
-        if (_app is not null)
-        {
-            await _app.StopAsync().ConfigureAwait(false);
-            await _app.DisposeAsync().ConfigureAwait(false);
-        }
+        if (_control is not null)
+            await _control.DisposeAsync().ConfigureAwait(false);
         TryDelete(SocketPath);
         if (_runtime.IsValueCreated)
             _runtime.Value.Dispose();
@@ -290,8 +255,28 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
             address = new PipelineAddress(PipelineOrigin.Text, name ?? "pipeline");
         if (watch && !address.IsFile)
             throw new DaemonException(400, $"Only a file on this machine can be watched, and {address} isn't one.");
-        name ??= address.Name;
-        var path = address.ToString();
+        var hosted = Reserve(name ?? address.Name, address, developerMode);
+        var bootstrap = new PipelineBootstrap(hosted, Log);
+        var pipeline = bootstrap.Build(text, _options.Catalog, ((ISubscriptionHost)this).Identity.Id);
+        hosted.Bootstrap = pipeline;
+        hosted.Finished = Task.Run(() => RunBootstrapAsync(hosted, bootstrap, pipeline), CancellationToken.None);
+
+        if (!await bootstrap.Loaded.WaitAsync(cancellationToken).ConfigureAwait(false))
+        {
+            await hosted.Finished.ConfigureAwait(false);
+            throw new DaemonException(400, $"{hosted.Name} didn't load.", bootstrap.Problems);
+        }
+        foreach (var warning in hosted.Warnings)
+            Log($"[{hosted.Name}] {warning}");
+        if (watch)
+            hosted.Watch(Log);
+        Log($"[{hosted.Name}] is running, from {address}{(watch ? ", and reloads when it changes" : "")}");
+        return hosted;
+    }
+
+    // Lists a new pipeline under name, with the core verbs, replacing one of that name that has ended.
+    private HostedPipeline Reserve(string name, PipelineAddress address, bool developerMode)
+    {
         var registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly);
         registry.Add<WriteLine, WriteLineParameters>("WriteLine", parameters => new WriteLine(parameters, _options.Output));
         var plugins = _options.Plugins with { DeveloperMode = _options.Plugins.DeveloperMode || developerMode };
@@ -303,96 +288,32 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
             if (existing is not null)
                 _pipelines.TryRemove(new KeyValuePair<string, HostedPipeline>(name, existing));
         }
-
-        var problems = new ConcurrentQueue<string>();
-        var ready = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var hostedOptions = new PipelineOptions
-        {
-            HostId = ((ISubscriptionHost)this).Identity.Id,
-            UnhandledError = e => Log(e.AnsweredBy is { } answerer
-                ? $"[{name}] error from {e.EmittedBy?.ToString() ?? "the pipeline"}, answered by {answerer}: {e.Error}"
-                : $"[{name}] error from {e.EmittedBy?.ToString() ?? "the pipeline"}: {e.Error}"),
-            Notice = notice => Log($"[{name}] {notice}"),
-        };
-        var bootstrapOptions = new PipelineOptions
-        {
-            UnhandledError = e =>
-            {
-                if (!ready.Task.IsCompleted)
-                {
-                    // Loading failed: the client that asked for it is told why.
-                    if (e is MeeplangErrorMessage meeplang)
-                    {
-                        foreach (var diagnostic in meeplang.Diagnostics)
-                            problems.Enqueue(diagnostic.ToString());
-                    }
-                    else
-                    {
-                        problems.Enqueue(e.Error);
-                    }
-                    return;
-                }
-                hosted.Failed(e is PipelineStoppedMessage stopped ? stopped.Reason : e.Error);
-                Log($"[{name}] {e.Error}");
-            },
-            Notice = notice => Log($"[{name}] {notice}"),
-        };
-        var builder = new PipelineBuilder($"{name} (bootstrap)", bootstrapOptions);
-        builder.Chain(
-            address.IsFile
-                ? builder.AddSource(() => new Read(new ReadParameters { Path = address.Location }))
-                : builder.AddSource(() => new ReadPipeline(address, plugins, text: text)),
-            builder.Add(() => new Parse()),
-            builder.Add(() => new Install(registry, new PluginInstaller(plugins), _options.Catalog)),
-            builder.Add(() => new Build(registry, hostedOptions)),
-            builder.Add(() => new Host(
-                running: built =>
-                {
-                    hosted.Running(built);
-                    if (!ready.TrySetResult(true))
-                        Log($"[{name}] is running again");
-                },
-                restarting: restart =>
-                {
-                    hosted.Restarting(restart);
-                    Log($"[{name}] {restart}");
-                })));
-        var bootstrap = builder.Build();
-        hosted.Bootstrap = bootstrap;
-        hosted.Finished = Task.Run(async () =>
-        {
-            try
-            {
-                await bootstrap.RunAsync(_stopping.Token).ConfigureAwait(false);
-            }
-            finally
-            {
-                await bootstrap.DisposeAsync().ConfigureAwait(false);
-                if (!ready.TrySetResult(false))
-                {
-                    hosted.End();
-                    if (hosted.StoppedOnRequest || hosted.KeepFinished == TimeSpan.Zero)
-                        _pipelines.TryRemove(new KeyValuePair<string, HostedPipeline>(name, hosted));
-                    Log($"[{name}] has {hosted.State}, because {hosted.Reason}");
-                }
-                else
-                {
-                    _pipelines.TryRemove(new KeyValuePair<string, HostedPipeline>(name, hosted));
-                }
-            }
-        }, CancellationToken.None);
-
-        if (!await ready.Task.WaitAsync(cancellationToken).ConfigureAwait(false))
-        {
-            await hosted.Finished.ConfigureAwait(false);
-            throw new DaemonException(400, $"{name} didn't load.", [.. problems]);
-        }
-        foreach (var warning in hosted.Warnings)
-            Log($"[{name}] {warning}");
-        if (watch)
-            hosted.Watch(Log);
-        Log($"[{name}] is running, from {path}{(watch ? ", and reloads when it changes" : "")}");
         return hosted;
+    }
+
+    // Runs the bootstrap until the daemon stops or the pipeline ends, then lists it as ended, or takes it off the list
+    // if it never loaded, was stopped, or isn't to be kept.
+    private async Task RunBootstrapAsync(HostedPipeline hosted, PipelineBootstrap bootstrap, Pipeline pipeline)
+    {
+        try
+        {
+            await pipeline.RunAsync(_stopping.Token).ConfigureAwait(false);
+        }
+        finally
+        {
+            await pipeline.DisposeAsync().ConfigureAwait(false);
+            if (bootstrap.End())
+            {
+                hosted.End();
+                if (hosted.StoppedOnRequest || hosted.KeepFinished == TimeSpan.Zero)
+                    _pipelines.TryRemove(new KeyValuePair<string, HostedPipeline>(hosted.Name, hosted));
+                Log($"[{hosted.Name}] has {hosted.State}, because {hosted.Reason}");
+            }
+            else
+            {
+                _pipelines.TryRemove(new KeyValuePair<string, HostedPipeline>(hosted.Name, hosted));
+            }
+        }
     }
 
     /// <summary>
@@ -412,53 +333,15 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         await hosted.Finished.ConfigureAwait(false);
     }
 
-    // Where the running pipelines' Listens are bound now.
-    private List<ListenInfo> Listening()
-    {
-        var listening = new List<ListenInfo>();
-        foreach (var hosted in _pipelines.Values.OrderBy(p => p.Name, StringComparer.Ordinal))
-        {
-            if (hosted.Ended is not null || hosted.Pipeline is not { } pipeline || hosted.Live is not { } live)
-                continue;
-            var keys = live.ModuleKeys();
-            foreach (var at in pipeline.GetListening())
-                listening.Add(new ListenInfo(hosted.Name, keys.GetValueOrDefault(at.Module) ?? "", at.Module.ToString(), at.Address));
-        }
-        return listening;
-    }
+    /// <summary>The pipeline called <paramref name="name"/>.</summary>
+    /// <exception cref="DaemonException">There's none of that name.</exception>
+    internal HostedPipeline Find(string name) =>
+        _pipelines.TryGetValue(name, out var hosted)
+            ? hosted
+            : throw new DaemonException(404, $"There's no pipeline called {name}." + (_pipelines.IsEmpty ? " Nothing is running." : $" The daemon has: {string.Join(", ", _pipelines.Keys.Order())}."));
 
-    /// <summary>
-    /// Where the running pipelines' Fetches and Sends send, as their addresses say: those that reach the network, by
-    /// an address fixed when the pipeline started or worked out for each message.
-    /// </summary>
-    internal static List<SendInfo> Sending(IEnumerable<HostedPipeline> pipelines)
-    {
-        var sending = new List<SendInfo>();
-        foreach (var hosted in pipelines.OrderBy(p => p.Name, StringComparer.Ordinal))
-        {
-            if (hosted.Ended is not null || hosted.Pipeline is not { } pipeline || hosted.Live is not { } live)
-                continue;
-            var keys = live.ModuleKeys();
-            foreach (var to in pipeline.GetSending())
-            {
-                var endpoint = to.Computed ? Peers.EndpointOfTemplate(to.Address) : Peers.EndpointOf(to.Address);
-                if (!to.Computed && endpoint is null)
-                    continue; // a file, or a Listen's name, rather than somewhere on the network
-                if (to.Computed && endpoint is null && to.Address.TrimStart('"') is var written
-                    && (written.StartsWith('/') || written.StartsWith('~') || written.StartsWith('.') || written.StartsWith("file:", StringComparison.OrdinalIgnoreCase)))
-                    continue;
-                sending.Add(new SendInfo(hosted.Name, keys.GetValueOrDefault(to.Module) ?? "", to.Module.ToString(), to.Address)
-                {
-                    Computed = to.Computed,
-                    Endpoint = endpoint,
-                });
-            }
-        }
-        return sending;
-    }
-
-    // Takes pipelines off the list once they've been listed for as long as their files ask. Returns whether it took any.
-    private bool Prune()
+    /// <summary>Takes pipelines off the list once they've been listed for as long as their files ask. Returns whether it took any.</summary>
+    internal bool Prune()
     {
         var now = DateTimeOffset.UtcNow;
         var pruned = false;
@@ -488,563 +371,8 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         }
     }
 
-    // Someone else's daemon may be on the socket, or an old one may have left it behind.
-    private static void PrepareSocket(string socket)
-    {
-        var limit = OperatingSystem.IsLinux() ? 107 : 103;
-        if (Encoding.UTF8.GetByteCount(socket) > limit)
-            throw new DaemonException(0, $"The socket path {socket} is longer than the {limit} characters this system allows. Set MEEP_HOME to a shorter folder.");
-        // A folder only you can open, so nobody else can reach the socket.
-        Meep2.Shared.PrivateFolders.Create(Path.GetDirectoryName(socket)!);
-        if (!File.Exists(socket))
-            return;
-        using var probe = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-        try
-        {
-            probe.Connect(new UnixDomainSocketEndPoint(socket));
-        }
-        catch (SocketException)
-        {
-            File.Delete(socket); // left by a daemon that didn't stop cleanly
-            return;
-        }
-        throw new DaemonException(0, $"A meep daemon is running already, on {socket}.");
-    }
-
-    private async Task HandleAsync(HttpContext context)
-    {
-        try
-        {
-            var capabilities = CapabilitiesOf(context.Request.Headers.Authorization.ToString(), context.Features.Get<IConnectionItemsFeature>()?.Items);
-            if (context.Request.Path == "/ws")
-            {
-                await SocketAsync(context, capabilities).ConfigureAwait(false);
-                return;
-            }
-            var request = await ReadRequestAsync(context, capabilities).ConfigureAwait(false);
-            switch (await RouteAsync(request).ConfigureAwait(false))
-            {
-                case Answer answer:
-                    context.Response.StatusCode = answer.Status;
-                    if (answer.Body is not null)
-                    {
-                        context.Response.ContentType = "application/json; charset=utf-8";
-                        await WriteAsync(context, answer.Body).ConfigureAwait(false);
-                    }
-                    break;
-                case SubscribeReply:
-                    throw new DaemonException(400, "A subscription needs a WebSocket, so it can be changed as it goes. Connect to /ws and send {\"id\": 1, \"method\": \"POST\", \"path\": \"/subscribe\", \"json\": {…}}.");
-                case Events events:
-                    await StartEventsAsync(context).ConfigureAwait(false);
-                    await foreach (var e in events.Stream(context.RequestAborted).ConfigureAwait(false))
-                        await SendEventAsync(context, e).ConfigureAwait(false);
-                    break;
-            }
-        }
-        catch (DaemonException exception)
-        {
-            if (!context.Response.HasStarted)
-            {
-                context.Response.StatusCode = exception.Status;
-                context.Response.ContentType = "application/json; charset=utf-8";
-                await WriteAsync(context, ProblemOf(exception)).ConfigureAwait(false);
-            }
-        }
-        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
-        {
-            // The client went away.
-        }
-    }
-
-    /// <summary>The largest body a request to the control socket may have: 1 MiB, the same as a <c>/ws</c> frame.</summary>
-    internal const int MaxBody = SocketSession.MaxFrame;
-
-    /// <summary>
-    /// The longest pipeline text a client may send to start (Q236): 4 MiB, as for a pipeline from a URL, counted in
-    /// UTF-8 once it's out of its JSON.
-    /// </summary>
-    internal const int MaxPipelineText = PipelineSources.MaxDownload;
-
-    /// <summary>
-    /// The largest body a request to start a pipeline may have, from a client that may start one: enough for
-    /// <see cref="MaxPipelineText"/> however JSON escapes it, which can be six bytes for one (<c>\u003C</c> for
-    /// <c>&lt;</c>), with room for the rest of the request.
-    /// </summary>
-    internal const int MaxStartBody = 6 * MaxPipelineText + 64 * 1024;
-
-    // The most a request's body may be: more for starting a pipeline, from a client allowed to, than for anything else.
-    private static int BodyLimit(Microsoft.AspNetCore.Http.HttpRequest request, Capabilities capabilities) =>
-        HttpMethods.IsPost(request.Method) && request.Path == "/pipelines" && capabilities.HasFlag(Capabilities.Control) ? MaxStartBody : MaxBody;
-
-    // An HTTP request as the API sees it. Its body is JSON if it says so, and otherwise text.
-    private static async Task<ApiRequest> ReadRequestAsync(HttpContext context, Capabilities capabilities)
-    {
-        var request = context.Request;
-        string? text = null;
-        JsonElement? json = null;
-        var limit = BodyLimit(request, capabilities);
-        if (request.ContentLength > limit)
-            throw new DaemonException(413, $"A request's body can be at most {limit} bytes."); // before any of it is read
-        if (limit != MaxBody && context.Features.Get<IHttpMaxRequestBodySizeFeature>() is { IsReadOnly: false } size)
-            size.MaxRequestBodySize = limit;
-        if (request.ContentLength > 0 || request.Headers.TransferEncoding.Count > 0)
-        {
-            using var reader = new StreamReader(request.Body, Encoding.UTF8);
-            string body;
-            try
-            {
-                body = await reader.ReadToEndAsync(context.RequestAborted).ConfigureAwait(false);
-            }
-            catch (Microsoft.AspNetCore.Http.BadHttpRequestException exception) when (exception.StatusCode == StatusCodes.Status413PayloadTooLarge)
-            {
-                throw new DaemonException(413, $"A request's body can be at most {limit} bytes.", innerException: exception);
-            }
-            if (request.ContentType?.StartsWith("application/json", StringComparison.OrdinalIgnoreCase) == true)
-                json = ParseJson(body);
-            else
-                text = body;
-        }
-        return new ApiRequest(
-            request.Method,
-            request.Path.Value!.Split('/', StringSplitOptions.RemoveEmptyEntries).Select(Uri.UnescapeDataString).ToArray(),
-            ApiRequest.QueryOf(request.Query),
-            text,
-            json,
-            capabilities,
-            context.RequestAborted);
-    }
-
-    private static JsonElement ParseJson(string text)
-    {
-        try
-        {
-            using var document = JsonDocument.Parse(text);
-            return document.RootElement.Clone();
-        }
-        catch (JsonException exception)
-        {
-            throw new DaemonException(400, $"That isn't JSON: {exception.Message}");
-        }
-    }
-
-    // The API itself, whether the request came by HTTP or over a WebSocket.
-    private async Task<ApiReply> RouteAsync(ApiRequest request)
-    {
-        var capabilities = request.Capabilities;
-        Prune();
-        switch (request.Method, request.Parts)
-        {
-            case ("GET", []):
-                Require(capabilities, Capabilities.None);
-            {
-                var identity = ((ISubscriptionHost)this).Identity;
-                return Answer.Json(200, new DaemonInfo(Version, Environment.ProcessId, SocketPath, CapabilityNames.Of(capabilities), [.. _pipelines.Keys.Order()])
-                {
-                    Id = identity.Id,
-                    Names = identity.Names,
-                    Addresses = identity.Addresses,
-                    Listening = Listening(),
-                    Sending = Sending(_pipelines.Values),
-                    Clock = HostIdentity.Microseconds(DateTimeOffset.UtcNow),
-                }, DaemonJson.Default.DaemonInfo);
-            }
-            case ("POST", ["subscribe"]):
-                Require(capabilities, Capabilities.Observe);
-                return new SubscribeReply(new Subscription(SubscriptionPlan.Parse(request.Json), this));
-            case ("POST", ["stop"]):
-                Require(capabilities, Capabilities.Control);
-                _ = Task.Run(StopAsync);
-                return new Answer(202, null);
-            case ("GET", ["pipelines"]):
-                Require(capabilities, Capabilities.Observe);
-                return Answer.Json(200, (IReadOnlyList<PipelineSummary>)[.. _pipelines.Values.OrderBy(p => p.Name).Select(p => p.Summary())], DaemonJson.Default.IReadOnlyListPipelineSummary);
-            case ("POST", ["pipelines"]):
-            {
-                Require(capabilities, Capabilities.Control);
-                var start = request.Json is { } json
-                    ? Deserialize(json, DaemonJson.Default.StartRequest)
-                    : throw new DaemonException(400, "Starting a pipeline needs a JSON body, such as {\"path\": \"/home/you/ticker.meep\"}.");
-                if (start.Text is { } text && Encoding.UTF8.GetByteCount(text) > MaxPipelineText)
-                    throw new DaemonException(413, $"A pipeline's text can be at most {MaxPipelineText / (1024 * 1024)} MiB, as one from a URL can.");
-                var hosted = start.Text is not null
-                    ? await StartPipelineAsync(new PipelineAddress(PipelineOrigin.Text, start.Name ?? "pipeline"), start.DeveloperMode, watch: false, start.Text, start.Name, request.Aborted).ConfigureAwait(false)
-                    : await StartPipelineAsync(start.Path, start.DeveloperMode, start.Watch, request.Aborted).ConfigureAwait(false);
-                return Answer.Json(201, hosted.Summary(), DaemonJson.Default.PipelineSummary);
-            }
-            case ("GET", ["pipelines", var name]):
-                Require(capabilities, Capabilities.Observe);
-                return Answer.Json(200, Find(name).Detail(), DaemonJson.Default.PipelineDetail);
-            case ("DELETE", ["pipelines", var name]):
-                Require(capabilities, Capabilities.Control);
-                await StopPipelineAsync(name).ConfigureAwait(false);
-                return new Answer(204, null);
-            case ("GET", ["pipelines", var name, "graph"]):
-                Require(capabilities, Capabilities.Observe);
-                return Answer.Json(200, Find(name).Graph(), DaemonJson.Default.PipelineGraph);
-            case ("GET", ["pipelines", var name, "stats"]):
-                Require(capabilities, Capabilities.Observe);
-                return Stats(Find(name), request.Query);
-            case ("GET", ["pipelines", var name, "modules", var module, "tap"]):
-                Require(capabilities, Capabilities.Observe);
-                return Tap(Find(name), module, request.Query);
-            case ("POST", ["pipelines", var name, "modules", var module, "inject"]):
-                Require(capabilities, Capabilities.Inject);
-                return Inject(Find(name), module, request);
-            case ("GET", ["pipelines", var name, "source"]):
-            {
-                Require(capabilities, Capabilities.Observe);
-                var hosted = Find(name);
-                var text = hosted.SourceText ?? throw new DaemonException(409, $"{name} isn't running yet."); // one that has ended still shows what it ran
-                return Answer.Json(200, new SourceText(hosted.Path, text, hosted.Edited), DaemonJson.Default.SourceText);
-            }
-            case ("POST", ["pipelines", var name, "reload"]):
-            {
-                Require(capabilities, Capabilities.Control);
-                var hosted = Find(name);
-                LiveOf(hosted);
-                var change = await hosted.ReloadAsync(request.Query.GetValueOrDefault("force") is "true" or "1", request.Aborted).ConfigureAwait(false);
-                if (!change.Applied)
-                    throw new DaemonException(400, $"{name}'s file doesn't load, so it runs as it was.", [.. change.Diagnostics.Where(d => d.IsError).Select(d => d.ToString())]);
-                Log($"[{name}] reloaded: {HostedPipeline.Summary(change.Report!)}");
-                return Answer.Json(200, Reloading.Describe(change), DaemonJson.Default.ChangeResult);
-            }
-            case ("POST", ["pipelines", var name, "edits"]):
-                Require(capabilities, Capabilities.Control);
-                return await EditAsync(Find(name), request).ConfigureAwait(false);
-            default:
-                throw new DaemonException(404, $"The daemon has nothing at {request.Method} /{string.Join('/', request.Parts.Select(Uri.EscapeDataString))}.");
-        }
-    }
-
-    private static T Deserialize<T>(JsonElement json, JsonTypeInfo<T> type)
-    {
-        try
-        {
-            return json.Deserialize(type) ?? throw new DaemonException(400, "The request needs a JSON body.");
-        }
-        catch (JsonException exception)
-        {
-            throw new DaemonException(400, $"The request's JSON isn't what the daemon expects: {exception.Message}");
-        }
-    }
-
-    // A token says what its holder may do. Without one, the daemon's own user may do everything, and nobody else
-    // anything.
-    private Capabilities CapabilitiesOf(string authorization, IDictionary<object, object?>? connection)
-    {
-        if (authorization.StartsWith("Bearer ", StringComparison.Ordinal))
-        {
-            return Tokens().Find(authorization["Bearer ".Length..].Trim())?.Capabilities
-                ?? throw new DaemonException(401, "That token isn't one this daemon knows.");
-        }
-        var peer = connection is not null && connection.TryGetValue(PeerKey, out var value) ? value as uint? : null;
-        var owner = PeerCredentials.CurrentUser;
-        if (owner is null || peer == owner)
-            return Capabilities.All;
-        throw new DaemonException(403, $"Only the user running the daemon may use it without a token, and you're user {peer?.ToString() ?? "unknown"}.");
-    }
-
-    // The tokens file, read again when it changes.
-    private DaemonTokens Tokens()
-    {
-        var written = File.Exists(_options.TokensFile) ? File.GetLastWriteTimeUtc(_options.TokensFile) : default;
-        if (written != _tokensWritten)
-        {
-            _tokens = DaemonTokens.Load(_options.TokensFile);
-            _tokensWritten = written;
-        }
-        return _tokens;
-    }
-
-    private static void Require(Capabilities have, Capabilities need)
-    {
-        if (need != Capabilities.None && !have.HasFlag(need))
-            throw new DaemonException(403, $"That needs the {CapabilityNames.Of(need)[0]} capability, and you have {(have == Capabilities.None ? "none" : string.Join(", ", CapabilityNames.Of(have)))}.");
-    }
-
-    private HostedPipeline Find(string name) =>
-        _pipelines.TryGetValue(name, out var hosted)
-            ? hosted
-            : throw new DaemonException(404, $"There's no pipeline called {name}." + (_pipelines.IsEmpty ? " Nothing is running." : $" The daemon has: {string.Join(", ", _pipelines.Keys.Order())}."));
-
-    private static Pipeline Running(HostedPipeline hosted) =>
-        hosted.Pipeline is { IsRunning: true } pipeline && hosted.Ended is null
-            ? pipeline
-            : throw new DaemonException(409, $"{hosted.Name} isn't running. It's {hosted.State}" + (hosted.Reason is { } reason ? $", because {reason}." : "."));
-
-    private static LivePipeline LiveOf(HostedPipeline hosted) =>
-        hosted.Ended is null && hosted.Live is { } live
-            ? live
-            : throw new DaemonException(409, $"{hosted.Name} isn't running" + (hosted.Ended is null ? " yet." : $". It's {hosted.State}."));
-
-    // Makes edits that name modules by their keys in the pipeline's graph, or as +N, the module an earlier edit added
-    // (Q199), as meep lsp makes them: each key names the module that has it after the edits before it, keyed as the
-    // change will key it, from the running pipeline's keys.
-    private static async Task<Meep2.Meeplang.Syntax.PipelineSyntax> EditByKeyAsync(HostedPipeline hosted, LivePipeline live, IReadOnlyList<SourceEdit> edits, CancellationToken cancellationToken)
-    {
-        var running = live.Shape().Modules.ToDictionary(m => m.Info.Number);
-        var draft = new PipelineDraft();
-        draft.SetBase(live.Syntax, live.Registry, (number, verb) => running.TryGetValue(number, out var module) && module.Info.Verb == verb ? module.Key : null)
-            .ValueOrThrow(problem => new DaemonException(500, problem));
-        draft.Update(live.Syntax, live.Registry);
-
-        // Texts with other #plugin lines than the running one's have their plugins installed, as the change will.
-        using var plugins = new PluginRegistries(new PluginInstaller(hosted.Plugins), new PluginCatalog());
-        var path = live.Syntax.Source.Path;
-        var made = await DraftEditor.ApplyAsync(
-            draft,
-            live.Syntax,
-            edits,
-            text => Meep2.Meeplang.Parsing.MeeplangParser.Parse(new Meep2.Meeplang.Syntax.SourceFile(path, text)),
-            plugins.Reusing(live.Syntax, live.Registry, hosted.BaseRegistry),
-            cancellationToken).ConfigureAwait(false);
-        return made.Syntax;
-    }
-
-    // Edits the running pipeline's text, changes the pipeline to match, and commits the text to pending (Q32).
-    private async Task<Answer> EditAsync(HostedPipeline hosted, ApiRequest request)
-    {
-        var edit = request.Json is { } json
-            ? Deserialize(json, DaemonJson.Default.EditRequest)
-            : throw new DaemonException(400, "Editing needs a JSON body, such as {\"edits\": [{\"module\": \"Interval\", \"kind\": \"set\", \"name\": \"count\", \"value\": \"5\"}]}.");
-        if (edit.Edits is not { Count: > 0 })
-            throw new DaemonException(400, "There are no edits to make.");
-        var live = LiveOf(hosted);
-        var edits = edit.Edits.Select(Reloading.EditOf).ToList();
-        Meep2.Meeplang.Syntax.PipelineSyntax next;
-        try
-        {
-            next = edits.Any(e => e.Kind < EditKind.SetDefault && DraftEditor.NamesByKey(e.Module))
-                ? await EditByKeyAsync(hosted, live, edits, request.Aborted).ConfigureAwait(false)
-                : SourceEditor.Apply(live.Syntax, edits);
-        }
-        catch (EditException exception)
-        {
-            throw new DaemonException(400, exception.Message);
-        }
-        catch (DraftEditException exception)
-        {
-            throw new DaemonException(400, exception.Message);
-        }
-        var change = await Reloading.ApplyAsync(live, next, hosted.BaseRegistry, hosted.Plugins, request.Aborted).ConfigureAwait(false);
-        if (!change.Applied)
-            throw new DaemonException(400, $"After those edits {hosted.Name} wouldn't load, so nothing changed.", [.. change.Diagnostics.Where(d => d.IsError).Select(d => d.ToString())]);
-        Log($"[{hosted.Name}] edited: {string.Join("; ", edits)}. {HostedPipeline.Summary(change.Report!)}");
-        hosted.GraphChanged("edit");
-
-        var result = Reloading.Describe(change) with { Text = next.Source.Text };
-        var described = edits.Select(e => e.ToString()).ToList();
-        if (!edit.Save)
-        {
-            hosted.EditedApart(described, commit: null);
-        }
-        else if (!hosted.Address.IsFile)
-        {
-            hosted.EditedApart(described, commit: null);
-            result = result with { NotSaved = $"{hosted.Name} came from {hosted.Path}, not a file on this machine, so there's nowhere to save the edit." };
-        }
-        else if (Meep2.Git.PendingBranch.RepositoryOf(hosted.Path) is null)
-        {
-            // Not in a repository: the edit goes into the file itself (Q124), so a reload keeps it.
-            await File.WriteAllTextAsync(hosted.Path, next.Source.Text, request.Aborted).ConfigureAwait(false);
-            hosted.EditedInFile();
-            result = result with { WrittenTo = hosted.Path };
-            Log($"[{hosted.Name}] wrote the edit to {hosted.Path}");
-        }
-        else
-        {
-            var message = edit.Message ?? $"Edit {hosted.Name} while it runs\n\n{string.Join("\n", described.Select(e => "- " + char.ToUpperInvariant(e[0]) + e[1..]))}";
-            try
-            {
-                var commit = Meep2.Git.PendingBranch.Commit(hosted.Path, next.Source.Text, message, edit.Branch ?? Meep2.Git.PendingBranch.Default);
-                hosted.EditedApart(described, commit.Sha);
-                result = result with { Saved = new SavedCommit(commit.Branch, commit.Sha, commit.Repository, commit.Path) { Unsigned = commit.Unsigned } };
-                Log($"[{hosted.Name}] committed to {commit.Branch} as {commit.Sha[..7]}{(commit.Unsigned is null ? ", signed" : $", unsigned: {commit.Unsigned}")}");
-            }
-            catch (Meep2.Git.PendingBranchException exception)
-            {
-                hosted.EditedApart(described, commit: null);
-                result = result with { NotSaved = exception.Message };
-            }
-        }
-        return Answer.Json(200, result, DaemonJson.Default.ChangeResult);
-    }
-
-    // A module by its number, its name, or a verb or inflection only one module has.
-    private static ModuleInfo FindModule(Pipeline pipeline, string id)
-    {
-        if (int.TryParse(id, out var number) && pipeline.Modules.FirstOrDefault(m => m.Number == number) is { } numbered)
-            return numbered;
-        var matches = pipeline.Modules.Where(m => m.Name == id).ToList();
-        if (matches.Count == 0)
-            matches = [.. pipeline.Modules.Where(m => m.IsCalled(id))];
-        return matches switch
-        {
-            [var one] => one,
-            [] => throw new DaemonException(404, $"{pipeline.Name} has no module called {id}. Its modules are {string.Join(", ", pipeline.Modules)}."),
-            _ => throw new DaemonException(400, $"{pipeline.Name} has more than one {id}: {string.Join(", ", matches)}. Say which by number."),
-        };
-    }
-
-    // The modules' counts, every so often, until the pipeline stops or the client goes. A restarted pipeline's
-    // counts start again from zero, under the same name. When its graph changes, a graph event says so straight away,
-    // followed by its counts.
-    private static Events Stats(HostedPipeline hosted, IReadOnlyDictionary<string, string> query)
-    {
-        var every = TimeSpan.FromSeconds(1);
-        if (query.GetValueOrDefault("every") is { Length: > 0 } text
-            && !(Meep2.Meeplang.Parsing.Durations.TryParse(text, out every) && every >= TimeSpan.FromMilliseconds(50)))
-            throw new DaemonException(400, $"every is a duration of at least 50ms, such as 1s or 500ms, not {text}.");
-        Running(hosted);
-
-        return new Events(Stream);
-
-        async IAsyncEnumerable<ApiEvent> Stream([EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            var told = hosted.GraphNotice.Serial;
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                var noticed = hosted.GraphNoticed;
-                if (hosted.GraphNotice is { Notice: { } notice, Serial: var serial } && serial != told)
-                {
-                    told = serial;
-                    yield return new ApiEvent("graph", writer => JsonSerializer.Serialize(writer, notice, DaemonJson.Default.GraphNotice));
-                }
-                var detail = hosted.Detail();
-                yield return new ApiEvent("stats", writer => JsonSerializer.Serialize(writer, detail, DaemonJson.Default.PipelineDetail));
-                if (hosted.Ended is not null)
-                    break;
-                await Task.WhenAny(hosted.Finished, Task.Delay(every, cancellationToken), noticed).ConfigureAwait(false);
-            }
-            if (!cancellationToken.IsCancellationRequested)
-                yield return End($"{hosted.Name} has {hosted.State}" + (hosted.Reason is { } reason ? $", because {reason}." : "."));
-        }
-    }
-
-    // Each message passing a module, as JSON, until the pipeline stops or the client goes.
-    private static Events Tap(HostedPipeline hosted, string module, IReadOnlyDictionary<string, string> query)
-    {
-        var pipeline = Running(hosted);
-        var info = FindModule(pipeline, module);
-        MessageCondition? where = null;
-        if (query.GetValueOrDefault("where") is { Length: > 0 } condition)
-        {
-            try
-            {
-                where = MessageCondition.Parse(condition, hosted.Registry);
-            }
-            catch (FormatException exception)
-            {
-                throw new DaemonException(400, $"The condition {condition} isn't one Meeplang can read: {exception.Message}");
-            }
-        }
-        var sample = 1.0;
-        if (query.GetValueOrDefault("sample") is { Length: > 0 } rate
-            && !(double.TryParse(rate, System.Globalization.CultureInfo.InvariantCulture, out sample) && sample is > 0 and <= 1))
-            throw new DaemonException(400, $"sample is a share of messages, more than 0 and at most 1, such as 0.1, not {rate}.");
-
-        return new Events(Stream);
-
-        async IAsyncEnumerable<ApiEvent> Stream([EnumeratorCancellation] CancellationToken cancellationToken)
-        {
-            DebugTap? tap = null;
-            try
-            {
-                tap = pipeline.Tap(info, new DebugTapOptions { Where = where is null ? null : where.Matches, Sample = sample });
-            }
-            catch (InvalidOperationException)
-            {
-                // It finished in the meantime.
-            }
-            if (tap is not null)
-            {
-                using (tap)
-                {
-                    await foreach (var message in tap.Messages.ReadAllAsync(cancellationToken).ConfigureAwait(false))
-                    {
-                        var dropped = tap.Dropped;
-                        yield return new ApiEvent("message", writer =>
-                        {
-                            writer.WriteStartObject();
-                            writer.WriteNumber("dropped", dropped);
-                            writer.WritePropertyName("message");
-                            MessageJson.Write(writer, message);
-                            writer.WriteEndObject();
-                        });
-                    }
-                }
-            }
-            if (!cancellationToken.IsCancellationRequested)
-                yield return End($"{pipeline.Name} has stopped.");
-        }
-    }
-
-    // Text, or JSON, sent into a module as a test.
-    private static Answer Inject(HostedPipeline hosted, string module, ApiRequest request)
-    {
-        var pipeline = Running(hosted);
-        var info = FindModule(pipeline, module);
-        Message message = request.Json is { } json ? new JsonMessage(json) : new TextMessage(request.Text ?? "");
-        try
-        {
-            pipeline.Inject(info, message);
-        }
-        catch (InvalidOperationException exception)
-        {
-            throw new DaemonException(409, exception.Message);
-        }
-        return Answer.Json(202, new Injected(message.Id, message.GetType().Name, info.ToString()), DaemonJson.Default.Injected);
-    }
-
-    private static ApiEvent End(string reason) => new("end", writer =>
-    {
-        writer.WriteStartObject();
-        writer.WriteString("reason", reason);
-        writer.WriteEndObject();
-    });
-
-    private static Action<Utf8JsonWriter> ProblemOf(DaemonException exception) =>
-        writer => JsonSerializer.Serialize(writer, new Problem(exception.Message, exception.Details.Count > 0 ? exception.Details : null), DaemonJson.Default.Problem);
-
-    // A WebSocket that carries the API both ways (Q108).
-    private async Task SocketAsync(HttpContext context, Capabilities capabilities)
-    {
-        if (!context.WebSockets.IsWebSocketRequest)
-            throw new DaemonException(400, "/ws is a WebSocket. Connect to it with a WebSocket client, or use the HTTP API.");
-        using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
-        using var ending = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, _stopping.Token);
-        await new SocketSession(socket, capabilities, RouteAsync, ProblemOf).RunAsync(ending.Token).ConfigureAwait(false);
-    }
-
-    private static async Task WriteAsync(HttpContext context, Action<Utf8JsonWriter> body)
-    {
-        var buffer = new ArrayBufferWriter<byte>();
-        using (var writer = new Utf8JsonWriter(buffer))
-            body(writer);
-        await context.Response.Body.WriteAsync(buffer.WrittenMemory, context.RequestAborted).ConfigureAwait(false);
-    }
-
-    private static async Task StartEventsAsync(HttpContext context)
-    {
-        context.Response.StatusCode = 200;
-        context.Response.ContentType = "text/event-stream";
-        context.Response.Headers.CacheControl = "no-cache";
-        await context.Response.Body.FlushAsync(context.RequestAborted).ConfigureAwait(false);
-    }
-
-    // One server-sent event, its data a line of JSON.
-    private static async Task SendEventAsync(HttpContext context, ApiEvent e)
-    {
-        var buffer = new ArrayBufferWriter<byte>();
-        buffer.Write(Encoding.UTF8.GetBytes($"event: {e.Name}\ndata: "));
-        using (var writer = new Utf8JsonWriter(buffer))
-            e.Data(writer);
-        buffer.Write("\n\n"u8);
-        await context.Response.Body.WriteAsync(buffer.WrittenMemory, context.RequestAborted).ConfigureAwait(false);
-        await context.Response.Body.FlushAsync(context.RequestAborted).ConfigureAwait(false);
-    }
-
-    private void Log(string text)
+    /// <summary>Writes a line to the daemon's log.</summary>
+    internal void Log(string text)
     {
         lock (_logging)
             _options.Log.WriteLine(text);

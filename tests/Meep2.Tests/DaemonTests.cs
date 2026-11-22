@@ -223,12 +223,12 @@ public class DaemonTests
         await using var lab = await DaemonLab.StartAsync();
         await lab.Client.StartAsync(lab.Write("ticker.meep", Ticker));
 
-        var refused = await Assert.That(async () => { await lab.Client.InjectAsync("ticker", "WriteLine", new string('x', MeepDaemon.MaxBody + 1)); })
+        var refused = await Assert.That(async () => { await lab.Client.InjectAsync("ticker", "WriteLine", new string('x', ControlSocket.MaxBody + 1)); })
             .Throws<DaemonException>();
         var small = await lab.Client.InjectAsync("ticker", "WriteLine", new string('x', 1000));
 
         await Assert.That(refused!.Status).IsEqualTo(413);
-        await Assert.That(refused.Message).IsEqualTo($"A request's body can be at most {MeepDaemon.MaxBody} bytes.");
+        await Assert.That(refused.Message).IsEqualTo($"A request's body can be at most {ControlSocket.MaxBody} bytes.");
         await Assert.That(small).IsNotNull();
     }
 
@@ -237,8 +237,8 @@ public class DaemonTests
     {
         await using var lab = await DaemonLab.StartAsync();
         // '<' is escaped in JSON as <, six bytes for one, so this body is far over the usual limit.
-        var comment = "// " + new string('<', MeepDaemon.MaxPipelineText - Ticker.Length - 16) + "\n";
-        var tooLong = "// " + new string('x', MeepDaemon.MaxPipelineText) + "\n" + Ticker;
+        var comment = "// " + new string('<', DaemonApi.MaxPipelineText - Ticker.Length - 16) + "\n";
+        var tooLong = "// " + new string('x', DaemonApi.MaxPipelineText) + "\n" + Ticker;
 
         var started = await lab.Client.StartTextAsync("large", comment + Ticker);
         var refused = await Assert.That(async () => { await lab.Client.StartTextAsync("too-large", tooLong); }).Throws<DaemonException>();
