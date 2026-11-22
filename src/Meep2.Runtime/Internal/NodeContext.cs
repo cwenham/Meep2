@@ -22,15 +22,15 @@ internal abstract class NodeContext<TNode>(TNode node) : ModuleContext
 
     public override System.Collections.Concurrent.ConcurrentDictionary<string, object> Shared => node.Pipeline.Shared;
 
-    public override void CountBytes(long received, long sent) => node.CountBytes(received, sent);
+    public override void CountBytes(long received, long sent) => node.Counters.CountBytes(received, sent);
 
-    public override void Listening(string? address) => node.ListeningAt = address;
+    public override void Listening(string? address) => node.PeerCounts.ListeningAt = address;
 
     public override string? HostId => node.Pipeline.Options.HostId;
 
     public override string? Origin => node.Origin;
 
-    public override Tally Arrival(string from) => node.ArrivalFrom(from);
+    public override Tally Arrival(string from) => node.PeerCounts.ArrivalFrom(from);
 
-    public override Tally Destination(string endpoint) => node.DestinationAt(endpoint);
+    public override Tally Destination(string endpoint) => node.PeerCounts.DestinationAt(endpoint);
 }

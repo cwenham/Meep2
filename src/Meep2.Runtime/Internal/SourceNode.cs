@@ -38,7 +38,7 @@ internal sealed class SourceNode : Node
             _instance?.Cancel();
         }
         await _ended.Task.ConfigureAwait(false);
-        CloseTaps();
+        Taps.CloseAll();
         await DisposeModuleAsync().ConfigureAwait(false);
     }
 
@@ -98,7 +98,7 @@ internal sealed class SourceNode : Node
                 }
                 catch (Exception exception)
                 {
-                    CountFailed();
+                    Counters.Failed();
                     _context.EmitFailure(exception);
 
                     // Q79: restart after a delay, until the source fails too often in a row without emitting anything.
@@ -170,7 +170,7 @@ internal sealed class SourceNode : Node
         try
         {
             _module = (ASource)CreateInstance(Spec.Inflections[0]);
-            CountRestart();
+            Counters.Restarted();
             return true;
         }
         catch (Exception exception)

@@ -131,7 +131,7 @@ internal sealed class InflectionNode : Node
         IsRemoved = true;
         Complete();
         await Loop.ConfigureAwait(false);
-        CloseTaps();
+        Taps.CloseAll();
         await DisposeModuleAsync().ConfigureAwait(false);
     }
 
@@ -222,7 +222,7 @@ internal sealed class InflectionNode : Node
         }
         catch (Exception exception) when (exception is not OperationCanceledException || !Pipeline.AbortToken.IsCancellationRequested)
         {
-            CountFailed();
+            Counters.Failed();
             Pipeline.ReportFault(Info, $"{Info} couldn't flush the messages it kept", exception);
         }
         finally
@@ -289,7 +289,7 @@ internal sealed class InflectionNode : Node
     /// <param name="input">Which of the module's inputs it came in on, counting from 1; 0 for a message sent in as a test.</param>
     public void Enqueue(Message message, int input)
     {
-        CountReceived();
+        Counters.Received();
         Pipeline.AddRef(message);
         if (!_buffer.Writer.TryWrite(new Arrival(message, input)))
             Pipeline.Release(message, MessageOutcome.Abandoned); // the pipeline is stopping
@@ -314,7 +314,7 @@ internal sealed class InflectionNode : Node
 
     private void OnDropped(Arrival arrival)
     {
-        CountDropped();
+        Counters.Dropped();
         Pipeline.Release(arrival.Message, MessageOutcome.Dropped);
     }
 
@@ -400,14 +400,14 @@ internal sealed class InflectionNode : Node
                 }
                 if (_stopped)
                 {
-                    CountDropped();
+                    Counters.Dropped();
                     Pipeline.Release(message, MessageOutcome.Dropped);
                     continue;
                 }
                 if (HasExpiredFor(message))
                 {
                     // It expired while it waited in the buffer.
-                    CountExpired();
+                    Counters.Expired();
                     Pipeline.Release(message, MessageOutcome.Expired);
                     continue;
                 }
@@ -416,14 +416,14 @@ internal sealed class InflectionNode : Node
                 if (slot is null)
                 {
                     // Parameters worked out for this message ruled out every inflection that takes its type (Q54).
-                    CountRefused();
+                    Counters.Refused();
                     Pipeline.Emit(this, Info, new ErrorMessage { Error = $"None of {Info}'s inflections can take this message: {refusals}." }, defaultParent: message);
                     Pipeline.Release(message, MessageOutcome.Completed);
                     continue;
                 }
                 if (slot.Broken)
                 {
-                    CountDropped();
+                    Counters.Dropped();
                     Pipeline.Release(message, MessageOutcome.Dropped);
                     continue;
                 }
@@ -432,13 +432,13 @@ internal sealed class InflectionNode : Node
                 var cancellationToken = TokenFor(message, abort);
                 var outcome = MessageOutcome.Completed;
                 Exception? failure = null;
-                var span = Telemetry.Tracing ? Telemetry.StartHandling(this, slot.Spec.Info, message) : null;
+                var span = Tracing.IsOn ? Tracing.StartHandling(this, slot.Spec.Info, message) : null;
                 var started = Stopwatch.GetTimestamp();
                 _context.Begin(message, slot.Spec.Info, arrival.Input);
                 try
                 {
                     await slot.Module!.Handle(message, _context, cancellationToken).ConfigureAwait(false);
-                    CountHandled();
+                    Counters.Handled();
                     if (message is ErrorMessage error && TookCareOf(error) && !ReferenceEquals(error.AnsweredBy, slot.Spec.Info) && !ReferenceEquals(error.LeftAloneBy, slot.Spec.Info))
                         error.MarkHandled();
                 }
@@ -452,13 +452,13 @@ internal sealed class InflectionNode : Node
                     {
                         // The module stopped because the message expired, as it's free to (Q12).
                         outcome = MessageOutcome.Expired;
-                        CountExpired();
+                        Counters.Expired();
                     }
                 }
                 catch (Exception exception)
                 {
                     failure = exception;
-                    CountFailed();
+                    Counters.Failed();
                     _context.EmitFailure(message, exception);
                     await RestartAsync(slot).ConfigureAwait(false);
                     CountTowardsStopping();
@@ -469,10 +469,10 @@ internal sealed class InflectionNode : Node
                     ResetExpiry(cancellationToken);
                     var took = Stopwatch.GetTimestamp() - started;
                     Timing.Record(took);
-                    if (Telemetry.Duration.Enabled)
-                        Telemetry.RecordDuration(this, took);
+                    if (Metrics.Duration.Enabled)
+                        Metrics.RecordDuration(this, took);
                     if (span is not null)
-                        Telemetry.EndHandling(this, span, outcome, failure);
+                        Tracing.EndHandling(this, span, outcome, failure);
                     Pipeline.Release(message, outcome);
                 }
             }
@@ -529,7 +529,7 @@ internal sealed class InflectionNode : Node
         try
         {
             slot.Module = Create(slot);
-            CountRestart();
+            Counters.Restarted();
         }
         catch (Exception exception)
         {

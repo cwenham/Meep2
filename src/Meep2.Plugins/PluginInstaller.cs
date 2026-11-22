@@ -3,11 +3,8 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Meep2.Meeplang.Syntax;
-using NuGet.Common;
 using NuGet.Frameworks;
 using NuGet.Packaging;
-using NuGet.Protocol;
-using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
 
 namespace Meep2.Plugins;
@@ -66,7 +63,7 @@ public sealed record InstalledPlugin(PluginDirective Directive, string Folder, s
 public sealed partial class PluginInstaller(PluginOptions options, HttpClient? http = null)
 {
     private const string ManifestName = ".meep-install.json";
-    private static readonly NuGetFramework s_target = NuGetFramework.Parse("net11.0");
+    internal static readonly NuGetFramework s_target = NuGetFramework.Parse("net11.0");
     private readonly HttpClient _http = http ?? MeepHttp.Client;
 
     /// <summary>The settings it installs with.</summary>
@@ -216,60 +213,10 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
         }
         NotOffline(directive);
 
-        var logger = NullLogger.Instance;
-        using var cache = new SourceCacheContext { NoCache = true, DirectDownload = true };
-        var feeds = new List<FindPackageByIdResource>();
-        foreach (var source in options.NuGetSources)
-        {
-            feeds.Add(await Repository.Factory.GetCoreV3(source).GetResourceAsync<FindPackageByIdResource>(cancellationToken).ConfigureAwait(false)
-                ?? throw new PluginException($"{source} isn't a NuGet feed Meep can read."));
-        }
+        using var resolver = await NuGetResolver.ConnectAsync(this, cancellationToken).ConfigureAwait(false);
+        var resolved = await resolver.ResolveAsync(directive.Name, version, cancellationToken).ConfigureAwait(false);
 
-        // Resolve the plugin and its dependencies: the lowest version each range allows, and the highest of those
-        // when several packages ask for the same one.
-        var resolved = new Dictionary<string, (NuGetVersion Version, byte[] Package)>(StringComparer.OrdinalIgnoreCase);
-        var queue = new Queue<(string Id, VersionRange Range)>();
-        queue.Enqueue((directive.Name, new VersionRange(version, true, version, true)));
-        while (queue.TryDequeue(out var wanted))
-        {
-            if (wanted.Id != directive.Name && ProvidedByHost(wanted.Id))
-                continue;
-            if (resolved.TryGetValue(wanted.Id, out var have) && wanted.Range.Satisfies(have.Version))
-                continue;
-
-            (FindPackageByIdResource Feed, NuGetVersion Version)? found = null;
-            foreach (var feed in feeds)
-            {
-                var versions = await feed.GetAllVersionsAsync(wanted.Id, cache, logger, cancellationToken).ConfigureAwait(false);
-                if (wanted.Range.FindBestMatch(versions) is { } best)
-                {
-                    found = (feed, best);
-                    break;
-                }
-            }
-            if (found is not { } match)
-            {
-                throw new PluginException(wanted.Id == directive.Name
-                    ? $"Couldn't find {directive.Name} {version} on {string.Join(" or ", options.NuGetSources)}."
-                    : $"{directive.Name} needs {wanted.Id} {wanted.Range.PrettyPrint()}, but no version of it fits on {string.Join(" or ", options.NuGetSources)}.");
-            }
-            if (have.Package is not null && have.Version >= match.Version)
-                continue;
-
-            using var download = new LimitedStream(options.MaxDownload, () => TooLarge($"{wanted.Id} {match.Version}"));
-            if (!await match.Feed.CopyNupkgToStreamAsync(wanted.Id, match.Version, download, cache, logger, cancellationToken).ConfigureAwait(false))
-                throw new PluginException($"Couldn't download {wanted.Id} {match.Version}.");
-            var package = download.ToArray();
-            resolved[wanted.Id] = (match.Version, package);
-
-            using var reader = new PackageArchiveReader(new MemoryStream(package));
-            var dependencies = NuGetFrameworkUtility.GetNearest(reader.NuspecReader.GetDependencyGroups(), s_target, group => group.TargetFramework);
-            foreach (var dependency in dependencies?.Packages ?? [])
-                queue.Enqueue((dependency.Id, dependency.VersionRange));
-        }
-
-        var root = resolved[directive.Name];
-        var sha = Convert.ToHexStringLower(SHA256.HashData(root.Package));
+        var sha = Convert.ToHexStringLower(SHA256.HashData(resolved[directive.Name].Package));
         if (directive.Sha256 is not null && sha != directive.Sha256)
         {
             throw new PluginException(
@@ -280,27 +227,7 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
         try
         {
             var unpacked = Path.Combine(staging, "files");
-            Directory.CreateDirectory(unpacked);
-            var pluginFiles = new List<string>();
-            var packages = new List<string>();
-            foreach (var (id, (packageVersion, bytes)) in resolved)
-            {
-                using var reader = new PackageArchiveReader(new MemoryStream(bytes));
-                var lib = NuGetFrameworkUtility.GetNearest(reader.GetLibItems(), s_target, group => group.TargetFramework);
-                if (lib is null && id.Equals(directive.Name, StringComparison.OrdinalIgnoreCase))
-                    throw new PluginException($"nuget:{directive.Name} {version} has nothing for .NET 11 in its lib folder.");
-                foreach (var item in lib?.Items ?? [])
-                {
-                    var name = Path.GetFileName(item);
-                    await using (var source = reader.GetStream(item))
-                    await using (var target = File.Create(Path.Combine(unpacked, name)))
-                        await source.CopyToAsync(target, cancellationToken).ConfigureAwait(false);
-                    if (id.Equals(directive.Name, StringComparison.OrdinalIgnoreCase))
-                        pluginFiles.Add(name);
-                }
-                packages.Add($"{id} {packageVersion.ToNormalizedString()} sha256:{Convert.ToHexStringLower(SHA256.HashData(bytes))}");
-            }
-
+            var (pluginFiles, packages) = await UnpackAsync(resolved, directive, version, unpacked, cancellationToken).ConfigureAwait(false);
             var own = pluginFiles.ToHashSet(StringComparer.Ordinal);
             var installed = Checked(directive, unpacked, MainAssembly(unpacked, directive.Name, directive, own), own.Contains);
             Manifest.Write(unpacked, new Manifest(directive.ToString(), sha, pluginFiles) { Packages = packages });
@@ -313,9 +240,39 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
         }
     }
 
+    // Unpacks each package's assemblies for .NET 11 into one folder. Returns the plugin's own files, and a line for
+    // each package, with its version and SHA-256, for the lock file.
+    private static async Task<UnpackedPackages> UnpackAsync(Dictionary<string, ResolvedPackage> resolved, PluginDirective directive, NuGetVersion version, string unpacked, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(unpacked);
+        var pluginFiles = new List<string>();
+        var packages = new List<string>();
+        foreach (var (id, (packageVersion, bytes)) in resolved)
+        {
+            var own = id.Equals(directive.Name, StringComparison.OrdinalIgnoreCase);
+            using var reader = new PackageArchiveReader(new MemoryStream(bytes));
+            var lib = NuGetFrameworkUtility.GetNearest(reader.GetLibItems(), s_target, group => group.TargetFramework);
+            if (lib is null && own)
+                throw new PluginException($"nuget:{directive.Name} {version} has nothing for .NET 11 in its lib folder.");
+            foreach (var item in lib?.Items ?? [])
+            {
+                var name = Path.GetFileName(item);
+                await using (var source = reader.GetStream(item))
+                await using (var target = File.Create(Path.Combine(unpacked, name)))
+                    await source.CopyToAsync(target, cancellationToken).ConfigureAwait(false);
+                if (own)
+                    pluginFiles.Add(name);
+            }
+            packages.Add($"{id} {packageVersion.ToNormalizedString()} sha256:{Convert.ToHexStringLower(SHA256.HashData(bytes))}");
+        }
+        return new UnpackedPackages(pluginFiles, packages);
+    }
+
+    private sealed record UnpackedPackages(List<string> PluginFiles, List<string> Packages);
+
     // Packages .NET or Meep provide, so a plugin uses the host's copy: Meep's SDK and core modules, and .NET's
     // own assemblies, whose package names match their assembly names.
-    private static bool ProvidedByHost(string id) =>
+    internal static bool ProvidedByHost(string id) =>
         PluginLoadContext.IsShared(id)
         || id.Equals("NETStandard.Library", StringComparison.OrdinalIgnoreCase)
         || id.StartsWith("Microsoft.NETCore.", StringComparison.OrdinalIgnoreCase);
@@ -424,11 +381,11 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
         return Convert.ToHexStringLower(hash.GetHashAndReset());
     }
 
-    private PluginException TooLarge(string what) =>
+    internal PluginException TooLarge(string what) =>
         new($"{what} is larger than {(options.MaxDownload % (1024 * 1024) == 0 ? $"{options.MaxDownload / (1024 * 1024)} MiB" : $"{options.MaxDownload} bytes")}, the most Meep downloads for a plugin, so it isn't installed.");
 
     // A stream in memory that refuses to grow past a limit, for packages NuGet copies into it.
-    private sealed class LimitedStream(long limit, Func<Exception> tooLarge) : MemoryStream
+    internal sealed class LimitedStream(long limit, Func<Exception> tooLarge) : MemoryStream
     {
         public override void Write(byte[] buffer, int offset, int count)
         {

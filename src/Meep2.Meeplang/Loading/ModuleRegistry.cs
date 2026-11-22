@@ -89,19 +89,40 @@ public sealed class ModuleRegistry
             throw new ArgumentException(problem, nameof(name));
 
         var entry = new PluginEntry(name);
-        var modules = new List<ModuleRegistration>();
         var books = FindBooks(assembly);
+        var modules = Registrations(entry, assembly);
+        AddOwnVerbs(entry, modules, assembly);
+        if (entry.Verbs.ContainsKey(name))
+            throw new ArgumentException($"{name} is the name of one of the plugin's own verbs, so it can't be the plugin's too.", nameof(name));
+        if (entry.Verbs.Keys.FirstOrDefault(_plugins.ContainsKey) is { } taken)
+            throw new ArgumentException($"The plugin has a verb called {taken}, which is another plugin's name. Give that plugin another name with as.");
+        _plugins[name] = entry;
+
+        JoinVerbs(modules, assembly, name);
+        JoinMessageTypes(entry);
+        JoinBooks(entry, books);
+        return this;
+    }
+
+    // The plugin's modules, and its message types, which go into its entry.
+    private static List<ModuleRegistration> Registrations(PluginEntry entry, Assembly assembly)
+    {
+        var modules = new List<ModuleRegistration>();
         foreach (var type in assembly.GetExportedTypes())
         {
             if (type.IsAbstract)
                 continue;
             if (type.GetCustomAttribute<VerbAttribute>() is not null && typeof(AModule).IsAssignableFrom(type))
-                modules.Add(Registration(type, name));
+                modules.Add(Registration(type, entry.Name));
             else if (typeof(Message).IsAssignableFrom(type))
                 entry.MessageTypes[ExpressionBinder.FriendlyName(type)] = type;
         }
+        return modules;
+    }
 
-        // The plugin's own verbs have to agree with each other, as any verb's inflections do.
+    // The plugin's own verbs have to agree with each other, as any verb's inflections do.
+    private static void AddOwnVerbs(PluginEntry entry, List<ModuleRegistration> modules, Assembly assembly)
+    {
         foreach (var registration in modules)
         {
             if (!entry.Verbs.TryGetValue(registration.Verb, out var own))
@@ -112,13 +133,11 @@ public sealed class ModuleRegistry
             foreach (var emitted in registration.Emits.Where(t => t.Assembly == assembly))
                 entry.MessageTypes[ExpressionBinder.FriendlyName(emitted)] = emitted;
         }
-        if (entry.Verbs.ContainsKey(name))
-            throw new ArgumentException($"{name} is the name of one of the plugin's own verbs, so it can't be the plugin's too.", nameof(name));
-        if (entry.Verbs.Keys.FirstOrDefault(_plugins.ContainsKey) is { } taken)
-            throw new ArgumentException($"The plugin has a verb called {taken}, which is another plugin's name. Give that plugin another name with as.");
-        _plugins[name] = entry;
+    }
 
-        // Then they join everyone's, unless the name is taken.
+    // Then they join everyone's, unless the name is taken.
+    private void JoinVerbs(List<ModuleRegistration> modules, Assembly assembly, string name)
+    {
         foreach (var registration in modules)
         {
             if (!_verbs.TryGetValue(registration.Verb, out var inflections))
@@ -131,6 +150,12 @@ public sealed class ModuleRegistry
             foreach (var emitted in registration.Emits.Where(t => t.Assembly != assembly))
                 _messageTypes.TryAdd(ExpressionBinder.FriendlyName(emitted), emitted);
         }
+    }
+
+    // Its message types, under the plugin's name, and under their own unless another's has it.
+    private void JoinMessageTypes(PluginEntry entry)
+    {
+        var name = entry.Name;
         foreach (var (typeName, type) in entry.MessageTypes)
         {
             _messageTypes[$"{name}.{typeName}"] = type;
@@ -139,9 +164,13 @@ public sealed class ModuleRegistry
             else if (existing != type && PluginOf(existing) is { } other)
                 Share(typeName, other, name);
         }
+    }
 
-        // Its books, under the plugin's name, and under their own unless a core book has it. Two plugins' books
-        // with one name can only be reached by the plugin's.
+    // Its books, under the plugin's name, and under their own unless a core book has it. Two plugins' books
+    // with one name can only be reached by the plugin's.
+    private void JoinBooks(PluginEntry entry, Dictionary<string, LibraryEntry> books)
+    {
+        var name = entry.Name;
         foreach (var (bookName, book) in books)
         {
             entry.Books.Add(bookName);
@@ -156,7 +185,6 @@ public sealed class ModuleRegistry
                     sharers.Add(name);
             }
         }
-        return this;
     }
 
     /// <summary>

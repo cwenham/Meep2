@@ -7,22 +7,6 @@ namespace Meep2.Runtime.Internal;
 /// <summary>One module's place in a running pipeline: its instances, its downstream modules and its counts.</summary>
 internal abstract class Node(Pipeline pipeline, NodeSpec spec)
 {
-    private long _received;
-    private long _handled;
-    private long _emitted;
-    private long _passed;
-    private long _dropped;
-    private long _filtered;
-    private long _failed;
-    private long _restarts;
-    private long _expired;
-    private long _refused;
-    private long _bytesReceived;
-    private long _bytesSent;
-    private volatile string? _listening;
-    private readonly Lock _tapping = new();
-    private volatile DebugTap[]? _taps;
-
     private NodeSpec _spec = spec;
 
     public Pipeline Pipeline { get; } = pipeline;
@@ -52,64 +36,20 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
     /// <summary>How long the module takes to handle each message (<see cref="HandlingTimes"/>).</summary>
     public TimingRecorder Timing { get; } = new();
 
-    /// <summary>Bytes the module has read from the network and written to it (<see cref="ModuleContext.CountBytes"/>).</summary>
-    public ModuleTraffic Traffic => new(Interlocked.Read(ref _bytesReceived), Interlocked.Read(ref _bytesSent));
+    /// <summary>The module's counts of messages and bytes.</summary>
+    public NodeCounters Counters { get; } = new();
 
-    /// <summary>Where the module says it's listening, or null (<see cref="ModuleContext.Listening"/>).</summary>
-    public string? ListeningAt
-    {
-        get => _listening;
-        set => _listening = value;
-    }
+    /// <summary>The debug taps on the module.</summary>
+    public TapList Taps { get; } = new();
 
-    public void CountBytes(long received, long sent)
-    {
-        if (received > 0)
-            Interlocked.Add(ref _bytesReceived, received);
-        if (sent > 0)
-            Interlocked.Add(ref _bytesSent, sent);
-    }
-
-    private PeerTable? _arrivals;
-    private PeerTable? _destinations;
-    private volatile OriginMade? _origin;
-
-    /// <summary>Counts by where messages arrive from, once the module has counted any (<see cref="ModuleContext.Arrival"/>).</summary>
-    public PeerTable? Arrivals => Volatile.Read(ref _arrivals);
-
-    /// <summary>Counts by where messages go, once the module has counted any (<see cref="ModuleContext.Destination"/>).</summary>
-    public PeerTable? Destinations => Volatile.Read(ref _destinations);
-
-    public Tally ArrivalFrom(string from) =>
-        (Volatile.Read(ref _arrivals) ?? Made(ref _arrivals, PeerTable.ForArrivals())).For(from);
-
-    public Tally DestinationAt(string endpoint) =>
-        (Volatile.Read(ref _destinations) ?? Made(ref _destinations, PeerTable.ForDestinations())).For(endpoint);
-
-    private static PeerTable Made(ref PeerTable? field, PeerTable made) =>
-        Interlocked.CompareExchange(ref field, made, null) ?? made;
+    /// <summary>Where the module listens, and its counts by where its messages arrive from and go to.</summary>
+    public PeerCounts PeerCounts { get; } = new();
 
     /// <summary>
     /// Where messages this module sends come from, for another Meep host (<see cref="ModuleContext.Origin"/>), made
     /// once for each host ID and key it has.
     /// </summary>
-    public string? Origin
-    {
-        get
-        {
-            var hostId = Pipeline.Options.HostId;
-            var key = Key;
-            if (hostId is null || key is null)
-                return null;
-            if (_origin is { } made && ReferenceEquals(made.HostId, hostId) && ReferenceEquals(made.Key, key))
-                return made.Origin;
-            var origin = Peers.Origin(hostId, Pipeline.Name, key);
-            _origin = new OriginMade(hostId, key, origin);
-            return origin;
-        }
-    }
-
-    private sealed record OriginMade(string HostId, string Key, string Origin);
+    public string? Origin => PeerCounts.OriginOf(Pipeline.Options.HostId, Pipeline.Name, Key);
 
     /// <summary>The module's instances now: one for a source, one for each inflection otherwise.</summary>
     public abstract IEnumerable<AModule> Instances { get; }
@@ -167,82 +107,10 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
         }
     }
 
-    public ModuleStats GetStats() => new(
-        Interlocked.Read(ref _received),
-        Interlocked.Read(ref _handled),
-        Interlocked.Read(ref _emitted),
-        Interlocked.Read(ref _passed),
-        Interlocked.Read(ref _dropped),
-        Interlocked.Read(ref _filtered),
-        Interlocked.Read(ref _failed),
-        Interlocked.Read(ref _restarts),
-        Interlocked.Read(ref _expired),
-        Interlocked.Read(ref _refused),
-        Queued);
+    public ModuleStats GetStats() => Counters.Read(Queued);
 
     /// <summary>How many messages are waiting for the module now.</summary>
     public virtual long Queued => 0;
-
-    /// <summary>
-    /// Shows a message the module emitted or passed on to any taps on it. With none, this is one check of a field,
-    /// so a pipeline nobody is watching doesn't slow down.
-    /// </summary>
-    public void Tapped(Message message)
-    {
-        if (_taps is { } taps)
-        {
-            foreach (var tap in taps)
-                tap.Offer(message);
-        }
-    }
-
-    public void AddTap(DebugTap tap)
-    {
-        lock (_tapping)
-            _taps = [.. _taps ?? [], tap];
-    }
-
-    public void RemoveTap(DebugTap tap)
-    {
-        lock (_tapping)
-        {
-            var rest = (_taps ?? []).Where(t => t != tap).ToArray();
-            _taps = rest.Length == 0 ? null : rest;
-        }
-    }
-
-    /// <summary>Ends every tap on the module, as when the pipeline finishes.</summary>
-    public void CloseTaps()
-    {
-        DebugTap[]? taps;
-        lock (_tapping)
-        {
-            taps = _taps;
-            _taps = null;
-        }
-        foreach (var tap in taps ?? [])
-            tap.Complete();
-    }
-
-    public void CountReceived() => Interlocked.Increment(ref _received);
-
-    public void CountHandled() => Interlocked.Increment(ref _handled);
-
-    public void CountEmitted() => Interlocked.Increment(ref _emitted);
-
-    public void CountPassed() => Interlocked.Increment(ref _passed);
-
-    public void CountDropped() => Interlocked.Increment(ref _dropped);
-
-    public void CountFiltered() => Interlocked.Increment(ref _filtered);
-
-    public void CountFailed() => Interlocked.Increment(ref _failed);
-
-    public void CountRestart() => Interlocked.Increment(ref _restarts);
-
-    public void CountExpired() => Interlocked.Increment(ref _expired);
-
-    public void CountRefused() => Interlocked.Increment(ref _refused);
 
     protected static AModule CreateInstance(InflectionSpec inflection)
     {

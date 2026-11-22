@@ -44,7 +44,7 @@ public sealed class DebugTap : IDisposable
     /// <summary>Stops tapping.</summary>
     public void Dispose()
     {
-        _node.RemoveTap(this);
+        _node.Taps.Remove(this);
         Complete();
     }
 

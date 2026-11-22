@@ -13,15 +13,15 @@ internal sealed class SourceContext(SourceNode node) : NodeContext<SourceNode>(n
     {
         ArgumentNullException.ThrowIfNull(message);
         ArgumentNullException.ThrowIfNull(traceParent);
-        if (Telemetry.Tracing)
-            Telemetry.Continue(message, traceParent);
+        if (Tracing.IsOn)
+            Tracing.Continue(message, traceParent);
     }
 
     /// <summary>Called when the source finishes. Emitting after that is a mistake, and it's no longer listening.</summary>
     public void Close()
     {
         _closed = true;
-        Node.ListeningAt = null;
+        Node.PeerCounts.ListeningAt = null;
     }
 
     /// <summary>Whether the source has emitted a message, other than an error, since this was last asked (Q79).</summary>

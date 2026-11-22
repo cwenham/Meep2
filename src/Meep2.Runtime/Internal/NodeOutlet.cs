@@ -9,9 +9,9 @@ namespace Meep2.Runtime.Internal;
 /// </summary>
 internal sealed class NodeOutlet(InflectionNode node, ModuleInfo emitter) : Outlet
 {
-    public override void CountBytes(long received, long sent) => node.CountBytes(received, sent);
+    public override void CountBytes(long received, long sent) => node.Counters.CountBytes(received, sent);
 
-    public override Tally Destination(string endpoint) => node.DestinationAt(endpoint);
+    public override Tally Destination(string endpoint) => node.PeerCounts.DestinationAt(endpoint);
 
     public override bool Emit(Message message)
     {

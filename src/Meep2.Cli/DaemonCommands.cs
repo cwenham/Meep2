@@ -165,47 +165,7 @@ internal static class DaemonCommands
         var cli = new CliContext(client, output, error, cancellationToken);
         try
         {
-            switch (args)
-            {
-                case ["daemon", "stop"]:
-                    await client.StopDaemonAsync(cancellationToken).ConfigureAwait(false);
-                    await output.WriteLineAsync("Asked the daemon to stop. It lets its pipelines' messages finish first.").ConfigureAwait(false);
-                    return 0;
-                case ["start", .. var rest] when Named(rest, out var named) is { } start && StartFile(start) is { } file:
-                    return await StartAsync(cli, file, named, start.Contains("--dev"), start.Contains("--watch")).ConfigureAwait(false);
-                case ["reload", .. var words] when words.Where(w => w != "--force").ToList() is [var name] && words.All(w => w == "--force" || !w.StartsWith("--", StringComparison.Ordinal)):
-                    await WriteChangeAsync($"Reloaded {name}", await client.ReloadAsync(name, words.Contains("--force"), cancellationToken).ConfigureAwait(false), output).ConfigureAwait(false);
-                    return 0;
-                case ["source", var name]:
-                    await output.WriteAsync((await client.SourceAsync(name, cancellationToken).ConfigureAwait(false)).Text).ConfigureAwait(false);
-                    return 0;
-                case ["edit", var name, var module, .. var rest]:
-                    return await EditAsync(cli, name, module, rest).ConfigureAwait(false);
-                case ["list"]:
-                    await ListAsync(cli).ConfigureAwait(false);
-                    return 0;
-                case ["stop", var name]:
-                    return await StopAsync(cli, name).ConfigureAwait(false);
-                case ["stats", var name]:
-                    WriteStats(await client.GetAsync(name, cancellationToken).ConfigureAwait(false), output);
-                    return 0;
-                case ["stats", var name, "--watch"]:
-                    await WatchAsync(cli, name).ConfigureAwait(false);
-                    return 0;
-                case ["stats", "--watch", var name]:
-                    await WatchAsync(cli, name).ConfigureAwait(false);
-                    return 0;
-                case ["tap", var pipeline, var module, .. var rest]:
-                    return await TapAsync(cli, pipeline, module, rest).ConfigureAwait(false);
-                case ["inject", var pipeline, var module, var content]:
-                    return await InjectAsync(cli, pipeline, module, content, json: false).ConfigureAwait(false);
-                case ["inject", var pipeline, var module, var content, "--json"]:
-                    return await InjectAsync(cli, pipeline, module, content, json: true).ConfigureAwait(false);
-                case ["inject", "--json", var pipeline, var module, var content]:
-                    return await InjectAsync(cli, pipeline, module, content, json: true).ConfigureAwait(false);
-                default:
-                    return -1;
-            }
+            return await RouteAsync(cli, args).ConfigureAwait(false);
         }
         catch (DaemonException exception)
         {
@@ -220,6 +180,53 @@ internal static class DaemonCommands
         {
             return 0; // Ctrl+C while watching or tapping
         }
+    }
+
+    // Each command the daemon answers, and what asks it. -1 for one that isn't understood.
+    private static async Task<int> RouteAsync(CliContext cli, string[] args) => args switch
+    {
+        ["daemon", "stop"] => await StopDaemonAsync(cli).ConfigureAwait(false),
+        ["start", .. var rest] when Named(rest, out var named) is { } start && StartFile(start) is { } file =>
+            await StartAsync(cli, file, named, start.Contains("--dev"), start.Contains("--watch")).ConfigureAwait(false),
+        ["reload", .. var words] when words.Where(w => w != "--force").ToList() is [var name] && words.All(w => w == "--force" || !w.StartsWith("--", StringComparison.Ordinal)) =>
+            await ReloadAsync(cli, name, words.Contains("--force")).ConfigureAwait(false),
+        ["source", var name] => await SourceAsync(cli, name).ConfigureAwait(false),
+        ["edit", var name, var module, .. var rest] => await EditCommand.RunAsync(cli, name, module, rest).ConfigureAwait(false),
+        ["list"] => await ListAsync(cli).ConfigureAwait(false),
+        ["stop", var name] => await StopAsync(cli, name).ConfigureAwait(false),
+        ["stats", var name] => await StatsAsync(cli, name).ConfigureAwait(false),
+        ["stats", var name, "--watch"] => await WatchAsync(cli, name).ConfigureAwait(false),
+        ["stats", "--watch", var name] => await WatchAsync(cli, name).ConfigureAwait(false),
+        ["tap", var pipeline, var module, .. var rest] => await TapAsync(cli, pipeline, module, rest).ConfigureAwait(false),
+        ["inject", var pipeline, var module, var content] => await InjectAsync(cli, pipeline, module, content, json: false).ConfigureAwait(false),
+        ["inject", var pipeline, var module, var content, "--json"] => await InjectAsync(cli, pipeline, module, content, json: true).ConfigureAwait(false),
+        ["inject", "--json", var pipeline, var module, var content] => await InjectAsync(cli, pipeline, module, content, json: true).ConfigureAwait(false),
+        _ => -1,
+    };
+
+    private static async Task<int> StopDaemonAsync(CliContext cli)
+    {
+        await cli.Client.StopDaemonAsync(cli.Cancellation).ConfigureAwait(false);
+        await cli.Output.WriteLineAsync("Asked the daemon to stop. It lets its pipelines' messages finish first.").ConfigureAwait(false);
+        return 0;
+    }
+
+    private static async Task<int> ReloadAsync(CliContext cli, string name, bool force)
+    {
+        await WriteChangeAsync($"Reloaded {name}", await cli.Client.ReloadAsync(name, force, cli.Cancellation).ConfigureAwait(false), cli.Output).ConfigureAwait(false);
+        return 0;
+    }
+
+    private static async Task<int> SourceAsync(CliContext cli, string name)
+    {
+        await cli.Output.WriteAsync((await cli.Client.SourceAsync(name, cli.Cancellation).ConfigureAwait(false)).Text).ConfigureAwait(false);
+        return 0;
+    }
+
+    private static async Task<int> StatsAsync(CliContext cli, string name)
+    {
+        WriteStats(await cli.Client.GetAsync(name, cli.Cancellation).ConfigureAwait(false), cli.Output);
+        return 0;
     }
 
     // meep start's file, among --dev and --watch; null if there's anything else.
@@ -255,116 +262,8 @@ internal static class DaemonCommands
         return 0;
     }
 
-    // meep edit <pipeline> <module> <edit> [--message <text>] [--branch <name>] [--no-save]
-    private static async Task<int> EditAsync(CliContext cli, string pipeline, string module, string[] words)
-    {
-        string? message = null;
-        string? branch = null;
-        var save = true;
-        var edit = new List<string>();
-        for (var i = 0; i < words.Length; i++)
-        {
-            switch (words[i])
-            {
-                case "--message" when i + 1 < words.Length:
-                    message = words[++i];
-                    break;
-                case "--branch" when i + 1 < words.Length:
-                    branch = words[++i];
-                    break;
-                case "--no-save":
-                    save = false;
-                    break;
-                default:
-                    edit.Add(words[i]);
-                    break;
-            }
-        }
-        if (EditOf(module, edit) is not { } item)
-        {
-            await cli.Error.WriteLineAsync(EditUsage).ConfigureAwait(false);
-            return 2;
-        }
-        var result = await cli.Client.EditAsync(pipeline, new EditRequest([item], message, branch, save), cli.Cancellation).ConfigureAwait(false);
-        await WriteChangeAsync($"Edited {pipeline}", result, cli.Output).ConfigureAwait(false);
-        if (result.Saved is { } saved)
-        {
-            await cli.Output.WriteLineAsync($"Committed to {saved.Branch} as {saved.Sha[..7]}, in {saved.Repository}.").ConfigureAwait(false);
-            await cli.Output.WriteLineAsync(saved.Unsigned is { } unsigned ? $"It isn't signed: {unsigned}." : "It's signed with your SSH key.").ConfigureAwait(false);
-        }
-        else if (result.WrittenTo is { } file)
-        {
-            await cli.Output.WriteLineAsync($"Wrote it to {file}, which isn't in a Git repository.").ConfigureAwait(false);
-        }
-        else if (result.NotSaved is { } why)
-        {
-            await cli.Output.WriteLineAsync($"Not saved: {why}").ConfigureAwait(false);
-        }
-        return 0;
-    }
-
-    private const string EditUsage = """
-        meep edit <pipeline> defaults set <name>=<value>    set a default, such as defaults set expires=5s
-        meep edit <pipeline> defaults unset <name>
-        meep edit <pipeline> const set <Name>=<value>       declare or change a constant
-        meep edit <pipeline> const unset <Name>
-        meep edit <pipeline> plugin add <address or path>   add a #plugin line
-        meep edit <pipeline> plugin remove <name>
-        meep edit <pipeline> <module> takes one edit:
-          set <name>=<value>         set a parameter, such as set count=5
-          set <value>                set the value after the verb, such as set 10s
-          set @<modifier>[=<value>]  set a modifier, such as set @buffer=100
-          unset [<name> | @<modifier>]
-          rename [<name>]            name it, or with no name, take its name away
-          add <module line>          add a branch under it
-          insert <module line>       put a module between it and those under it
-          remove                     remove it; those under it move up
-          remove-branch              remove it and everything under it
-        """;
-
-    // An edit as the command line writes it. defaults, const and plugin aren't modules, but the rest of the file.
-    private static EditItem? EditOf(string module, List<string> words) => (module, words) switch
-    {
-        ("defaults", ["set", var setting]) when Setting(setting) is var (name, value) => new EditItem(null, "set-default", name, value),
-        ("defaults", ["unset", var name]) => new EditItem(null, "unset-default", name),
-        ("const", ["set", var setting]) when Setting(setting) is var (name, value) => new EditItem(null, "set-const", name, value),
-        ("const", ["unset", var name]) => new EditItem(null, "unset-const", name),
-        ("plugin" or "plugins", ["add", .. var line]) when line.Count > 0 => new EditItem(null, "add-plugin", null, string.Join(' ', line)),
-        ("plugin" or "plugins", ["remove", var name]) => new EditItem(null, "remove-plugin", name),
-        ("defaults" or "const" or "plugin" or "plugins", _) => null,
-        _ => ModuleEditOf(module, words),
-    };
-
-    private static (string Name, string Value)? Setting(string text) =>
-        text.IndexOf('=', StringComparison.Ordinal) is > 0 and var at && IsName(text[..at]) ? (text[..at], text[(at + 1)..]) : null;
-
-    private static EditItem? ModuleEditOf(string module, List<string> words) => words switch
-    {
-        ["set", var setting] when setting.StartsWith('@') => Modifier(module, setting),
-        ["set", var setting] when setting.IndexOf('=', StringComparison.Ordinal) is > 0 and var at && IsName(setting[..at]) =>
-            new EditItem(module, "set", setting[..at], setting[(at + 1)..]),
-        ["set", .. var value] when value.Count > 0 => new EditItem(module, "set", null, string.Join(' ', value)),
-        ["unset"] => new EditItem(module, "unset"),
-        ["unset", var name] when name.StartsWith('@') => new EditItem(module, "remove-modifier", name[1..]),
-        ["unset", var name] => new EditItem(module, "unset", name),
-        ["rename"] => new EditItem(module, "rename"),
-        ["rename", var name] => new EditItem(module, "rename", null, name),
-        ["add" or "insert", .. var line] when line.Count > 0 => new EditItem(module, words[0], null, string.Join(' ', line)),
-        ["remove"] => new EditItem(module, "remove"),
-        ["remove-branch"] => new EditItem(module, "remove-branch"),
-        _ => null,
-    };
-
-    private static EditItem Modifier(string module, string setting)
-    {
-        var at = setting.IndexOf('=', StringComparison.Ordinal);
-        return at < 0 ? new EditItem(module, "set-modifier", setting[1..]) : new EditItem(module, "set-modifier", setting[1..at], setting[(at + 1)..]);
-    }
-
-    private static bool IsName(string text) => text.Length > 0 && char.IsLetter(text[0]) && text.All(c => char.IsLetterOrDigit(c) || c is '_' or '-');
-
     // What a reload or an edit did, a line for each kind of change.
-    private static async Task WriteChangeAsync(string what, ChangeResult result, TextWriter output)
+    internal static async Task WriteChangeAsync(string what, ChangeResult result, TextWriter output)
     {
         var lines = new List<string>();
         void Line(string label, IReadOnlyList<string> modules)
@@ -385,13 +284,13 @@ internal static class DaemonCommands
             await output.WriteLineAsync(warning).ConfigureAwait(false);
     }
 
-    private static async Task ListAsync(CliContext cli)
+    private static async Task<int> ListAsync(CliContext cli)
     {
         var pipelines = await cli.Client.ListAsync(cli.Cancellation).ConfigureAwait(false);
         if (pipelines.Count == 0)
         {
             await cli.Output.WriteLineAsync("Nothing is running.").ConfigureAwait(false);
-            return;
+            return 0;
         }
         var width = Math.Max(4, pipelines.Max(p => p.Name.Length));
         await cli.Output.WriteLineAsync($"{"NAME".PadRight(width)}  STATE       SINCE     FILE").ConfigureAwait(false);
@@ -402,6 +301,7 @@ internal static class DaemonCommands
             if (Why(pipeline.State, pipeline.Reason, pipeline.Restarts) is { } why)
                 await cli.Output.WriteLineAsync($"{"".PadRight(width)}  {why}").ConfigureAwait(false);
         }
+        return 0;
     }
 
     // Why a pipeline has ended or is restarting, as a sentence; nothing for one that's running as it should.
@@ -427,7 +327,7 @@ internal static class DaemonCommands
         return 0;
     }
 
-    private static async Task WatchAsync(CliContext cli, string name)
+    private static async Task<int> WatchAsync(CliContext cli, string name)
     {
         await foreach (var detail in cli.Client.WatchAsync(name, TimeSpan.FromSeconds(1), cli.Cancellation).ConfigureAwait(false))
         {
@@ -435,6 +335,7 @@ internal static class DaemonCommands
             WriteStats(detail, cli.Output);
             await cli.Output.WriteLineAsync().ConfigureAwait(false);
         }
+        return 0;
     }
 
     // A table of a pipeline's modules and their counts, after why it ended, if it has.

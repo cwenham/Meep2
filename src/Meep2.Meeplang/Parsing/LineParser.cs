@@ -177,55 +177,28 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
         var words = DirectiveWords(text, start, lineNumber);
         var name = words[0];
         if (name.Text == "#include")
-        {
             ParseInclude(words, indent);
-            return;
-        }
-        if (name.Text != "#plugin")
-        {
+        else if (name.Text == "#plugin")
+            ParsePlugin(words, indent);
+        else
             _diagnostics.Error($"There's no {name.Text} directive. Meeplang has #plugin and #include.", name.Span);
+    }
+
+    // #plugin github.com/owner/repo 1.2.0 sha256:…, #plugin nuget:Package.Id 1.2.0 [sha256:…], or #plugin "path",
+    // each optionally followed by 'as' and a name: at the margin, in the pipeline's own file, before its modules.
+    private void ParsePlugin(List<DirectiveWord> words, int indent)
+    {
+        var name = words[0];
+        if (!PluginLineAllowed(name, indent))
             return;
-        }
-        if (isInclude)
-        {
-            _diagnostics.Error("An included file holds templates and constants; #plugin goes in the pipeline's own file.", name.Span);
-            return;
-        }
-        if (indent > 0)
-        {
-            _diagnostics.Error("#plugin goes at the left margin.", name.Span);
-            return;
-        }
-        while (_levels.Count > 1)
-            _levels.RemoveAt(_levels.Count - 1);
-        if (_seenModule)
-        {
-            _diagnostics.Error("#plugin goes before the pipeline's modules.", name.Span);
-            return;
-        }
         if (words.Count < 2)
         {
             _diagnostics.Error(PluginUsage, name.Span);
             return;
         }
-
         var span = SourceSpan.Between(name.Span, words[^1].Span);
-        string? alias = null;
-        if (words.Count > 2 && words[^2] is { Text: "as", Quoted: false })
-        {
-            alias = words[^1].Text;
-            if (words[^1].Quoted || !IsIdentifier(alias))
-            {
-                _diagnostics.Error($"A plugin's name after 'as' is a word of letters and digits, such as Transit, not {words[^1].Text}.", words[^1].Span);
-                return;
-            }
-            words.RemoveRange(words.Count - 2, 2);
-        }
-        else if (words.Count > 1 && words[^1] is { Text: "as", Quoted: false })
-        {
-            _diagnostics.Error("Expected a name for the plugin after 'as'.", words[^1].Span);
+        if (!TryAlias(words, out var alias))
             return;
-        }
 
         var reference = words[1];
         if (reference.Quoted)
@@ -236,75 +209,8 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
                 _plugins.Add(new PluginDirective(PluginOrigin.Local, reference.Text, null, null, span) { Alias = alias });
             return;
         }
-
-        PluginOrigin origin;
-        string id;
-        if (reference.Text.StartsWith("github.com/", StringComparison.OrdinalIgnoreCase))
-        {
-            origin = PluginOrigin.GitHub;
-            id = reference.Text["github.com/".Length..];
-            if (id.Split('/') is not [{ Length: > 0 } owner, { Length: > 0 } repo])
-            {
-                _diagnostics.Error($"A plugin on GitHub is named as github.com/owner/repo, not {reference.Text}.", reference.Span);
-                return;
-            }
-            if (!PluginNames.IsGitHubOwner(owner) || !PluginNames.IsGitHubRepo(repo))
-            {
-                _diagnostics.Error(
-                    $"{reference.Text} isn't a name GitHub allows: an owner is letters, digits and '-', and a repository letters, digits, '-', '_' and '.', but not '.' or '..'.",
-                    reference.Span);
-                return;
-            }
-        }
-        else if (reference.Text.StartsWith("nuget:", StringComparison.OrdinalIgnoreCase))
-        {
-            origin = PluginOrigin.NuGet;
-            id = reference.Text["nuget:".Length..];
-            if (!PluginNames.IsNuGetId(id))
-            {
-                _diagnostics.Error(
-                    $"A plugin on NuGet is named as nuget:Package.Id, with letters, digits and '_' joined by '.' or '-', not {reference.Text}.",
-                    reference.Span);
-                return;
-            }
-        }
-        else
-        {
-            _diagnostics.Error(PluginUsage, reference.Span);
+        if (PluginSourceOf(reference) is not var (origin, id) || PluginVersionOf(words, reference) is not { } version || !TrySha(words, out var sha))
             return;
-        }
-
-        if (words.Count < 3 || words[2].Text.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
-        {
-            _diagnostics.Error($"{reference.Text} needs a version, as in {reference.Text} 1.2.0.", reference.Span);
-            return;
-        }
-        var version = words[2].Text;
-        if (!PluginNames.IsVersion(version))
-        {
-            _diagnostics.Error(
-                $"{version} isn't a version: write it with letters, digits, '.', '+' and '-', as in 1.2.0 or 2.0.0-beta.1.",
-                words[2].Span);
-            return;
-        }
-        string? sha = null;
-        if (words.Count > 3)
-        {
-            var hash = words[3];
-            if (!hash.Text.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
-                || hash.Text.Length != "sha256:".Length + 64
-                || !hash.Text["sha256:".Length..].All(char.IsAsciiHexDigit))
-            {
-                _diagnostics.Error("A plugin's SHA is written as sha256: and 64 hex digits.", hash.Span);
-                return;
-            }
-            sha = hash.Text["sha256:".Length..].ToLowerInvariant();
-            if (words.Count > 4)
-            {
-                _diagnostics.Error("A #plugin line ends after the SHA, or after 'as' and a name.", words[4].Span);
-                return;
-            }
-        }
         if (origin == PluginOrigin.GitHub && sha is null)
         {
             _diagnostics.Error(
@@ -315,13 +221,138 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
         _plugins.Add(new PluginDirective(origin, id, version, sha, span) { Alias = alias });
     }
 
+    // Whether a #plugin line is where one can be: at the margin, in the pipeline's own file, before its modules.
+    private bool PluginLineAllowed(DirectiveWord name, int indent)
+    {
+        if (isInclude)
+        {
+            _diagnostics.Error("An included file holds templates and constants; #plugin goes in the pipeline's own file.", name.Span);
+            return false;
+        }
+        if (indent > 0)
+        {
+            _diagnostics.Error("#plugin goes at the left margin.", name.Span);
+            return false;
+        }
+        while (_levels.Count > 1)
+            _levels.RemoveAt(_levels.Count - 1);
+        if (_seenModule)
+        {
+            _diagnostics.Error("#plugin goes before the pipeline's modules.", name.Span);
+            return false;
+        }
+        return true;
+    }
+
+    // The name after 'as', taken off the end of the words, or null if there's none. False if it isn't a name.
+    private bool TryAlias(List<DirectiveWord> words, out string? alias)
+    {
+        alias = null;
+        if (words.Count > 2 && words[^2] is { Text: "as", Quoted: false })
+        {
+            alias = words[^1].Text;
+            if (words[^1].Quoted || !IsIdentifier(alias))
+            {
+                _diagnostics.Error($"A plugin's name after 'as' is a word of letters and digits, such as Transit, not {words[^1].Text}.", words[^1].Span);
+                return false;
+            }
+            words.RemoveRange(words.Count - 2, 2);
+        }
+        else if (words.Count > 1 && words[^1] is { Text: "as", Quoted: false })
+        {
+            _diagnostics.Error("Expected a name for the plugin after 'as'.", words[^1].Span);
+            return false;
+        }
+        return true;
+    }
+
+    // Where a plugin comes from, GitHub or NuGet, and its name there, or null if the reference isn't one.
+    private PluginSource? PluginSourceOf(DirectiveWord reference)
+    {
+        if (reference.Text.StartsWith("github.com/", StringComparison.OrdinalIgnoreCase))
+        {
+            var id = reference.Text["github.com/".Length..];
+            if (id.Split('/') is not [{ Length: > 0 } owner, { Length: > 0 } repo])
+            {
+                _diagnostics.Error($"A plugin on GitHub is named as github.com/owner/repo, not {reference.Text}.", reference.Span);
+                return null;
+            }
+            if (!PluginNames.IsGitHubOwner(owner) || !PluginNames.IsGitHubRepo(repo))
+            {
+                _diagnostics.Error(
+                    $"{reference.Text} isn't a name GitHub allows: an owner is letters, digits and '-', and a repository letters, digits, '-', '_' and '.', but not '.' or '..'.",
+                    reference.Span);
+                return null;
+            }
+            return new PluginSource(PluginOrigin.GitHub, id);
+        }
+        if (reference.Text.StartsWith("nuget:", StringComparison.OrdinalIgnoreCase))
+        {
+            var id = reference.Text["nuget:".Length..];
+            if (PluginNames.IsNuGetId(id))
+                return new PluginSource(PluginOrigin.NuGet, id);
+            _diagnostics.Error(
+                $"A plugin on NuGet is named as nuget:Package.Id, with letters, digits and '_' joined by '.' or '-', not {reference.Text}.",
+                reference.Span);
+            return null;
+        }
+        _diagnostics.Error(PluginUsage, reference.Span);
+        return null;
+    }
+
+    // The version after the reference, or null if there's none or it isn't one.
+    private string? PluginVersionOf(List<DirectiveWord> words, DirectiveWord reference)
+    {
+        if (words.Count < 3 || words[2].Text.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
+        {
+            _diagnostics.Error($"{reference.Text} needs a version, as in {reference.Text} 1.2.0.", reference.Span);
+            return null;
+        }
+        var version = words[2].Text;
+        if (PluginNames.IsVersion(version))
+            return version;
+        _diagnostics.Error(
+            $"{version} isn't a version: write it with letters, digits, '.', '+' and '-', as in 1.2.0 or 2.0.0-beta.1.",
+            words[2].Span);
+        return null;
+    }
+
+    // The SHA after the version, lower-cased, or null if there's none. False if it isn't one, or more follows it.
+    private bool TrySha(List<DirectiveWord> words, out string? sha)
+    {
+        sha = null;
+        if (words.Count <= 3)
+            return true;
+        var hash = words[3];
+        if (!hash.Text.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
+            || hash.Text.Length != "sha256:".Length + 64
+            || !hash.Text["sha256:".Length..].All(char.IsAsciiHexDigit))
+        {
+            _diagnostics.Error("A plugin's SHA is written as sha256: and 64 hex digits.", hash.Span);
+            return false;
+        }
+        sha = hash.Text["sha256:".Length..].ToLowerInvariant();
+        if (words.Count > 4)
+        {
+            _diagnostics.Error("A #plugin line ends after the SHA, or after 'as' and a name.", words[4].Span);
+            return false;
+        }
+        return true;
+    }
+
+    // Where a plugin from the web comes from, and its name there.
+    private sealed record PluginSource(PluginOrigin Origin, string Id);
+
+    // A word of a directive line, and whether it was in quotes.
+    private sealed record DirectiveWord(string Text, SourceSpan Span, bool Quoted);
+
     private static bool IsIdentifier(string text) =>
         text.Length > 0 && (char.IsLetter(text[0]) || text[0] == '_') && text.All(c => char.IsLetterOrDigit(c) || c == '_');
 
     // Splits a directive line into words at spaces, keeping quoted strings whole and stopping at a // comment.
-    private List<(string Text, SourceSpan Span, bool Quoted)> DirectiveWords(string text, int start, int lineNumber)
+    private List<DirectiveWord> DirectiveWords(string text, int start, int lineNumber)
     {
-        var words = new List<(string Text, SourceSpan Span, bool Quoted)>();
+        var words = new List<DirectiveWord>();
         var i = start;
         while (i < text.Length)
         {
@@ -342,19 +373,19 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
                     _diagnostics.Error($"This string isn't closed with a {quote}.", new SourceSpan(lineNumber, i + 1, text.Length - i, _diagnostics.SpanFile));
                     end = text.Length - 1;
                 }
-                words.Add((text[(i + 1)..end], new SourceSpan(lineNumber, wordStart + 1, end + 1 - wordStart, _diagnostics.SpanFile), true));
+                words.Add(new DirectiveWord(text[(i + 1)..end], new SourceSpan(lineNumber, wordStart + 1, end + 1 - wordStart, _diagnostics.SpanFile), true));
                 i = end + 1;
                 continue;
             }
             while (i < text.Length && !char.IsWhiteSpace(text[i]))
                 i++;
-            words.Add((text[wordStart..i], new SourceSpan(lineNumber, wordStart + 1, i - wordStart, _diagnostics.SpanFile), false));
+            words.Add(new DirectiveWord(text[wordStart..i], new SourceSpan(lineNumber, wordStart + 1, i - wordStart, _diagnostics.SpanFile), false));
         }
         return words;
     }
 
     // #include "file.meep": at the margin, before the modules, like #plugin.
-    private void ParseInclude(List<(string Text, SourceSpan Span, bool Quoted)> words, int indent)
+    private void ParseInclude(List<DirectiveWord> words, int indent)
     {
         var name = words[0];
         if (indent > 0)
@@ -561,9 +592,36 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
             _diagnostics.Error($"Expected a module, such as Fetch or Where, not {verb}.", verb.Span);
             return;
         }
+        var module = ParseVerb(tokens, ref position, isFeeder);
+        if (!AtArgumentBoundary(tokens, position))
+        {
+            var parser = new ExpressionParser(tokens, position, _diagnostics);
+            module.Positional = parser.Parse();
+            if (module.Positional is null)
+                return;
+            module.PositionalSpan = SourceSpan.Between(tokens[position].Span, tokens[parser.Position - 1].Span);
+            position = parser.Position;
+        }
+        while (tokens[position].Kind != TokenKind.End)
+        {
+            if (ParseModulePart(tokens, position, module) is not { } next)
+                return;
+            position = next;
+        }
+
+        module.Extent = SourceRange.Between(tokens[0].Span, tokens[position - 1].Span);
+        if (!Attach(module, owner, verb))
+            return;
+        _seenModule = true;
+        _lastOpener = module;
+    }
+
+    // Verb, Verb.Inflection or Plugin.Verb.Inflection, from the verb's token, leaving position after it.
+    private static ModuleSyntax ParseVerb(List<Token> tokens, ref int position, bool isFeeder)
+    {
+        var verb = tokens[position];
         position++;
         var module = new ModuleSyntax(isFeeder, verb.Text, verb.Span);
-
         if (tokens[position].Is(".") && tokens[position + 1].Kind == TokenKind.Identifier)
         {
             module.Inflection = tokens[position + 1].Text;
@@ -579,94 +637,96 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
                 position += 2;
             }
         }
+        return module;
+    }
 
-        if (!AtArgumentBoundary(tokens, position))
+    // One of the parts after a module's value: as Name, @modifier[=value], by key, or name=value. Returns where the
+    // next part starts, or null, having reported why, if it isn't one.
+    private int? ParseModulePart(List<Token> tokens, int position, ModuleSyntax module)
+    {
+        var token = tokens[position];
+        if (token.IsWord("as"))
+            return ParseName(tokens, position, module);
+        if (token.Is("@"))
+            return ParseModifier(tokens, position, module);
+        if (token.IsWord("by"))
         {
-            var parser = new ExpressionParser(tokens, position, _diagnostics);
-            module.Positional = parser.Parse();
-            if (module.Positional is null)
-                return;
-            module.PositionalSpan = SourceSpan.Between(tokens[position].Span, tokens[parser.Position - 1].Span);
+            // A key, as in Zip by msg.OrderId (Q130): the by parameter, written as a keyword.
+            if (tokens[position + 1].Is("="))
+            {
+                _diagnostics.Error("Write by without =, as in by msg.Key.", token.Span);
+                return null;
+            }
+            return ParseArgument(tokens, position, "by", position + 1, module);
+        }
+        if (token.Kind == TokenKind.Identifier && tokens[position + 1].Is("="))
+            return ParseArgument(tokens, position, token.Text, position + 2, module);
+        _diagnostics.Error($"Unexpected {token}. After a module's value, write name=value, by key, as Name, or @modifier.", token.Span);
+        return null;
+    }
+
+    private int? ParseName(List<Token> tokens, int position, ModuleSyntax module)
+    {
+        var name = tokens[position + 1];
+        if (name.Kind != TokenKind.Identifier)
+        {
+            _diagnostics.Error("Expected a name after 'as'.", name.Span);
+            return null;
+        }
+        if (module.Name is not null)
+        {
+            _diagnostics.Error("This module already has a name.", tokens[position].Span);
+            return null;
+        }
+        module.Name = name.Text;
+        module.NameSpan = name.Span;
+        return position + 2;
+    }
+
+    private int? ParseModifier(List<Token> tokens, int position, ModuleSyntax module)
+    {
+        var at = tokens[position];
+        var name = tokens[position + 1];
+        if (name.Kind != TokenKind.Identifier)
+        {
+            _diagnostics.Error("Expected a modifier name after '@', such as @bypass.", name.Span);
+            return null;
+        }
+        position += 2;
+        ExpressionSyntax? value = null;
+        if (tokens[position].Is("="))
+        {
+            var parser = new ExpressionParser(tokens, position + 1, _diagnostics);
+            value = parser.Parse();
+            if (value is null)
+                return null;
             position = parser.Position;
         }
+        module.AddModifier(new ModifierSyntax(name.Text, value, SourceSpan.Between(at.Span, tokens[position - 1].Span)));
+        return position;
+    }
 
-        while (tokens[position].Kind != TokenKind.End)
-        {
-            var token = tokens[position];
-            if (token.IsWord("as"))
-            {
-                var name = tokens[position + 1];
-                if (name.Kind != TokenKind.Identifier)
-                {
-                    _diagnostics.Error("Expected a name after 'as'.", name.Span);
-                    return;
-                }
-                if (module.Name is not null)
-                {
-                    _diagnostics.Error("This module already has a name.", token.Span);
-                    return;
-                }
-                module.Name = name.Text;
-                module.NameSpan = name.Span;
-                position += 2;
-            }
-            else if (token.Is("@"))
-            {
-                var name = tokens[position + 1];
-                if (name.Kind != TokenKind.Identifier)
-                {
-                    _diagnostics.Error("Expected a modifier name after '@', such as @bypass.", name.Span);
-                    return;
-                }
-                position += 2;
-                ExpressionSyntax? value = null;
-                if (tokens[position].Is("="))
-                {
-                    var parser = new ExpressionParser(tokens, position + 1, _diagnostics);
-                    value = parser.Parse();
-                    if (value is null)
-                        return;
-                    position = parser.Position;
-                }
-                module.AddModifier(new ModifierSyntax(name.Text, value, SourceSpan.Between(token.Span, tokens[position - 1].Span)));
-            }
-            else if (token.IsWord("by"))
-            {
-                // A key, as in Zip by msg.OrderId (Q130): the by parameter, written as a keyword.
-                if (tokens[position + 1].Is("="))
-                {
-                    _diagnostics.Error("Write by without =, as in by msg.Key.", token.Span);
-                    return;
-                }
-                var parser = new ExpressionParser(tokens, position + 1, _diagnostics);
-                var value = parser.Parse();
-                if (value is null)
-                    return;
-                module.AddArgument(new ArgumentSyntax("by", value, token.Span) { Span = SourceSpan.Between(token.Span, tokens[parser.Position - 1].Span) });
-                position = parser.Position;
-            }
-            else if (token.Kind == TokenKind.Identifier && tokens[position + 1].Is("="))
-            {
-                var parser = new ExpressionParser(tokens, position + 2, _diagnostics);
-                var value = parser.Parse();
-                if (value is null)
-                    return;
-                module.AddArgument(new ArgumentSyntax(token.Text, value, token.Span) { Span = SourceSpan.Between(token.Span, tokens[parser.Position - 1].Span) });
-                position = parser.Position;
-            }
-            else
-            {
-                _diagnostics.Error($"Unexpected {token}. After a module's value, write name=value, by key, as Name, or @modifier.", token.Span);
-                return;
-            }
-        }
+    // name=value, or by key: the name's token at position, and its value from valueAt.
+    private int? ParseArgument(List<Token> tokens, int position, string name, int valueAt, ModuleSyntax module)
+    {
+        var token = tokens[position];
+        var parser = new ExpressionParser(tokens, valueAt, _diagnostics);
+        var value = parser.Parse();
+        if (value is null)
+            return null;
+        module.AddArgument(new ArgumentSyntax(name, value, token.Span) { Span = SourceSpan.Between(token.Span, tokens[parser.Position - 1].Span) });
+        return parser.Position;
+    }
 
-        module.Extent = SourceRange.Between(tokens[0].Span, tokens[position - 1].Span);
+    // Puts a module where it was written: at the top, under the module above it, or in a template. False, having
+    // said why, if it can't go there.
+    private bool Attach(ModuleSyntax module, object? owner, Token verb)
+    {
         switch (owner)
         {
             case null when isInclude:
                 _diagnostics.Error("An included file holds templates and constants, not a pipeline's modules. Put these under a template.", verb.Span);
-                return;
+                return false;
             case null:
                 _modules.Add(module);
                 break;
@@ -678,10 +738,9 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
                 break;
             default:
                 _diagnostics.Error("Only settings, written as name = value, go under 'defaults'.", verb.Span);
-                return;
+                return false;
         }
-        _seenModule = true;
-        _lastOpener = module;
+        return true;
     }
 
     // Where a module's value ends and its named parts begin.

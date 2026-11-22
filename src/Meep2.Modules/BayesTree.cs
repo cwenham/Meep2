@@ -33,15 +33,6 @@ public sealed class BayesTree
     /// <summary>The prefix that makes a tree shared by every pipeline, as in <c>shared:topics</c>.</summary>
     public const string SharedPrefix = "shared:";
 
-    private static readonly Dictionary<string, BayesTree> s_trees = new(StringComparer.Ordinal);
-    private static readonly Lock s_opening = new();
-
-    // Guarded by s_opening: the modules holding the tree, whether it was opened for good with Open, and whether a module
-    // that saves it has held it since it was loaded.
-    private int _holders;
-    private bool _kept;
-    private bool _saveWhenDropped;
-
     private readonly Lock _lock = new();
     private readonly SemaphoreSlim _saving = new(1, 1);
     private readonly Dictionary<string, ClassCounts> _classes = new(StringComparer.Ordinal);
@@ -107,13 +98,7 @@ public sealed class BayesTree
     /// <exception cref="IOException">The file is there but couldn't be read.</exception>
     /// <exception cref="JsonException">The file isn't a saved tree.</exception>
     /// <remarks>A tree opened this way stays in memory for the life of the process, as for tests and tools.</remarks>
-    public static BayesTree Open(string path)
-    {
-        var tree = Find(path);
-        lock (s_opening)
-            tree._kept = true;
-        return tree;
-    }
+    public static BayesTree Open(string path) => TreeStore.Open(path);
 
     /// <summary>
     /// Holds the tree saved in this file while a module uses it, loading it the first time, as <see cref="Open"/>
@@ -122,65 +107,18 @@ public sealed class BayesTree
     /// </summary>
     /// <exception cref="IOException">The file is there but couldn't be read.</exception>
     /// <exception cref="JsonException">The file isn't a saved tree.</exception>
-    public static TreeHold Hold(string path, bool saves)
-    {
-        var tree = Find(path, hold: true);
-        lock (s_opening)
-            tree._saveWhenDropped |= saves;
-        return new TreeHold(tree);
-    }
+    public static TreeHold Hold(string path, bool saves) => TreeStore.Hold(path, saves);
 
     /// <summary>Whether the tree saved in this file is in memory now, for tests.</summary>
-    internal static bool IsInMemory(string path)
-    {
-        lock (s_opening)
-            return s_trees.ContainsKey(System.IO.Path.GetFullPath(path));
-    }
+    internal static bool IsInMemory(string path) => TreeStore.IsInMemory(path);
 
-    // The tree in memory for a file, loaded if it isn't, counting a holder if asked.
-    private static BayesTree Find(string path, bool hold = false)
+    /// <summary>The tree saved in a file, which is a full path, loaded from it if it's there, and otherwise empty.</summary>
+    internal static BayesTree LoadFrom(string path)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        path = System.IO.Path.GetFullPath(path);
-        lock (s_opening)
-        {
-            if (s_trees.TryGetValue(path, out var tree))
-            {
-                tree._holders += hold ? 1 : 0;
-                return tree;
-            }
-        }
-
         var loaded = new BayesTree(path);
         if (File.Exists(path))
             loaded.Load(File.ReadAllText(path));
-        lock (s_opening)
-        {
-            // Another may have loaded it in the meantime.
-            if (!s_trees.TryGetValue(path, out var tree))
-                s_trees[path] = tree = loaded;
-            tree._holders += hold ? 1 : 0;
-            return tree;
-        }
-    }
-
-    // A module let go: the last saves the tree, if it should, then drops it, unless it was taken again meanwhile.
-    private async ValueTask LetGoAsync()
-    {
-        bool save;
-        lock (s_opening)
-        {
-            if (--_holders > 0 || _kept)
-                return;
-            save = _saveWhenDropped;
-        }
-        if (save && Unsaved > 0)
-            await SaveAsync().ConfigureAwait(false);
-        lock (s_opening)
-        {
-            if (_holders == 0 && !_kept && s_trees.TryGetValue(Path, out var tree) && ReferenceEquals(tree, this))
-                s_trees.Remove(Path);
-        }
+        return loaded;
     }
 
     /// <summary>A module's hold on a tree, which <see cref="Hold"/> gives. Dispose it to let go.</summary>
@@ -195,7 +133,7 @@ public sealed class BayesTree
 
         /// <summary>Lets go of the tree, once.</summary>
         public ValueTask DisposeAsync() =>
-            Interlocked.Exchange(ref _released, 1) == 0 ? Tree.LetGoAsync() : ValueTask.CompletedTask;
+            Interlocked.Exchange(ref _released, 1) == 0 ? TreeStore.LetGoAsync(Tree) : ValueTask.CompletedTask;
     }
 
     /// <summary>Learns that <paramref name="text"/> belongs to <paramref name="class"/>.</summary>

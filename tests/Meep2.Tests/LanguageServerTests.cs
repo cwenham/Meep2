@@ -56,7 +56,7 @@ public class LanguageServerTests
             .. Framed("""{"jsonrpc":"2.0","method":"textDocument/didChange"}"""),
             .. Framed("""[1, 2]"""),
             .. Framed("""{"jsonrpc":"2.0","id":3,"method":"shutdown"}"""),
-            .. Encoding.ASCII.GetBytes($"Content-Length: {LanguageServer.MaxMessage + 1}\r\n\r\n"),
+            .. Encoding.ASCII.GetBytes($"Content-Length: {JsonRpcChannel.MaxMessage + 1}\r\n\r\n"),
         ]);
 
         await Assert.That(replies.Count).IsEqualTo(6);
@@ -71,7 +71,7 @@ public class LanguageServerTests
         await Assert.That(replies[3]["error"]!["code"]!.GetValue<int>()).IsEqualTo(-32600);
         await Assert.That(replies[4]["id"]!.GetValue<int>()).IsEqualTo(3);
         await Assert.That(replies[4]["result"]).IsNull();
-        await Assert.That(replies[5]["error"]!["message"]!.GetValue<string>()).IsEqualTo($"meep lsp skipped a message of {LanguageServer.MaxMessage + 1} bytes: messages can be at most {LanguageServer.MaxMessage}.");
+        await Assert.That(replies[5]["error"]!["message"]!.GetValue<string>()).IsEqualTo($"meep lsp skipped a message of {JsonRpcChannel.MaxMessage + 1} bytes: messages can be at most {JsonRpcChannel.MaxMessage}.");
     }
 
     [Test]

@@ -206,7 +206,7 @@ public sealed class Pipeline : IAsyncDisposable
         for (var i = 0; i < readings.Length; i++)
         {
             var node = layout.Nodes[i];
-            readings[i] = new ModuleReading(layout.Modules[i], node.GetStats(), node.Traffic, node.Timing.Total, node is SourceNode);
+            readings[i] = new ModuleReading(layout.Modules[i], node.GetStats(), node.Counters.Traffic, node.Timing.Total, node is SourceNode);
         }
         return readings;
     }
@@ -218,7 +218,7 @@ public sealed class Pipeline : IAsyncDisposable
     /// Bytes one module has read from the network and written to it since the pipeline started, as it counted them
     /// (<see cref="ModuleContext.CountBytes"/>). Nothing for a module that doesn't talk to the network.
     /// </summary>
-    public ModuleTraffic GetTraffic(ModuleInfo module) => NodeOf(module).Traffic;
+    public ModuleTraffic GetTraffic(ModuleInfo module) => NodeOf(module).Counters.Traffic;
 
     /// <summary>Where the pipeline's modules are listening now, as each says it (<see cref="ModuleContext.Listening"/>).</summary>
     public IReadOnlyList<ListeningAt> GetListening()
@@ -227,7 +227,7 @@ public sealed class Pipeline : IAsyncDisposable
         var listening = new List<ListeningAt>();
         for (var i = 0; i < layout.Nodes.Length; i++)
         {
-            if (layout.Nodes[i].ListeningAt is { } address)
+            if (layout.Nodes[i].PeerCounts.ListeningAt is { } address)
                 listening.Add(new ListeningAt(layout.Modules[i], address));
         }
         return listening;
@@ -237,13 +237,13 @@ public sealed class Pipeline : IAsyncDisposable
     /// What one module has received from each place, as it counted them (<see cref="ModuleContext.Arrival"/>): from
     /// other Meep hosts by origin, and from elsewhere by the client's address. Nothing for a module that counts none.
     /// </summary>
-    public IReadOnlyList<PeerCount> GetArrivals(ModuleInfo module) => NodeOf(module).Arrivals?.Read() ?? [];
+    public IReadOnlyList<PeerCount> GetArrivals(ModuleInfo module) => NodeOf(module).PeerCounts.Arrivals?.Read() ?? [];
 
     /// <summary>
     /// What one module has sent to each place, by the host and port it connected to, as it counted them
     /// (<see cref="ModuleContext.Destination"/>). Nothing for a module that counts none.
     /// </summary>
-    public IReadOnlyList<PeerCount> GetDestinations(ModuleInfo module) => NodeOf(module).Destinations?.Read() ?? [];
+    public IReadOnlyList<PeerCount> GetDestinations(ModuleInfo module) => NodeOf(module).PeerCounts.Destinations?.Read() ?? [];
 
     /// <summary>
     /// For every module that has counted any, its arrivals (<paramref name="arrivals"/>) or its destinations, in the
@@ -255,7 +255,7 @@ public sealed class Pipeline : IAsyncDisposable
         var read = new List<ModulePeers>();
         for (var i = 0; i < layout.Nodes.Length; i++)
         {
-            if ((arrivals ? layout.Nodes[i].Arrivals : layout.Nodes[i].Destinations) is { } table)
+            if ((arrivals ? layout.Nodes[i].PeerCounts.Arrivals : layout.Nodes[i].PeerCounts.Destinations) is { } table)
                 read.Add(new ModulePeers(layout.Modules[i], table.Read()));
         }
         return read;
@@ -343,7 +343,7 @@ public sealed class Pipeline : IAsyncDisposable
         if (Volatile.Read(ref _state) == Finished)
             throw new InvalidOperationException($"{Name} has finished, so there's nothing to tap.");
         var tap = new DebugTap(node, options ?? new DebugTapOptions());
-        node.AddTap(tap);
+        node.Taps.Add(tap);
         if (Volatile.Read(ref _state) == Finished)
             tap.Complete(); // it finished while the tap was being added
         return tap;
@@ -366,15 +366,15 @@ public sealed class Pipeline : IAsyncDisposable
 
         List<TrackingScope>? created = null;
         Stamper.StampInjected(message, this, ref created);
-        if (Telemetry.Tracing)
-            Telemetry.Injected(this, message);
+        if (Tracing.IsOn)
+            Tracing.Injected(this, message);
         if (node is InflectionNode target)
         {
             DeliverTo(target, message, depth: 0, input: 0, LinkCount.Nowhere);
         }
         else
         {
-            node.Tapped(message);
+            node.Taps.Offer(message);
             Deliver(node, message);
         }
         TrackingScope.ReleaseAll(created);
@@ -423,47 +423,48 @@ public sealed class Pipeline : IAsyncDisposable
     private async Task<PipelineChangeReport> ApplyCoreAsync(PipelineChange change)
     {
         var (specs, connections, options) = (change.Next.Specs, change.Next.Connections, change.Next.Options);
-        var before = _nodesByModule;
-        var nodes = new Node[specs.Length];
-        var created = new List<Node>();
-        var updates = new List<(Node Node, ModuleInfo Old, NodeSpec Spec, bool Reconfigure)>();
-        var kept = new HashSet<Node>();
-        var added = new List<ModuleInfo>();
-        var replaced = new List<ModuleInfo>();
-        var replacedOld = new HashSet<Node>();
-        for (var i = 0; i < specs.Length; i++)
+        var plan = ChangePlan.Of(change, _nodesByModule, _nodes, SameShape, NewNode);
+        await CreateAllAsync(plan.Created).ConfigureAwait(false);
+        var removed = _nodes.Where(node => !plan.Kept.Contains(node)).ToList();
+
+        // New modules are ready before anything feeds them, then everything is connected as the change says.
+        foreach (var node in plan.Created.OfType<InflectionNode>())
+            _ = node.Start();
+        var removedLinks = removed.ToDictionary(node => node, node => node.Links);
+        Wire(plan.Nodes, specs, connections);
+        foreach (var (node, links) in removedLinks)
+            node.Links = Remaining(links, plan);
+        Options = options;
+        Install(plan.Nodes, specs, options, plan.Updates.Select(u => (u.Old, u.Node)));
+
+        // Kept modules take their new specs, between messages.
+        var keptState = await Task.WhenAll(plan.Updates.Select(u => u.Node.UpdateAsync(u.Spec, u.Reconfigure))).ConfigureAwait(false);
+        var unchanged = new List<ModuleInfo>();
+        var reconfigured = new List<ModuleInfo>();
+        for (var i = 0; i < plan.Updates.Count; i++)
         {
-            var spec = specs[i];
-            Node? node = null;
-            if (change.KeptAs(spec.Info) is var (running, reconfigure) && before.TryGetValue(running, out var old) && _nodes.Contains(old))
-            {
-                if (old.Spec.IsSource != spec.IsSource)
-                    throw new ArgumentException($"{running} can't become {spec.Info}: only one of them is a source.", nameof(change));
-                if (!kept.Add(old))
-                    throw new ArgumentException($"{running} is kept as more than one module.", nameof(change));
-                if (SameShape(old, spec, options))
-                {
-                    node = old;
-                    updates.Add((old, running, spec, reconfigure));
-                }
-                else
-                {
-                    kept.Remove(old); // it goes, and a new one takes its place
-                    replaced.Add(spec.Info);
-                    replacedOld.Add(old);
-                }
-            }
-            if (node is null)
-            {
-                node = NewNode(spec, options);
-                created.Add(node);
-                if (!replaced.Contains(spec.Info))
-                    added.Add(spec.Info);
-            }
-            nodes[i] = node;
+            var info = plan.Updates[i].Spec.Info;
+            if (!plan.Updates[i].Reconfigure)
+                unchanged.Add(info);
+            else if (keptState[i])
+                reconfigured.Add(info);
+            else
+                plan.Replaced.Add(info);
         }
 
-        // The new modules' instances are made first, so a factory that throws leaves the pipeline as it was.
+        foreach (var source in plan.Created.OfType<SourceNode>())
+        {
+            _inFlight.Add(); // held until the source finishes
+            source.Start(StoppingToken);
+        }
+        await RemoveAsync(removed).ConfigureAwait(false);
+        return new PipelineChangeReport(plan.Added, [.. removed.Where(node => !plan.ReplacedOld.Contains(node)).Select(node => node.Spec.Info)], reconfigured, plan.Replaced, unchanged);
+    }
+
+
+    // The new modules' instances are made first, so a factory that throws leaves the pipeline as it was.
+    private static async Task CreateAllAsync(List<Node> created)
+    {
         try
         {
             foreach (var node in created)
@@ -475,44 +476,13 @@ public sealed class Pipeline : IAsyncDisposable
                 await node.DisposeModuleAsync().ConfigureAwait(false);
             throw;
         }
-        var removed = _nodes.Where(node => !kept.Contains(node)).ToList();
+    }
 
-        // New modules are ready before anything feeds them, then everything is connected as the change says.
-        foreach (var node in created.OfType<InflectionNode>())
-            _ = node.Start();
-        var removedLinks = removed.ToDictionary(node => node, node => node.Links);
-        Wire(nodes, specs, connections);
-        foreach (var (node, links) in removedLinks)
-        {
-            // They finish where they were going.
-            var still = Enumerable.Range(0, links.Targets.Length).Where(i => !kept.Contains(links.Targets[i]) || nodes.Contains(links.Targets[i])).ToList();
-            node.Links = new Fanout([.. still.Select(i => links.Targets[i])], [.. still.Select(i => links.Inputs[i])], [.. still.Select(i => links.Counts[i])]);
-        }
-        Options = options;
-        Install(nodes, specs, options, updates.Select(u => (u.Old, u.Node)));
-
-        // Kept modules take their new specs, between messages.
-        var keptState = await Task.WhenAll(updates.Select(u => u.Node.UpdateAsync(u.Spec, u.Reconfigure))).ConfigureAwait(false);
-        var unchanged = new List<ModuleInfo>();
-        var reconfigured = new List<ModuleInfo>();
-        for (var i = 0; i < updates.Count; i++)
-        {
-            var info = updates[i].Spec.Info;
-            if (!updates[i].Reconfigure)
-                unchanged.Add(info);
-            else if (keptState[i])
-                reconfigured.Add(info);
-            else
-                replaced.Add(info);
-        }
-
-        foreach (var source in created.OfType<SourceNode>())
-        {
-            _inFlight.Add(); // held until the source finishes
-            source.Start(StoppingToken);
-        }
-        await RemoveAsync(removed).ConfigureAwait(false);
-        return new PipelineChangeReport(added, [.. removed.Where(node => !replacedOld.Contains(node)).Select(node => node.Spec.Info)], reconfigured, replaced, unchanged);
+    // A removed module's links to the modules that are still there, so what it has finishes where it was going.
+    private static Fanout Remaining(Fanout links, ChangePlan plan)
+    {
+        var still = Enumerable.Range(0, links.Targets.Length).Where(i => !plan.Kept.Contains(links.Targets[i]) || plan.Nodes.Contains(links.Targets[i])).ToList();
+        return new Fanout([.. still.Select(i => links.Targets[i])], [.. still.Select(i => links.Inputs[i])], [.. still.Select(i => links.Counts[i])]);
     }
 
     // Whether a kept module can carry on in place: the same inflections, and the same size of buffer.
@@ -613,6 +583,7 @@ public sealed class Pipeline : IAsyncDisposable
             foreach (var node in _nodes)
                 node.CreateModule();
             s_running.TryAdd(this, 0);
+            Metrics.Publish();
 
             // The pipeline's traces start with its own sources, not inside the span of whatever started it, such as
             // the Host module. The modules' tasks, started below, inherit this.
@@ -645,7 +616,7 @@ public sealed class Pipeline : IAsyncDisposable
             Volatile.Write(ref _state, Finished);
             s_running.TryRemove(this, out _);
             foreach (var node in _nodes)
-                node.CloseTaps();
+                node.Taps.CloseAll();
             foreach (var node in _nodes)
                 await node.DisposeModuleAsync().ConfigureAwait(false);
             _abort.Dispose();
@@ -735,12 +706,12 @@ public sealed class Pipeline : IAsyncDisposable
         Stamper.Stamp(message, emitter, from, defaultParent, this, ref created);
         if (scope is not null)
             message.Tracking = message.Tracking.Append(scope);
-        from.CountEmitted();
+        from.Counters.Emitted();
         if (from is SourceNode && message is not ErrorMessage)
             _sourceWindow?.Add(message.Id);
-        if (Telemetry.Tracing)
-            Telemetry.Emitted(from, emitter, message);
-        from.Tapped(message);
+        if (Tracing.IsOn)
+            Tracing.Emitted(from, emitter, message);
+        from.Taps.Offer(message);
         Deliver(from, message);
         TrackingScope.ReleaseAll(created);
     }
@@ -759,7 +730,7 @@ public sealed class Pipeline : IAsyncDisposable
     {
         if (depth > MaxForwardDepth)
         {
-            target.CountFiltered();
+            target.Counters.Filtered();
             return;
         }
         var isError = message is ErrorMessage;
@@ -775,16 +746,16 @@ public sealed class Pipeline : IAsyncDisposable
         if (target.IsStopped)
         {
             // The error policy stopped this module's branch. An error dropped here is reported as unhandled.
-            target.CountDropped();
+            target.Counters.Dropped();
             message.Tracking.Flag(MessageOutcome.Dropped);
             return;
         }
         if (target.Router is { } router)
         {
             // Distribute: the message goes on down one copy of the branch below, chosen here, on this thread.
-            target.CountReceived();
-            target.CountPassed();
-            target.Tapped(message);
+            target.Counters.Received();
+            target.Counters.Passed();
+            target.Taps.Offer(message);
             Route(target, router, message, depth);
             return;
         }
@@ -799,7 +770,7 @@ public sealed class Pipeline : IAsyncDisposable
             else if (target.HasExpiredFor(message))
             {
                 // Expired messages stop at the next module that would take them (Q12).
-                target.CountExpired();
+                target.Counters.Expired();
                 message.Tracking.Flag(MessageOutcome.Expired);
             }
             else
@@ -807,8 +778,8 @@ public sealed class Pipeline : IAsyncDisposable
                 target.Enqueue(message, input);
                 if (target.IsPassthrough)
                 {
-                    target.CountPassed();
-                    target.Tapped(message);
+                    target.Counters.Passed();
+                    target.Taps.Offer(message);
                     Forward(target, message, depth);
                 }
             }
@@ -820,12 +791,12 @@ public sealed class Pipeline : IAsyncDisposable
         }
         else if (!wanted)
         {
-            target.CountFiltered();
+            target.Counters.Filtered();
         }
         else
         {
             // None of the module's inflections takes this type: that's an error, not a silent drop (Q54).
-            target.CountRefused();
+            target.Counters.Refused();
             var error = new ErrorMessage { Error = $"{target.Info} doesn't take {message.GetType().Name} messages." };
             Emit(target, target.Info, error, defaultParent: message);
         }
