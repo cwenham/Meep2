@@ -342,32 +342,35 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
             // Read from the pipeline while it runs, or as it was when it ended.
             if (hosted.Counts is not { } pipeline)
                 continue; // still loading
-            var keys = pipeline.Keys();
+            var read = new PipelineRead(update, hosted.Name, wanted, Every: default, pipeline, pipeline.Keys(), sent, reads);
 
             foreach (var slot in due)
             {
                 if (slot.Entry != entry)
                     continue;
+                var atRate = read with { Every = slot.Every };
                 switch (slot.What)
                 {
                     case "totals":
                         if (Changes(TotalsOf(hosted, pipeline, sums, reads), sent.Totals) is { Count: > 0 } totals)
-                            update.Pipeline(hosted.Name).Totals = totals;
+                            read.Part.Totals = totals;
                         break;
                     case "modules":
-                        Modules(update, hosted.Name, wanted, slot.Every, pipeline, keys, sent, reads);
+                        CountEach(atRate, "modules", sent.Modules, Keyed(atRate), static (module, _) => module.Counts);
                         break;
                     case "links":
-                        Links(update, hosted.Name, wanted, slot.Every, pipeline, sent);
+                        CountEach(atRate, "links", sent.Links, pipeline.Links().Select(link => (link.Key, link)), static (link, _) => [link.Carried, link.Errors]);
                         break;
                     case "bytes":
-                        Bytes(update, hosted.Name, wanted, slot.Every, pipeline, keys, sent, reads);
+                        // Only modules that talk to the network have any.
+                        CountEach(atRate, "bytes", sent.Bytes, Keyed(atRate), static (module, sentBefore) =>
+                            module.Traffic == default && !sentBefore ? null : [module.Traffic.Received, module.Traffic.Sent]);
                         break;
                     case "timing":
-                        Timing(update, hosted.Name, wanted, slot.Every, pipeline, keys, sent, reads);
+                        Timing(atRate);
                         break;
                     case "arrivals" or "destinations":
-                        Places(update, hosted.Name, slot.What, wanted, slot.Every, pipeline, keys, sent);
+                        Places(atRate, slot.What);
                         break;
                 }
             }
@@ -375,68 +378,75 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
         return update;
     }
 
-    private static void Modules(Update update, string name, PipelinePlan wanted, TimeSpan every, PipelineCounts pipeline, IReadOnlyDictionary<ModuleInfo, string> keys, PipelineSent sent, Reads reads)
+    /// <summary>
+    /// What the parts of an update read and write for one pipeline: the update, the pipeline's name, what's wanted of
+    /// it and at which rate, its counts and its modules' keys, what was last sent, and the modules' counts read for
+    /// this update.
+    /// </summary>
+    private sealed record PipelineRead(
+        Update Update,
+        string Name,
+        PipelinePlan Wanted,
+        TimeSpan Every,
+        PipelineCounts Pipeline,
+        IReadOnlyDictionary<ModuleInfo, string> Keys,
+        PipelineSent Sent,
+        Reads Reads)
+    {
+        /// <summary>The pipeline's part of the update.</summary>
+        public PipelinePart Part => Update.Pipeline(Name);
+
+        /// <summary>Whether a module's or link's <paramref name="kind"/> is wanted at this rate.</summary>
+        public bool AtRate(string kind, string key) => Wanted.RateOf(kind, key) == Every;
+    }
+
+    // Each module with a key, and its counts read for this update.
+    private static IEnumerable<(string Key, ModuleRead Module)> Keyed(PipelineRead read)
+    {
+        foreach (var module in read.Reads.Of(read.Pipeline))
+        {
+            if (read.Keys.TryGetValue(module.Module, out var key))
+                yield return (key, module);
+        }
+    }
+
+    // The counts of each module or link wanted at this rate, if they changed, and those sent before that have gone.
+    // countsOf is given whether the key's counts were sent before, and returns null to send nothing for it yet.
+    private static void CountEach<T>(PipelineRead read, string kind, Dictionary<string, long[]> sent, IEnumerable<(string Key, T Item)> items, Func<T, bool, long[]?> countsOf)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var read in reads.Of(pipeline))
+        foreach (var (key, item) in items)
         {
-            if (!keys.TryGetValue(read.Module, out var key) || wanted.RateOf("modules", key) != every)
+            if (!read.AtRate(kind, key))
                 continue;
             seen.Add(key);
-            Counts(update, name, "modules", key, read.Counts, sent.Modules);
+            if (countsOf(item, sent.ContainsKey(key)) is { } counts)
+                Counts(read, kind, key, counts, sent);
         }
-        Gone(update, name, "modules", every, wanted, sent.Modules, seen);
+        Gone(read, kind, sent, seen);
     }
 
-    private static void Links(Update update, string name, PipelinePlan wanted, TimeSpan every, PipelineCounts pipeline, PipelineSent sent)
+    private static void Timing(PipelineRead read)
     {
+        var sent = read.Sent.Timing;
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var link in pipeline.Links())
+        foreach (var (key, module) in Keyed(read))
         {
-            if (wanted.RateOf("links", link.Key) != every)
-                continue;
-            seen.Add(link.Key);
-            Counts(update, name, "links", link.Key, [link.Carried, link.Errors], sent.Links);
-        }
-        Gone(update, name, "links", every, wanted, sent.Links, seen);
-    }
-
-    private static void Bytes(Update update, string name, PipelinePlan wanted, TimeSpan every, PipelineCounts pipeline, IReadOnlyDictionary<ModuleInfo, string> keys, PipelineSent sent, Reads reads)
-    {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var read in reads.Of(pipeline))
-        {
-            if (!keys.TryGetValue(read.Module, out var key) || wanted.RateOf("bytes", key) != every)
-                continue;
-            seen.Add(key);
-            var traffic = read.Traffic;
-            if (traffic == default && !sent.Bytes.ContainsKey(key))
-                continue; // only modules that talk to the network have any
-            Counts(update, name, "bytes", key, [traffic.Received, traffic.Sent], sent.Bytes);
-        }
-        Gone(update, name, "bytes", every, wanted, sent.Bytes, seen);
-    }
-
-    private static void Timing(Update update, string name, PipelinePlan wanted, TimeSpan every, PipelineCounts pipeline, IReadOnlyDictionary<ModuleInfo, string> keys, PipelineSent sent, Reads reads)
-    {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var read in reads.Of(pipeline))
-        {
-            if (!keys.TryGetValue(read.Module, out var key) || wanted.RateOf("timing", key) != every)
+            if (!read.AtRate("timing", key))
                 continue;
             seen.Add(key);
             // The busy time moves whenever the histogram does, and costs far less to read than the histogram.
-            var busy = read.Busy.Ticks;
-            if (sent.Timing.TryGetValue(key, out var before) ? before == busy : busy == 0 && read.Source)
+            var busy = module.Busy.Ticks;
+            if (sent.TryGetValue(key, out var before) ? before == busy : busy == 0 && module.Source)
                 continue; // nothing new, or a source, which handles nothing
-            var times = pipeline.GetHandlingTimes(read.Module);
-            sent.Timing[key] = busy;
-            (update.Pipeline(name).Timing ??= []).Add((key, times));
+            var times = read.Pipeline.GetHandlingTimes(module.Module);
+            sent[key] = busy;
+            (read.Part.Timing ??= []).Add((key, times));
         }
-        foreach (var key in sent.Timing.Keys.Where(k => !seen.Contains(k) && wanted.RateOf("timing", k) == every).ToList())
+        foreach (var key in sent.Keys.Where(k => !seen.Contains(k) && read.AtRate("timing", k)).ToList())
         {
-            sent.Timing.Remove(key);
-            (update.Pipeline(name).Timing ??= []).Add((key, null));
+            sent.Remove(key);
+            (read.Part.Timing ??= []).Add((key, null));
         }
     }
 
@@ -445,14 +455,15 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
     // being quiet goes (null), and is named in the pipeline's folded, so a client moves its counts into *'s rather than
     // seeing *'s rate jump (Q215). For arrivals, the pipeline's clients names clients outside Meep, by address, once a
     // name is found (Q220); for destinations, its peers says which are Meep hosts, by ID.
-    private static void Places(Update update, string name, string kind, PipelinePlan wanted, TimeSpan every, PipelineCounts pipeline, IReadOnlyDictionary<ModuleInfo, string> keys, PipelineSent sent)
+    private static void Places(PipelineRead read, string kind)
     {
         var arrivals = kind == "arrivals";
+        var sent = read.Sent;
         var record = arrivals ? sent.Arrivals : sent.Destinations;
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var (module, places) in pipeline.ReadPeers(arrivals))
+        foreach (var (module, places) in read.Pipeline.ReadPeers(arrivals))
         {
-            if (!keys.TryGetValue(module, out var key) || wanted.RateOf(kind, key) != every)
+            if (!read.Keys.TryGetValue(module, out var key) || !read.AtRate(kind, key))
                 continue;
             seen.Add(key);
             if (!record.TryGetValue(key, out var before))
@@ -466,9 +477,9 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                     continue;
                 now[place.Place] = counts;
                 if (arrivals)
-                    Client(update, name, sent, place.Place);
+                    Client(read, place.Place);
                 else
-                    Peer(update, name, sent, place.Place, place.Meep);
+                    Peer(read, place.Place, place.Meep);
             }
             List<(string Place, long[]? Now, long[]? Before)>? changes = null;
             foreach (var (place, counts) in now)
@@ -479,7 +490,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                 if (last is not null && counts.Where((count, i) => count < last[i]).Any())
                 {
                     // Folded and back again since the last update: it starts again from what it has now.
-                    update.Pipeline(name).Fold(key, place);
+                    read.Part.Fold(key, place);
                     last = null;
                 }
                 (changes ??= []).Add((place, counts, last));
@@ -490,62 +501,64 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                 // Places go only by being folded into * (or meep://*).
                 before.Remove(place);
                 (changes ??= []).Add((place, null, null));
-                update.Pipeline(name).Fold(key, place);
+                read.Part.Fold(key, place);
             }
             if (changes is not null)
-                update.Pipeline(name).AddPlaces(kind, key, changes);
+                read.Part.AddPlaces(kind, key, changes);
         }
-        foreach (var key in record.Keys.Where(k => !seen.Contains(k) && wanted.RateOf(kind, k) == every).ToList())
+        foreach (var key in record.Keys.Where(k => !seen.Contains(k) && read.AtRate(kind, k)).ToList())
         {
             record.Remove(key);
-            update.Pipeline(name).AddPlaces(kind, key, null);
+            read.Part.AddPlaces(kind, key, null);
         }
     }
 
     // Names a client outside Meep by its address, when a name is first found for it or changes.
-    private static void Client(Update update, string name, PipelineSent sent, string place)
+    private static void Client(PipelineRead read, string place)
     {
+        var sent = read.Sent;
         if (ClientNames.NameOf(place) is not { } found || (sent.Clients.TryGetValue(place, out var told) && told == found))
             return;
         sent.Clients[place] = found;
-        (update.Pipeline(name).Clients ??= []).Add((place, found));
+        (read.Part.Clients ??= []).Add((place, found));
     }
 
     // Says which Meep host a destination is, when that's new or has changed.
-    private static void Peer(Update update, string name, PipelineSent sent, string endpoint, string? id)
+    private static void Peer(PipelineRead read, string endpoint, string? id)
     {
+        var sent = read.Sent;
         if (sent.Peers.TryGetValue(endpoint, out var told) ? told == id : id is null)
             return;
         if (id is null)
             sent.Peers.Remove(endpoint);
         else
             sent.Peers[endpoint] = id;
-        (update.Pipeline(name).Peers ??= []).Add((endpoint, id));
+        (read.Part.Peers ??= []).Add((endpoint, id));
     }
 
     // A module's or link's counts, if any changed since they were last sent.
-    private static void Counts(Update update, string name, string kind, string key, long[] now, Dictionary<string, long[]> sent)
+    private static void Counts(PipelineRead read, string kind, string key, long[] now, Dictionary<string, long[]> sent)
     {
         if (sent.TryGetValue(key, out var before))
         {
             if (now.AsSpan().SequenceEqual(before))
                 return;
-            update.Pipeline(name).Add(kind, key, now, before);
+            read.Part.Add(kind, key, now, before);
         }
         else
         {
-            update.Pipeline(name).Add(kind, key, now, null);
+            read.Part.Add(kind, key, now, null);
         }
         sent[key] = now;
     }
 
     // Modules or links that were sent at this rate and aren't there now, as when an edit removed them.
-    private static void Gone(Update update, string name, string kind, TimeSpan every, PipelinePlan wanted, Dictionary<string, long[]> sent, HashSet<string> seen)
+    private static void Gone(PipelineRead read, string kind, Dictionary<string, long[]> sent, HashSet<string> seen)
     {
-        foreach (var key in sent.Keys.Where(k => !seen.Contains(k) && wanted.RateOf(kind, k) == every).ToList())
+        foreach (var key in sent.Keys.Where(k => !seen.Contains(k) && read.AtRate(kind, k)).ToList())
         {
             sent.Remove(key);
-            update.Pipeline(name).Add(kind, key, null, null);
+            read.Part.Add(kind, key, null, null);
         }
     }
 
@@ -1032,16 +1045,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                     foreach (var (kind, counts) in part.Counts)
                     {
                         writer.Name(kind);
-                        writer.StartMap(counts.Count);
-                        foreach (var (key, now, before) in counts)
-                        {
-                            writer.Name(key);
-                            if (now is null)
-                                writer.Null();
-                            else
-                                writer.Changed(now, before ?? now, all: before is null);
-                        }
-                        writer.EndMap();
+                        WriteChanges(writer, counts);
                     }
                     foreach (var (kind, modules) in part.Places)
                     {
@@ -1055,16 +1059,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                                 writer.Null();
                                 continue;
                             }
-                            writer.StartMap(places.Count);
-                            foreach (var (place, now, before) in places)
-                            {
-                                writer.Name(place);
-                                if (now is null)
-                                    writer.Null();
-                                else
-                                    writer.Changed(now, before ?? now, all: before is null);
-                            }
-                            writer.EndMap();
+                            WriteChanges(writer, places);
                         }
                         writer.EndMap();
                     }
@@ -1121,6 +1116,22 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
                     writer.EndMap();
                 }
                 writer.EndMap();
+            }
+            writer.EndMap();
+        }
+
+        // Counts by key that changed: the whole array for a key new to the client, only what changed otherwise, and
+        // null for a key that's gone.
+        private static void WriteChanges(UpdateWriter writer, List<(string Key, long[]? Now, long[]? Before)> changes)
+        {
+            writer.StartMap(changes.Count);
+            foreach (var (key, now, before) in changes)
+            {
+                writer.Name(key);
+                if (now is null)
+                    writer.Null();
+                else
+                    writer.Changed(now, before ?? now, all: before is null);
             }
             writer.EndMap();
         }
