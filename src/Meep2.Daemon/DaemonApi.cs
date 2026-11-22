@@ -113,7 +113,7 @@ internal sealed class DaemonApi(MeepDaemon daemon)
             Addresses = identity.Addresses,
             Listening = Listening(),
             Sending = Sending(daemon.Hosted),
-            Clock = HostIdentity.Microseconds(DateTimeOffset.UtcNow),
+            Clock = DaemonClock.Now,
         }, DaemonJson.Default.DaemonInfo);
     }
 

@@ -1,6 +1,3 @@
-using System.Net;
-using System.Net.NetworkInformation;
-using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
@@ -8,9 +5,9 @@ using System.Text;
 namespace Meep2.Daemon;
 
 /// <summary>
-/// Who a daemon is and where: an ID made the first time it runs and kept in <c>daemon/id</c> in Meep's folder, so it
-/// stays the same across restarts, and the names and addresses of the machine it runs on. Tools that watch several
-/// daemons tell them apart by the ID, and place them by the rest.
+/// Who a daemon is: an ID made the first time it runs and kept in <c>daemon/id</c> in Meep's folder, so it stays the
+/// same across restarts. Tools that watch several daemons tell them apart by the ID, and place them by the machine's
+/// names and addresses (<see cref="MachineAddresses"/>).
 /// </summary>
 public static class HostIdentity
 {
@@ -125,58 +122,8 @@ public static class HostIdentity
     [DllImport("libc", SetLastError = true)]
     private static extern int gethostuuid(byte[] id, ref Timespec wait);
 
-    /// <summary>
-    /// The machine's names: its name as the system gives it, its host name, and that name as DNS knows it in full, if
-    /// DNS answers within a second. Without duplicates, shortest first.
-    /// </summary>
-    public static async Task<IReadOnlyList<string>> NamesAsync(CancellationToken cancellationToken = default)
-    {
-        var names = new List<string> { Environment.MachineName, Dns.GetHostName() };
-        try
-        {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(1));
-            var entry = await Dns.GetHostEntryAsync(Dns.GetHostName(), AddressFamily.Unspecified, timeout.Token).ConfigureAwait(false);
-            names.Add(entry.HostName);
-        }
-        catch (Exception exception) when (exception is SocketException or OperationCanceledException or ArgumentException)
-        {
-            // DNS doesn't know it, or didn't answer in time.
-        }
-        return [.. names.Where(n => n.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(n => n.Length).ThenBy(n => n, StringComparer.Ordinal)];
-    }
-
-    /// <summary>
-    /// The machine's addresses on the networks it's connected to, IPv4 first: those of interfaces that are up, without
-    /// loopback and link-local ones, which other machines can't reach it by.
-    /// </summary>
-    public static IReadOnlyList<string> Addresses()
-    {
-        try
-        {
-            return [.. NetworkInterface.GetAllNetworkInterfaces()
-                .Where(n => n.OperationalStatus == OperationalStatus.Up && n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
-                .SelectMany(n => n.GetIPProperties().UnicastAddresses)
-                .Select(a => a.Address)
-                .Where(a => !IPAddress.IsLoopback(a) && !a.IsIPv6LinkLocal && !IsIPv4LinkLocal(a))
-                .OrderBy(a => a.AddressFamily == AddressFamily.InterNetwork ? 0 : 1)
-                .Select(a => a.ToString())
-                .Distinct()];
-        }
-        catch (NetworkInformationException)
-        {
-            return [];
-        }
-    }
-
-    // 169.254.0.0/16, which a machine gives itself when nothing else gives it an address.
-    private static bool IsIPv4LinkLocal(IPAddress address) =>
-        address.AddressFamily == AddressFamily.InterNetwork && address.GetAddressBytes() is [169, 254, ..];
-
-    /// <summary>A time as microseconds since 1970 in UTC, as the daemon gives its clock.</summary>
-    public static long Microseconds(DateTimeOffset time) => (time.UtcTicks - DateTimeOffset.UnixEpoch.UtcTicks) / 10;
-
-    private static (string Id, string? Machine)? Read(string file)
+    // The ID kept in the file, and the machine it was made on, if it says.
+    private static KeptId? Read(string file)
     {
         try
         {
@@ -186,11 +133,13 @@ public static class HostIdentity
             if (lines is not [var id, ..])
                 return null;
             var machine = lines.Skip(1).FirstOrDefault(l => l.StartsWith("machine ", StringComparison.Ordinal))?["machine ".Length..].Trim();
-            return (id, machine is { Length: > 0 } ? machine : null);
+            return new KeptId(id, machine is { Length: > 0 } ? machine : null);
         }
         catch (IOException)
         {
             return null;
         }
     }
+
+    private sealed record KeptId(string Id, string? Machine);
 }

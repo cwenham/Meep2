@@ -14,7 +14,7 @@ internal static class Hello
         writer.StartMap(5);
         writer.Name("host");
         WriteHost(writer, identity);
-        writer.Property("clock", HostIdentity.Microseconds(DateTimeOffset.UtcNow));
+        writer.Property("clock", DaemonClock.Now);
         writer.Name("counts");
         writer.StartMap(6);
         Names(writer, SubscriptionPlan.NameOf(UpdateSection.Modules), Subscription.ModuleCounts);

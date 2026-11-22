@@ -163,7 +163,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
     {
         var seq = ++_seq;
         var sentBefore = _bytes;
-        var clock = HostIdentity.Microseconds(DateTimeOffset.UtcNow);
+        var clock = DaemonClock.Now;
         var size = await send("update", writer => update.Write(writer, seq, clock, sentBefore, held)).ConfigureAwait(false);
         _bytes += size;
         _clock.Sent(size, budget);
@@ -181,7 +181,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
             Forget();
         var update = Build(current, _clock.All);
         var seq = ++_seq;
-        void Write(UpdateWriter writer) => update.Write(writer, seq, HostIdentity.Microseconds(DateTimeOffset.UtcNow), _bytes, held: 0);
+        void Write(UpdateWriter writer) => update.Write(writer, seq, DaemonClock.Now, _bytes, held: 0);
         return current.Cbor ? Envelope.Cbor("\"s\"", "update", Write) : Envelope.Json("\"s\"", "update", Write);
     }
 

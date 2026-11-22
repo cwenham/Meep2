@@ -104,7 +104,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     public string Id => ((ISubscriptionHost)this).Identity.Id;
 
     HostInfo ISubscriptionHost.Identity =>
-        _identity ??= new HostInfo(HostIdentity.IdOf(_options.Plugins.Home), [Environment.MachineName], HostIdentity.Addresses(), Version, Environment.ProcessId);
+        _identity ??= new HostInfo(HostIdentity.IdOf(_options.Plugins.Home), [Environment.MachineName], MachineAddresses.Addresses(), Version, Environment.ProcessId);
 
     IReadOnlyCollection<HostedPipeline> ISubscriptionHost.Listed => Pipelines;
 
@@ -137,7 +137,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     {
         var socket = Path.GetFullPath(SocketPath);
         ControlSocket.Prepare(socket);
-        _identity = new HostInfo(HostIdentity.IdOf(_options.Plugins.Home), await HostIdentity.NamesAsync(cancellationToken).ConfigureAwait(false), HostIdentity.Addresses(), Version, Environment.ProcessId);
+        _identity = new HostInfo(HostIdentity.IdOf(_options.Plugins.Home), await MachineAddresses.NamesAsync(cancellationToken).ConfigureAwait(false), MachineAddresses.Addresses(), Version, Environment.ProcessId);
         // Meep hosts the settings name, and those learned before, get origins from the first request (Q213).
         Meep2.Modules.MeepHosts.Configure(_options.MeepHosts);
         // Set, never cleared: it's for the whole process, as meep run's option is, and a daemon without it in the same

@@ -102,9 +102,9 @@ internal sealed class Update
         writer.StartMap(6 + (summary.Ended is null ? 0 : 1) + (summary.Reason is null ? 0 : 1) + (summary.GraphVersion is null ? 0 : 1) + (summary.Warnings.Count == 0 ? 0 : 1));
         writer.Property("path", summary.Path);
         writer.Property("state", summary.State);
-        writer.Property("started", HostIdentity.Microseconds(summary.Started));
+        writer.Property("started", DaemonClock.Microseconds(summary.Started));
         if (summary.Ended is { } ended)
-            writer.Property("ended", HostIdentity.Microseconds(ended));
+            writer.Property("ended", DaemonClock.Microseconds(ended));
         if (summary.Reason is { } reason)
             writer.Property("reason", reason);
         writer.Property("restarts", (long)summary.Restarts);
