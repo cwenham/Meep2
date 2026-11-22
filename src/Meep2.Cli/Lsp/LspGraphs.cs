@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Meep2.Daemon;
 using Meep2.Meeplang.Loading;
 using Meep2.Meeplang.Syntax;
+using Meep2.Plugins;
 
 namespace Meep2.Cli;
 
@@ -120,7 +121,7 @@ internal sealed class LspGraphs(LspWorkspace workspace, JsonRpcChannel rpc)
     // The verbs the running pipeline's text can use: the document's, if they name the same plugins.
     private async Task<WithDiagnostics<ModuleRegistry>> RegistryOfBaseAsync(LspDocument document, PipelineSyntax syntax, CancellationToken cancellationToken)
     {
-        var samePlugins = document.Syntax is { } own && string.Join('\n', own.Plugins) == string.Join('\n', syntax.Plugins);
+        var samePlugins = document.Syntax is { } own && PluginRegistries.LinesOf(own) == PluginRegistries.LinesOf(syntax);
         return samePlugins && document.Registry is { } registered
             ? new WithDiagnostics<ModuleRegistry>(registered, [])
             : await workspace.RegistryForAsync(document.Uri + LspWorkspace.BaseSuffix, syntax, cancellationToken).ConfigureAwait(false);
