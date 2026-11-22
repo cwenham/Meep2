@@ -69,6 +69,11 @@ public readonly record struct PeerCount(string Place, long Received, long Sent, 
     public long Rejected { get; init; }
 }
 
+/// <summary>One module's counts by place: where its messages arrive from, or where they go (<see cref="Pipeline.ReadPeers"/>).</summary>
+/// <param name="Module">The module.</param>
+/// <param name="Places">Its counts for each place.</param>
+public readonly record struct ModulePeers(Meep2.SDK.Modules.ModuleInfo Module, IReadOnlyList<PeerCount> Places);
+
 /// <summary>Where a module sends, as its parameters say (<see cref="Pipeline.GetSending"/>).</summary>
 /// <param name="Module">The module.</param>
 /// <param name="Address">The address, or, for one worked out for each message, its expression as written.</param>

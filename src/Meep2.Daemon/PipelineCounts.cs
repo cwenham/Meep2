@@ -20,7 +20,7 @@ internal abstract class PipelineCounts
     public abstract HandlingTimes GetHandlingTimes(ModuleInfo module);
 
     /// <summary>Each module's counts by place: where its messages arrive from, or where they go.</summary>
-    public abstract IReadOnlyList<(ModuleInfo Module, IReadOnlyList<PeerCount> Places)> ReadPeers(bool arrivals);
+    public abstract IReadOnlyList<ModulePeers> ReadPeers(bool arrivals);
 
     /// <summary>Each link's counts.</summary>
     public abstract IReadOnlyList<LinkDetail> Links();
@@ -49,7 +49,7 @@ internal abstract class PipelineCounts
 
         public override HandlingTimes GetHandlingTimes(ModuleInfo module) => pipeline.GetHandlingTimes(module);
 
-        public override IReadOnlyList<(ModuleInfo Module, IReadOnlyList<PeerCount> Places)> ReadPeers(bool arrivals) => pipeline.ReadPeers(arrivals);
+        public override IReadOnlyList<ModulePeers> ReadPeers(bool arrivals) => pipeline.ReadPeers(arrivals);
 
         public override IReadOnlyList<LinkDetail> Links() => Graphs.LinkCounts(live, pipeline);
     }
@@ -58,8 +58,8 @@ internal abstract class PipelineCounts
         IReadOnlyDictionary<ModuleInfo, string> keys,
         IReadOnlyList<ModuleReading> modules,
         IReadOnlyDictionary<ModuleInfo, HandlingTimes> times,
-        IReadOnlyList<(ModuleInfo Module, IReadOnlyList<PeerCount> Places)> arriving,
-        IReadOnlyList<(ModuleInfo Module, IReadOnlyList<PeerCount> Places)> leaving,
+        IReadOnlyList<ModulePeers> arriving,
+        IReadOnlyList<ModulePeers> leaving,
         IReadOnlyList<LinkDetail> links) : PipelineCounts
     {
         public override IReadOnlyDictionary<ModuleInfo, string> Keys() => keys;
@@ -68,7 +68,7 @@ internal abstract class PipelineCounts
 
         public override HandlingTimes GetHandlingTimes(ModuleInfo module) => times.GetValueOrDefault(module) ?? HandlingTimes.Empty;
 
-        public override IReadOnlyList<(ModuleInfo Module, IReadOnlyList<PeerCount> Places)> ReadPeers(bool arrivals) => arrivals ? arriving : leaving;
+        public override IReadOnlyList<ModulePeers> ReadPeers(bool arrivals) => arrivals ? arriving : leaving;
 
         public override IReadOnlyList<LinkDetail> Links() => links;
     }

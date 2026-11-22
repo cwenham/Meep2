@@ -249,14 +249,14 @@ public sealed class Pipeline : IAsyncDisposable
     /// For every module that has counted any, its arrivals (<paramref name="arrivals"/>) or its destinations, in the
     /// order of <see cref="Modules"/>.
     /// </summary>
-    public IReadOnlyList<(ModuleInfo Module, IReadOnlyList<PeerCount> Places)> ReadPeers(bool arrivals)
+    public IReadOnlyList<ModulePeers> ReadPeers(bool arrivals)
     {
         var layout = _layout;
-        var read = new List<(ModuleInfo, IReadOnlyList<PeerCount>)>();
+        var read = new List<ModulePeers>();
         for (var i = 0; i < layout.Nodes.Length; i++)
         {
             if ((arrivals ? layout.Nodes[i].Arrivals : layout.Nodes[i].Destinations) is { } table)
-                read.Add((layout.Modules[i], table.Read()));
+                read.Add(new ModulePeers(layout.Modules[i], table.Read()));
         }
         return read;
     }
