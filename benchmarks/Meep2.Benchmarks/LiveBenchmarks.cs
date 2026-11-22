@@ -31,7 +31,7 @@ public class LiveBenchmarks
         _registry = registry;
         _a = Parse(Text(limit: 2));
         _b = Parse(Text(limit: 3));
-        _live = LivePipeline.Load(_a, registry).Pipeline!;
+        _live = LivePipeline.Load(_a, registry).Value!;
         _running = _live.Pipeline.RunAsync();
     }
 

@@ -16,8 +16,8 @@ internal static class CommitSigning
 {
     private static readonly TimeSpan s_limit = TimeSpan.FromSeconds(15);
 
-    /// <summary>The key to sign with, or null, with why not, if there isn't one.</summary>
-    public static (string? Key, string? WhyNot) KeyFor(Repository repository)
+    /// <summary>The key to sign with, or why there isn't one.</summary>
+    public static ValueOrWhyNot<string> KeyFor(Repository repository)
     {
         var format = repository.Config.Get<string>("gpg.format")?.Value;
         var configured = repository.Config.Get<string>("user.signingkey")?.Value;
@@ -28,15 +28,15 @@ internal static class CommitSigning
                 // A public key written in the config: ssh-keygen signs with it through ssh-agent.
                 var file = Path.Combine(Path.GetTempPath(), $"{TemporaryPrefix}{Guid.NewGuid():N}.pub");
                 File.WriteAllText(file, configured["key::".Length..] + "\n");
-                return (file, null);
+                return ValueOrWhyNot<string>.Of(file);
             }
             var path = HomeFolder.Expand(configured);
-            return File.Exists(path) ? (path, null) : (null, $"user.signingkey names {path}, which isn't there");
+            return File.Exists(path) ? ValueOrWhyNot<string>.Of(path) : ValueOrWhyNot<string>.Not($"user.signingkey names {path}, which isn't there");
         }
         var key = HomeFolder.SshKey();
         return key is null
-            ? (null, "there's no SSH key to sign with: set user.signingkey with gpg.format = ssh, or make one with ssh-keygen -t ed25519")
-            : (key, null);
+            ? ValueOrWhyNot<string>.Not("there's no SSH key to sign with: set user.signingkey with gpg.format = ssh, or make one with ssh-keygen -t ed25519")
+            : ValueOrWhyNot<string>.Of(key);
     }
 
     // The start of the name of a file KeyFor writes for a key in the config.
@@ -58,8 +58,8 @@ internal static class CommitSigning
         }
     }
 
-    /// <summary>Signs a commit's content, returning the armoured signature, or null, with why not, if ssh-keygen couldn't.</summary>
-    public static async Task<(string? Signature, string? WhyNot)> SignAsync(string content, string key)
+    /// <summary>Signs a commit's content, returning the armoured signature, or why ssh-keygen couldn't.</summary>
+    public static async Task<ValueOrWhyNot<string>> SignAsync(string content, string key)
     {
         ProgramResult signed;
         try
@@ -74,14 +74,14 @@ internal static class CommitSigning
         }
         catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
-            return (null, "ssh-keygen isn't on this machine");
+            return ValueOrWhyNot<string>.Not("ssh-keygen isn't on this machine");
         }
         catch (OperationCanceledException)
         {
-            return (null, $"ssh-keygen didn't finish signing with {key}; a key with a passphrase needs to be in ssh-agent");
+            return ValueOrWhyNot<string>.Not($"ssh-keygen didn't finish signing with {key}; a key with a passphrase needs to be in ssh-agent");
         }
         return signed.Succeeded && signed.Output.Contains("BEGIN SSH SIGNATURE", StringComparison.Ordinal)
-            ? (signed.Output.Trim(), null)
-            : (null, $"ssh-keygen couldn't sign with {key}: {signed.Error.Trim()}");
+            ? ValueOrWhyNot<string>.Of(signed.Output.Trim())
+            : ValueOrWhyNot<string>.Not($"ssh-keygen couldn't sign with {key}: {signed.Error.Trim()}");
     }
 }

@@ -1,4 +1,5 @@
 using LibGit2Sharp;
+using Meep2.SDK.Modules;
 
 namespace Meep2.Git;
 
@@ -84,19 +85,18 @@ public static class PendingBranch
         // Signed with your SSH key where there is one (Q126); otherwise committed unsigned, saying why.
         ObjectId id;
         string? unsigned = null;
-        var (key, noKey) = CommitSigning.KeyFor(repository);
+        var key = CommitSigning.KeyFor(repository);
         var content = LibGit2Sharp.Commit.CreateBuffer(signature, signature, message, newTree, [parent], prettifyMessage: true, commentChar: null);
-        (string? Signature, string? WhyNot) signing;
+        ValueOrWhyNot<string> signing;
         try
         {
-            signing = key is null ? (null, noKey) : CommitSigning.SignAsync(content, key).GetAwaiter().GetResult();
+            signing = key.ThenAsync(found => CommitSigning.SignAsync(content, found)).GetAwaiter().GetResult();
         }
         finally
         {
-            CommitSigning.LetGo(key);
+            CommitSigning.LetGo(key.Value);
         }
-        var (signed, whyNot) = signing;
-        if (signed is not null)
+        if (signing.TryGet(out var signed, out var whyNot))
         {
             id = repository.ObjectDatabase.CreateCommitWithSignature(content, signed);
         }

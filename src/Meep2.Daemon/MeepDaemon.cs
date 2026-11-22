@@ -784,21 +784,20 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     {
         var running = live.Shape().Modules.ToDictionary(m => m.Info.Number);
         var draft = new PipelineDraft();
-        var (_, problem) = draft.SetBase(live.Syntax, live.Registry, (number, verb) => running.TryGetValue(number, out var module) && module.Info.Verb == verb ? module.Key : null);
-        if (problem is not null)
-            throw new DaemonException(500, problem);
+        draft.SetBase(live.Syntax, live.Registry, (number, verb) => running.TryGetValue(number, out var module) && module.Info.Verb == verb ? module.Key : null)
+            .ValueOrThrow(problem => new DaemonException(500, problem));
         draft.Update(live.Syntax, live.Registry);
 
         // Texts with other #plugin lines than the running one's have their plugins installed, as the change will.
         var held = new List<IDisposable>();
         static string Plugins(Meep2.Meeplang.Syntax.PipelineSyntax syntax) => string.Join('\n', syntax.Plugins.Select(p => $"{p} as {p.Alias}"));
-        async Task<(ModuleRegistry?, IReadOnlyList<Meep2.Meeplang.Syntax.Diagnostic>)> RegistryFor(Meep2.Meeplang.Syntax.PipelineSyntax syntax, CancellationToken token)
+        async Task<Meep2.Meeplang.Syntax.WithDiagnostics<ModuleRegistry>> RegistryFor(Meep2.Meeplang.Syntax.PipelineSyntax syntax, CancellationToken token)
         {
             if (Plugins(syntax) == Plugins(live.Syntax))
-                return (live.Registry, []);
+                return new(live.Registry, []);
             var installed = await Install.InstallAllAsync(syntax, hosted.BaseRegistry, new PluginInstaller(hosted.Plugins), new PluginCatalog(), saveLock: false, token).ConfigureAwait(false);
             held.AddRange(installed.Holds);
-            return installed.Problems.Count > 0 ? (null, installed.Problems) : (installed.Registry, installed.Warnings);
+            return installed.Problems.Count > 0 ? new(null, installed.Problems) : new(installed.Registry, installed.Warnings);
         }
         try
         {

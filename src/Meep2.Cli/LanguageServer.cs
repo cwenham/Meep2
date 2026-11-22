@@ -232,17 +232,17 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
     // The verbs a parsed file can use: the core modules', and the plugins its #plugin lines name, loaded from the
     // cache and kept loaded under the key while the lines stay the same. Null, with the problems, if a plugin can't
     // be loaded; then the file is only parsed. Warnings come back either way.
-    private async Task<(ModuleRegistry? Registry, IReadOnlyList<Diagnostic> Warnings)> RegistryForAsync(string key, PipelineSyntax syntax, CancellationToken cancellationToken)
+    private async Task<WithDiagnostics<ModuleRegistry>> RegistryForAsync(string key, PipelineSyntax syntax, CancellationToken cancellationToken)
     {
         var registry = _registry.Clone();
         registry.Add<WriteLine, WriteLineParameters>("WriteLine", parameters => new WriteLine(parameters, TextWriter.Null));
         if (syntax.Plugins.Count == 0)
         {
             Unload(key);
-            return (registry, []);
+            return new(registry, []);
         }
         if (_installer is null)
-            return (null, syntax.Diagnostics);
+            return new(null, syntax.Diagnostics);
         var lines = string.Join("\n", syntax.Plugins.Select(p => $"{p} as {p.Alias}"));
         if (!_loaded.TryGetValue(key, out var loaded) || loaded.Lines != lines)
         {
@@ -251,8 +251,8 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
             _loaded[key] = loaded;
         }
         if (loaded.Installed.Problems.Count > 0)
-            return (null, [.. syntax.Diagnostics, .. loaded.Installed.Warnings, .. loaded.Installed.Problems]);
-        return (loaded.Installed.Registry, loaded.Installed.Warnings);
+            return new(null, [.. syntax.Diagnostics, .. loaded.Installed.Warnings, .. loaded.Installed.Problems]);
+        return new(loaded.Installed.Registry, loaded.Installed.Warnings);
     }
 
     // Lets go of a file's plugins.
@@ -640,15 +640,13 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
             if (syntax.HasErrors)
                 throw new LspException("The running pipeline's text doesn't parse here: " + string.Join("; ", syntax.Diagnostics.Where(d => d.IsError)));
             var samePlugins = document.Syntax is { } own && string.Join('\n', own.Plugins) == string.Join('\n', syntax.Plugins);
-            var (registry, problems) = samePlugins && document.Registry is { } registered
-                ? (registered, [])
-                : await RegistryForAsync(uri + BaseSuffix, syntax, cancellationToken).ConfigureAwait(false);
-            if (registry is null)
-                throw new LspException("The running pipeline's plugins can't be loaded here: " + string.Join("; ", problems.Where(d => d.IsError)));
+            var registry = (samePlugins && document.Registry is { } registered
+                    ? new WithDiagnostics<ModuleRegistry>(registered, [])
+                    : await RegistryForAsync(uri + BaseSuffix, syntax, cancellationToken).ConfigureAwait(false))
+                .ValueOrThrow(problems => new LspException("The running pipeline's plugins can't be loaded here: " + problems));
             var keys = graph.Modules.ToDictionary(m => m.Number);
-            var (update, problem) = document.Draft.SetBase(syntax, registry, (number, verb) => keys.TryGetValue(number, out var module) && module.Verb == verb ? module.Key : null);
-            if (update is null)
-                throw new LspException(problem!);
+            var update = document.Draft.SetBase(syntax, registry, (number, verb) => keys.TryGetValue(number, out var module) && module.Verb == verb ? module.Key : null)
+                .ValueOrThrow(problem => new LspException(problem));
             document.BaseName = parameters["pipeline"]?.GetValue<string>() ?? graph.Name;
             document.BaseVersion = graph.Version;
             if (update.Shape is { } shape)
@@ -728,9 +726,9 @@ internal sealed class LanguageServer(Stream input, Stream output, PluginOptions?
         // Each text the edits make is loaded with the document's verbs while its #plugin lines are the same.
         var scratch = uri + EditsSuffix;
         var plugins = Plugins(syntax);
-        async Task<(ModuleRegistry?, IReadOnlyList<Diagnostic>)> RegistryOf(PipelineSyntax text, CancellationToken token) =>
+        async Task<WithDiagnostics<ModuleRegistry>> RegistryOf(PipelineSyntax text, CancellationToken token) =>
             Plugins(text) == plugins && document.Registry is { } registry
-                ? (registry, [])
+                ? new(registry, [])
                 : await RegistryForAsync(scratch, text, token).ConfigureAwait(false);
         DraftEdits result;
         try

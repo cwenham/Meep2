@@ -50,19 +50,19 @@ public sealed class LivePipeline
 
     /// <summary>Loads a parsed file into a pipeline that can be changed while it runs. Null, with the problems, if it doesn't load.</summary>
     /// <param name="holds">What keeps the pipeline's plugins loaded; let go of when they're replaced, or by whoever hosts the pipeline at the end.</param>
-    public static (LivePipeline? Pipeline, IReadOnlyList<Diagnostic> Diagnostics) Load(PipelineSyntax syntax, ModuleRegistry registry, PipelineOptions? options = null, IReadOnlyList<IDisposable>? holds = null)
+    public static WithDiagnostics<LivePipeline> Load(PipelineSyntax syntax, ModuleRegistry registry, PipelineOptions? options = null, IReadOnlyList<IDisposable>? holds = null)
     {
         ArgumentNullException.ThrowIfNull(syntax);
         ArgumentNullException.ThrowIfNull(registry);
         options ??= PipelineOptions.Default;
         var (modules, diagnostics) = new PipelineLoader(registry).Define(syntax, options);
         if (modules is null)
-            return (null, diagnostics);
+            return new(null, diagnostics);
         var (keys, nextKey) = Keys(modules, null, null, 1);
         var state = new State(syntax, registry, modules, Fingerprints(modules.Expanded, modules), holds ?? [], keys, nextKey);
         var pipeline = modules.Builder.Build();
         pipeline.NameModules(state.ModuleKeys);
-        return (new LivePipeline(pipeline, state, options), diagnostics);
+        return new(new LivePipeline(pipeline, state, options), diagnostics);
     }
 
     /// <summary>The module a module line is now, in the running pipeline.</summary>

@@ -2,6 +2,7 @@ using System.Globalization;
 using Meep2.Meeplang.Loading;
 using Meep2.Meeplang.Syntax;
 using Meep2.Runtime;
+using Meep2.SDK.Modules;
 
 namespace Meep2.Meeplang.Editing;
 
@@ -84,29 +85,29 @@ public sealed class PipelineDraft
     /// The running pipeline's key for each of its modules, by the module's number and verb, or null if it has no such
     /// module, as when the text isn't the one it runs.
     /// </param>
-    public (DraftUpdate? Update, string? Problem) SetBase(PipelineSyntax syntax, ModuleRegistry registry, Func<int, string, string?> keyOf)
+    public ValueOrWhyNot<DraftUpdate> SetBase(PipelineSyntax syntax, ModuleRegistry registry, Func<int, string, string?> keyOf)
     {
         ArgumentNullException.ThrowIfNull(syntax);
         ArgumentNullException.ThrowIfNull(registry);
         ArgumentNullException.ThrowIfNull(keyOf);
         var (modules, diagnostics) = new PipelineLoader(registry).Define(syntax);
         if (modules is null)
-            return (null, "The running pipeline's text doesn't load here: " + string.Join("; ", diagnostics.Where(d => d.IsError).Select(d => d.ToString())));
+            return ValueOrWhyNot<DraftUpdate>.Not("The running pipeline's text doesn't load here: " + string.Join("; ", diagnostics.Where(d => d.IsError).Select(d => d.ToString())));
         var keys = new Dictionary<ModuleSyntax, string>(ReferenceEqualityComparer.Instance);
         var next = 1;
         foreach (var module in modules.Modules)
         {
             if (keyOf(module.Info.Number, module.Info.Verb) is not { } key)
-                return (null, $"The running pipeline has no module {module.Info.Number} that's a {module.Info.Verb}, so its graph isn't of this text.");
+                return ValueOrWhyNot<DraftUpdate>.Not($"The running pipeline has no module {module.Info.Number} that's a {module.Info.Verb}, so its graph isn't of this text.");
             keys[module.Syntax] = key;
             next = Math.Max(next, NumberOf(key) + 1);
         }
         _base = new Keyed(PipelineShape.Of(syntax, modules, keys), modules, keys, next);
         if (_last is null)
-            return (new DraftUpdate(false, null, [], s_none), null);
+            return ValueOrWhyNot<DraftUpdate>.Of(new DraftUpdate(false, null, [], s_none));
         var (keyed, renamed) = Key(_last.Shape.Syntax, _last.Loaded);
         _last = keyed;
-        return (new DraftUpdate(true, keyed.Shape, [], renamed), null);
+        return ValueOrWhyNot<DraftUpdate>.Of(new DraftUpdate(true, keyed.Shape, [], renamed));
     }
 
     /// <summary>Stops matching against a base. The keys stay as they are.</summary>

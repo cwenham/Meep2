@@ -41,7 +41,7 @@ public sealed class PipelineLoader(ModuleRegistry registry)
     /// Loads a parsed file as far as a builder, knowing which module of it each module line became, so a running
     /// pipeline can be changed into it (goal 4). Null, with the problems, if it doesn't load.
     /// </summary>
-    internal (LoadedModules? Modules, IReadOnlyList<Diagnostic> Diagnostics) Define(PipelineSyntax syntax, PipelineOptions? options = null)
+    internal WithDiagnostics<LoadedModules> Define(PipelineSyntax syntax, PipelineOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(syntax);
         var diagnostics = new Diagnostics(syntax.Source.Path);
@@ -55,6 +55,6 @@ public sealed class PipelineLoader(ModuleRegistry registry)
                 modules = load.Define(load.Options);
         }
         var sorted = diagnostics.Items.OrderBy(d => d.Span.Line).ThenBy(d => d.Span.Column).ToList();
-        return (diagnostics.HasErrors ? null : modules, sorted);
+        return new(diagnostics.HasErrors ? null : modules, sorted);
     }
 }
