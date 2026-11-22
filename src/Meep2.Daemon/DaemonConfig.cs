@@ -2,6 +2,7 @@ using System.Globalization;
 using Meep2.Meeplang;
 using Meep2.Meeplang.Parsing;
 using Meep2.Meeplang.Syntax;
+using Meep2.SDK.Modules;
 
 namespace Meep2.Daemon;
 
@@ -140,8 +141,6 @@ public sealed record DaemonConfig
     // ~ is the home folder, and a relative path is from the settings file's folder.
     private static string Resolve(string file, string folder)
     {
-        if (file == "~" || file.StartsWith("~/", StringComparison.Ordinal))
-            file = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), file.Length > 2 ? file[2..] : "");
-        return System.IO.Path.GetFullPath(file, folder);
+        return System.IO.Path.GetFullPath(HomeFolder.Expand(file), folder);
     }
 }

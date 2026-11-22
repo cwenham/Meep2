@@ -81,10 +81,7 @@ internal static class Paths
     private static PathRefusedException Refused(string text, string why) =>
         new($"{text} isn't used, because {why}. Set any-path=true if the message should choose any path.");
 
-    private static string Home(string path) =>
-        path == "~" || path.StartsWith("~/", StringComparison.Ordinal) || path.StartsWith("~\\", StringComparison.Ordinal)
-            ? Path.Join(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path[1..].TrimStart('/', '\\'))
-            : path;
+    private static string Home(string path) => HomeFolder.Expand(path);
 }
 
 /// <summary>A computed path was refused, because the message steered it somewhere the pipeline didn't put it (S2).</summary>

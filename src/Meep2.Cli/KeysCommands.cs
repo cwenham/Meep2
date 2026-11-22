@@ -94,7 +94,7 @@ internal static class KeysCommands
     // meep sign <folder or files> [--key <private key>]: lists the files and signs the list with ssh-keygen.
     public static async Task<int> SignAsync(string[] paths, string? keyPath, PluginOptions options, TextWriter output, TextWriter error, CancellationToken cancellationToken)
     {
-        keyPath = keyPath is null ? DefaultKey() : Expand(keyPath);
+        keyPath = keyPath is null ? HomeFolder.SshKey() : HomeFolder.Expand(keyPath);
         if (keyPath is null)
         {
             await error.WriteLineAsync("meep sign needs your SSH key, as in --key ~/.ssh/id_ed25519. Make one with: ssh-keygen -t ed25519").ConfigureAwait(false);
@@ -196,7 +196,7 @@ internal static class KeysCommands
 
     private static async Task<string> ReadPublicKeyAsync(string file, CancellationToken cancellationToken)
     {
-        file = Expand(file);
+        file = HomeFolder.Expand(file);
         if (!File.Exists(file))
             throw new FormatException($"Can't find {file}. {TrustUsage}");
         var text = await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false);
@@ -235,17 +235,6 @@ internal static class KeysCommands
         }
         return 0;
     }
-
-    private static string? DefaultKey()
-    {
-        var ssh = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh");
-        return new[] { "id_ed25519", "id_ecdsa", "id_rsa" }.Select(name => Path.Combine(ssh, name)).FirstOrDefault(File.Exists);
-    }
-
-    private static string Expand(string path) =>
-        path.StartsWith("~/", StringComparison.Ordinal)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path[2..])
-            : path;
 
     // Not left waiting for a passphrase when cancelled (M6).
     private static Task<ProgramResult> SshKeygenAsync(IEnumerable<string> arguments, CancellationToken cancellationToken) =>

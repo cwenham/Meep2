@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using Meep2.Meeplang.Syntax;
+using Meep2.SDK.Modules;
 
 namespace Meep2.Meeplang.Parsing;
 
@@ -54,9 +55,7 @@ public static class MeeplangParser
     {
         ArgumentNullException.ThrowIfNull(included);
         ArgumentNullException.ThrowIfNull(from);
-        if (included == "~" || included.StartsWith("~/", StringComparison.Ordinal))
-            included = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), included.Length > 2 ? included[2..] : "");
-        return Path.GetFullPath(included, Path.GetDirectoryName(Full(from)) ?? Directory.GetCurrentDirectory());
+        return Path.GetFullPath(HomeFolder.Expand(included), Path.GetDirectoryName(Full(from)) ?? Directory.GetCurrentDirectory());
     }
 
     // Parses what a file includes, and what they include, into the pipeline's list, refusing an include that loops.

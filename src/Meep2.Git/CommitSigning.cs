@@ -30,11 +30,10 @@ internal static class CommitSigning
                 File.WriteAllText(file, configured["key::".Length..] + "\n");
                 return (file, null);
             }
-            var path = Expand(configured);
+            var path = HomeFolder.Expand(configured);
             return File.Exists(path) ? (path, null) : (null, $"user.signingkey names {path}, which isn't there");
         }
-        var ssh = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh");
-        var key = new[] { "id_ed25519", "id_ecdsa", "id_rsa" }.Select(name => Path.Combine(ssh, name)).FirstOrDefault(File.Exists);
+        var key = HomeFolder.SshKey();
         return key is null
             ? (null, "there's no SSH key to sign with: set user.signingkey with gpg.format = ssh, or make one with ssh-keygen -t ed25519")
             : (key, null);
@@ -85,9 +84,4 @@ internal static class CommitSigning
             ? (signed.Output.Trim(), null)
             : (null, $"ssh-keygen couldn't sign with {key}: {signed.Error.Trim()}");
     }
-
-    private static string Expand(string path) =>
-        path == "~" || path.StartsWith("~/", StringComparison.Ordinal)
-            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path.Length > 2 ? path[2..] : "")
-            : path;
 }
