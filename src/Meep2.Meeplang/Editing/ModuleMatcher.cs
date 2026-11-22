@@ -41,38 +41,38 @@ public static class ModuleMatcher
         // Unchanged: the same verb, name and parameters, under the same module, top to bottom so a module's parent is
         // paired before it. Done before structure, which takes the first same-verb sibling it meets, so a module
         // written above an unchanged one with the same verb can't take the unchanged one's place (Q186).
-        foreach (var entry in after)
-        {
-            if (matched.ContainsKey(entry))
-                continue;
-            Entry? parentWas = entry.Parent is null ? null : matched.TryGetValue(entry.Parent, out var parent) ? parent.Old : null;
-            if (entry.Parent is not null && parentWas is null)
-                continue;
-            var same = before
-                .Where(candidate => !taken.Contains(candidate) && candidate.Key == entry.Key && candidate.Parameters == entry.Parameters
-                    && candidate.Module.Name == entry.Module.Name && ReferenceEquals(candidate.Parent, parentWas))
-                .OrderBy(candidate => Math.Abs(candidate.Order - entry.Order))
-                .FirstOrDefault();
-            if (same is not null)
-                Pair(entry, same, MatchedBy.Structure);
-        }
+        PairUnchanged(underSameModule: true);
 
         // Unchanged, wherever it is now: the same verb, name and parameters, under any module, the nearest in order.
         // After those under the same module, so a module that stayed where it was keeps its place first; before
         // structure, so a module that an insert pushed a level down (under a module with its verb, or above one) keeps
         // its key and state, rather than the new module above it taking them (Q195). Reported as a structural match,
         // as the pass before it is, and as moved.
-        foreach (var entry in after)
+        PairUnchanged(underSameModule: false);
+
+        // Pairs each module left with an old one of the same verb, name and parameters, the nearest in order, and,
+        // when asked, only under the module its parent was paired with.
+        void PairUnchanged(bool underSameModule)
         {
-            if (matched.ContainsKey(entry))
-                continue;
-            var same = before
-                .Where(candidate => !taken.Contains(candidate) && candidate.Key == entry.Key && candidate.Parameters == entry.Parameters
-                    && candidate.Module.Name == entry.Module.Name)
-                .OrderBy(candidate => Math.Abs(candidate.Order - entry.Order))
-                .FirstOrDefault();
-            if (same is not null)
-                Pair(entry, same, MatchedBy.Structure);
+            foreach (var entry in after)
+            {
+                if (matched.ContainsKey(entry))
+                    continue;
+                Entry? parentWas = null;
+                if (underSameModule)
+                {
+                    parentWas = entry.Parent is null ? null : matched.TryGetValue(entry.Parent, out var parent) ? parent.Old : null;
+                    if (entry.Parent is not null && parentWas is null)
+                        continue;
+                }
+                var same = before
+                    .Where(candidate => !taken.Contains(candidate) && candidate.Key == entry.Key && candidate.Parameters == entry.Parameters
+                        && candidate.Module.Name == entry.Module.Name && (!underSameModule || ReferenceEquals(candidate.Parent, parentWas)))
+                    .OrderBy(candidate => Math.Abs(candidate.Order - entry.Order))
+                    .FirstOrDefault();
+                if (same is not null)
+                    Pair(entry, same, MatchedBy.Structure);
+            }
         }
 
         // Structure, then position, in turns: a module matched by position lets those under it match by structure.
