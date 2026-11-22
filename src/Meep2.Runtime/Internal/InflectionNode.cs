@@ -24,7 +24,7 @@ internal sealed class InflectionNode : Node
     private readonly InflectionContext _context;
     private volatile TypeCheck? _handlesType;
     private readonly Slot[] _slots;
-    private readonly ConcurrentDictionary<Type, Slot[]> _routes = new();
+    private readonly ConcurrentDictionary<Type, Route> _routes = new();
     private int _phase = Busy;
 
     // Work to do between two messages: changes to the module, and flushes of what it keeps.
@@ -331,15 +331,16 @@ internal sealed class InflectionNode : Node
         return module;
     }
 
-    // The inflections that take a type, closest fit first (Q20). The answer for each type is remembered.
+    // The inflections that take a type, closest fit first (Q20). The route for each type is remembered, and the last
+    // one used is kept to hand, so messages of alternating types don't allocate.
     private Slot[] RouteFor(Type type)
     {
         var last = _lastRoute;
         if (last is not null && last.Type == type)
             return last.Slots;
-        var slots = _routes.GetOrAdd(type, static (messageType, all) => Order(all, messageType), _slots);
-        _lastRoute = new Route(type, slots);
-        return slots;
+        var route = _routes.GetOrAdd(type, static (messageType, all) => new Route(messageType, Order(all, messageType)), _slots);
+        _lastRoute = route;
+        return route.Slots;
     }
 
     private static Slot[] Order(Slot[] slots, Type messageType) =>
