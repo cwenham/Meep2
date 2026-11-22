@@ -79,30 +79,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
             var body = await ReadBodyAsync(response.Content, url, parameters.MaxSize, timeout.Token).ConfigureAwait(false);
             context.CountBytes(body.Length, 0);
             tally.Count(bytesReceived: body.Length);
-            var text = Decode(body, response.Content.Headers.ContentType);
-            var status = (int)response.StatusCode;
-            if (!response.IsSuccessStatusCode)
-            {
-                context.Emit(new HttpErrorMessage
-                {
-                    Error = $"{url} answered {status} {response.ReasonPhrase}".TrimEnd(),
-                    Url = url,
-                    StatusCode = status,
-                    Text = text,
-                });
-                return;
-            }
-
-            context.Emit(new HttpResponse
-            {
-                Url = url,
-                StatusCode = status,
-                ReasonPhrase = response.ReasonPhrase,
-                ContentType = response.Content.Headers.ContentType?.MediaType,
-                Headers = Headers(response),
-                Body = body,
-                Text = text,
-            });
+            context.Emit(MessageFor(url, response, body));
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -263,6 +240,36 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
 
     // The most read at once from a response's body.
     private const int ChunkSize = 81920;
+
+    /// <summary>
+    /// A response read in full, as a message: an <see cref="HttpResponse"/> for a success, or else an
+    /// <see cref="HttpErrorMessage"/> with the body as its text.
+    /// </summary>
+    internal static Message MessageFor(string url, HttpResponseMessage response, byte[] body)
+    {
+        var text = Decode(body, response.Content.Headers.ContentType);
+        var status = (int)response.StatusCode;
+        if (!response.IsSuccessStatusCode)
+        {
+            return new HttpErrorMessage
+            {
+                Error = $"{url} answered {status} {response.ReasonPhrase}".TrimEnd(),
+                Url = url,
+                StatusCode = status,
+                Text = text,
+            };
+        }
+        return new HttpResponse
+        {
+            Url = url,
+            StatusCode = status,
+            ReasonPhrase = response.ReasonPhrase,
+            ContentType = response.Content.Headers.ContentType?.MediaType,
+            Headers = Headers(response),
+            Body = body,
+            Text = text,
+        };
+    }
 
     internal static string Decode(byte[] body, MediaTypeHeaderValue? contentType)
     {

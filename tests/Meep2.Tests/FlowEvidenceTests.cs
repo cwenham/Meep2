@@ -603,6 +603,25 @@ public class FlowEvidenceTests
     }
 
     [Test]
+    public async Task A_response_becomes_a_response_or_an_error_by_its_status()
+    {
+        using var ok = new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("caf\u00e9", System.Text.Encoding.Latin1, "text/plain") };
+        var body = await ok.Content.ReadAsByteArrayAsync();
+        var response = HttpFetch.MessageFor("http://a.example/", ok, body) as HttpResponse;
+        await Assert.That(response).IsNotNull();
+        await Assert.That(response!.Text).IsEqualTo("caf\u00e9");
+        await Assert.That(response.StatusCode).IsEqualTo(200);
+        await Assert.That(response.ContentType).IsEqualTo("text/plain");
+
+        using var missing = new HttpResponseMessage(HttpStatusCode.NotFound) { ReasonPhrase = "Not Found", Content = new StringContent("no") };
+        var error = HttpFetch.MessageFor("http://a.example/x", missing, await missing.Content.ReadAsByteArrayAsync()) as HttpErrorMessage;
+        await Assert.That(error).IsNotNull();
+        await Assert.That(error!.Error).IsEqualTo("http://a.example/x answered 404 Not Found");
+        await Assert.That(error.StatusCode).IsEqualTo(404);
+        await Assert.That(error.Text).IsEqualTo("no");
+    }
+
+    [Test]
     public async Task Origins_endpoints_and_clients_are_written_one_way()
     {
         var origin = Peers.Origin("01d2", "my site", "m3");

@@ -604,29 +604,7 @@ public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Messa
             var body = await HttpFetch.ReadBodyAsync(response.Content, url, parameters.MaxSize, timeout.Token).ConfigureAwait(false);
             context.CountBytes(body.Length, 0);
             tally.Count(bytesReceived: body.Length);
-            var decoded = HttpFetch.Decode(body, response.Content.Headers.ContentType);
-            var status = (int)response.StatusCode;
-            if (!response.IsSuccessStatusCode)
-            {
-                context.Emit(new HttpErrorMessage
-                {
-                    Error = $"{url} answered {status} {response.ReasonPhrase}".TrimEnd(),
-                    Url = url,
-                    StatusCode = status,
-                    Text = decoded,
-                });
-                return;
-            }
-            context.Emit(new HttpResponse
-            {
-                Url = url,
-                StatusCode = status,
-                ReasonPhrase = response.ReasonPhrase,
-                ContentType = response.Content.Headers.ContentType?.MediaType,
-                Headers = HttpFetch.Headers(response),
-                Body = body,
-                Text = decoded,
-            });
+            context.Emit(HttpFetch.MessageFor(url, response, body));
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
