@@ -162,6 +162,7 @@ internal static class DaemonCommands
     public static async Task<int> ClientAsync(string[] args, PluginOptions plugins, TextWriter output, TextWriter error, CancellationToken cancellationToken)
     {
         using var client = new DaemonClient(DaemonOptions.DefaultSocket(plugins.Home), Environment.GetEnvironmentVariable("MEEP_TOKEN") is { Length: > 0 } token ? token : null);
+        var cli = new CliContext(client, output, error, cancellationToken);
         try
         {
             switch (args)
@@ -171,7 +172,7 @@ internal static class DaemonCommands
                     await output.WriteLineAsync("Asked the daemon to stop. It lets its pipelines' messages finish first.").ConfigureAwait(false);
                     return 0;
                 case ["start", .. var rest] when Named(rest, out var named) is { } start && StartFile(start) is { } file:
-                    return await StartAsync(client, file, named, start.Contains("--dev"), start.Contains("--watch"), output, cancellationToken).ConfigureAwait(false);
+                    return await StartAsync(cli, file, named, start.Contains("--dev"), start.Contains("--watch")).ConfigureAwait(false);
                 case ["reload", .. var words] when words.Where(w => w != "--force").ToList() is [var name] && words.All(w => w == "--force" || !w.StartsWith("--", StringComparison.Ordinal)):
                     await WriteChangeAsync($"Reloaded {name}", await client.ReloadAsync(name, words.Contains("--force"), cancellationToken).ConfigureAwait(false), output).ConfigureAwait(false);
                     return 0;
@@ -179,29 +180,29 @@ internal static class DaemonCommands
                     await output.WriteAsync((await client.SourceAsync(name, cancellationToken).ConfigureAwait(false)).Text).ConfigureAwait(false);
                     return 0;
                 case ["edit", var name, var module, .. var rest]:
-                    return await EditAsync(client, name, module, rest, output, error, cancellationToken).ConfigureAwait(false);
+                    return await EditAsync(cli, name, module, rest).ConfigureAwait(false);
                 case ["list"]:
-                    await ListAsync(client, output, cancellationToken).ConfigureAwait(false);
+                    await ListAsync(cli).ConfigureAwait(false);
                     return 0;
                 case ["stop", var name]:
-                    return await StopAsync(client, name, output, cancellationToken).ConfigureAwait(false);
+                    return await StopAsync(cli, name).ConfigureAwait(false);
                 case ["stats", var name]:
                     WriteStats(await client.GetAsync(name, cancellationToken).ConfigureAwait(false), output);
                     return 0;
                 case ["stats", var name, "--watch"]:
-                    await WatchAsync(client, name, output, cancellationToken).ConfigureAwait(false);
+                    await WatchAsync(cli, name).ConfigureAwait(false);
                     return 0;
                 case ["stats", "--watch", var name]:
-                    await WatchAsync(client, name, output, cancellationToken).ConfigureAwait(false);
+                    await WatchAsync(cli, name).ConfigureAwait(false);
                     return 0;
                 case ["tap", var pipeline, var module, .. var rest]:
-                    return await TapAsync(client, pipeline, module, rest, output, error, cancellationToken).ConfigureAwait(false);
+                    return await TapAsync(cli, pipeline, module, rest).ConfigureAwait(false);
                 case ["inject", var pipeline, var module, var content]:
-                    return await InjectAsync(client, pipeline, module, content, json: false, output, cancellationToken).ConfigureAwait(false);
+                    return await InjectAsync(cli, pipeline, module, content, json: false).ConfigureAwait(false);
                 case ["inject", var pipeline, var module, var content, "--json"]:
-                    return await InjectAsync(client, pipeline, module, content, json: true, output, cancellationToken).ConfigureAwait(false);
+                    return await InjectAsync(cli, pipeline, module, content, json: true).ConfigureAwait(false);
                 case ["inject", "--json", var pipeline, var module, var content]:
-                    return await InjectAsync(client, pipeline, module, content, json: true, output, cancellationToken).ConfigureAwait(false);
+                    return await InjectAsync(cli, pipeline, module, content, json: true).ConfigureAwait(false);
                 default:
                     return -1;
             }
@@ -241,21 +242,21 @@ internal static class DaemonCommands
         return files.Count == 1 && words.All(word => !word.StartsWith("--", StringComparison.Ordinal) || word is "--dev" or "--watch") ? files[0] : null;
     }
 
-    private static async Task<int> StartAsync(DaemonClient client, string file, string? name, bool developerMode, bool watch, TextWriter output, CancellationToken cancellationToken)
+    private static async Task<int> StartAsync(CliContext cli, string file, string? name, bool developerMode, bool watch)
     {
         // Standard input is sent as text, since the daemon can't read this terminal (goal 7). Other addresses go as
         // they are, and the daemon reads them itself.
         var started = file == "-"
-            ? await client.StartTextAsync(name ?? "stdin", await Console.In.ReadToEndAsync(cancellationToken).ConfigureAwait(false), developerMode, cancellationToken).ConfigureAwait(false)
-            : await client.StartAsync(file, developerMode, watch, cancellationToken).ConfigureAwait(false);
-        await output.WriteLineAsync($"Started {started.Name}, from {started.Path}.{(watch ? " It reloads whenever the file changes." : "")}").ConfigureAwait(false);
+            ? await cli.Client.StartTextAsync(name ?? "stdin", await Console.In.ReadToEndAsync(cli.Cancellation).ConfigureAwait(false), developerMode, cli.Cancellation).ConfigureAwait(false)
+            : await cli.Client.StartAsync(file, developerMode, watch, cli.Cancellation).ConfigureAwait(false);
+        await cli.Output.WriteLineAsync($"Started {started.Name}, from {started.Path}.{(watch ? " It reloads whenever the file changes." : "")}").ConfigureAwait(false);
         foreach (var warning in started.Warnings)
-            await output.WriteLineAsync(warning).ConfigureAwait(false);
+            await cli.Output.WriteLineAsync(warning).ConfigureAwait(false);
         return 0;
     }
 
     // meep edit <pipeline> <module> <edit> [--message <text>] [--branch <name>] [--no-save]
-    private static async Task<int> EditAsync(DaemonClient client, string pipeline, string module, string[] words, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    private static async Task<int> EditAsync(CliContext cli, string pipeline, string module, string[] words)
     {
         string? message = null;
         string? branch = null;
@@ -281,23 +282,23 @@ internal static class DaemonCommands
         }
         if (EditOf(module, edit) is not { } item)
         {
-            await error.WriteLineAsync(EditUsage).ConfigureAwait(false);
+            await cli.Error.WriteLineAsync(EditUsage).ConfigureAwait(false);
             return 2;
         }
-        var result = await client.EditAsync(pipeline, new EditRequest([item], message, branch, save), cancellationToken).ConfigureAwait(false);
-        await WriteChangeAsync($"Edited {pipeline}", result, output).ConfigureAwait(false);
+        var result = await cli.Client.EditAsync(pipeline, new EditRequest([item], message, branch, save), cli.Cancellation).ConfigureAwait(false);
+        await WriteChangeAsync($"Edited {pipeline}", result, cli.Output).ConfigureAwait(false);
         if (result.Saved is { } saved)
         {
-            await output.WriteLineAsync($"Committed to {saved.Branch} as {saved.Sha[..7]}, in {saved.Repository}.").ConfigureAwait(false);
-            await output.WriteLineAsync(saved.Unsigned is { } unsigned ? $"It isn't signed: {unsigned}." : "It's signed with your SSH key.").ConfigureAwait(false);
+            await cli.Output.WriteLineAsync($"Committed to {saved.Branch} as {saved.Sha[..7]}, in {saved.Repository}.").ConfigureAwait(false);
+            await cli.Output.WriteLineAsync(saved.Unsigned is { } unsigned ? $"It isn't signed: {unsigned}." : "It's signed with your SSH key.").ConfigureAwait(false);
         }
         else if (result.WrittenTo is { } file)
         {
-            await output.WriteLineAsync($"Wrote it to {file}, which isn't in a Git repository.").ConfigureAwait(false);
+            await cli.Output.WriteLineAsync($"Wrote it to {file}, which isn't in a Git repository.").ConfigureAwait(false);
         }
         else if (result.NotSaved is { } why)
         {
-            await output.WriteLineAsync($"Not saved: {why}").ConfigureAwait(false);
+            await cli.Output.WriteLineAsync($"Not saved: {why}").ConfigureAwait(false);
         }
         return 0;
     }
@@ -384,22 +385,22 @@ internal static class DaemonCommands
             await output.WriteLineAsync(warning).ConfigureAwait(false);
     }
 
-    private static async Task ListAsync(DaemonClient client, TextWriter output, CancellationToken cancellationToken)
+    private static async Task ListAsync(CliContext cli)
     {
-        var pipelines = await client.ListAsync(cancellationToken).ConfigureAwait(false);
+        var pipelines = await cli.Client.ListAsync(cli.Cancellation).ConfigureAwait(false);
         if (pipelines.Count == 0)
         {
-            await output.WriteLineAsync("Nothing is running.").ConfigureAwait(false);
+            await cli.Output.WriteLineAsync("Nothing is running.").ConfigureAwait(false);
             return;
         }
         var width = Math.Max(4, pipelines.Max(p => p.Name.Length));
-        await output.WriteLineAsync($"{"NAME".PadRight(width)}  STATE       SINCE     FILE").ConfigureAwait(false);
+        await cli.Output.WriteLineAsync($"{"NAME".PadRight(width)}  STATE       SINCE     FILE").ConfigureAwait(false);
         foreach (var pipeline in pipelines)
         {
             var since = Time(pipeline.Ended ?? pipeline.Started);
-            await output.WriteLineAsync($"{pipeline.Name.PadRight(width)}  {pipeline.State,-10}  {since,-8}  {pipeline.Path}").ConfigureAwait(false);
+            await cli.Output.WriteLineAsync($"{pipeline.Name.PadRight(width)}  {pipeline.State,-10}  {since,-8}  {pipeline.Path}").ConfigureAwait(false);
             if (Why(pipeline.State, pipeline.Reason, pipeline.Restarts) is { } why)
-                await output.WriteLineAsync($"{"".PadRight(width)}  {why}").ConfigureAwait(false);
+                await cli.Output.WriteLineAsync($"{"".PadRight(width)}  {why}").ConfigureAwait(false);
         }
     }
 
@@ -418,21 +419,21 @@ internal static class DaemonCommands
 
     private static string Time(DateTimeOffset at) => at.ToLocalTime().ToString("HH:mm:ss", CultureInfo.CurrentCulture);
 
-    private static async Task<int> StopAsync(DaemonClient client, string name, TextWriter output, CancellationToken cancellationToken)
+    private static async Task<int> StopAsync(CliContext cli, string name)
     {
-        var before = await client.GetAsync(name, cancellationToken).ConfigureAwait(false);
-        await client.StopAsync(name, cancellationToken).ConfigureAwait(false);
-        await output.WriteLineAsync(before.Ended is null ? $"Stopped {name}." : $"Took {name} off the list. It had {before.State} at {Time(before.Ended.Value)}.").ConfigureAwait(false);
+        var before = await cli.Client.GetAsync(name, cli.Cancellation).ConfigureAwait(false);
+        await cli.Client.StopAsync(name, cli.Cancellation).ConfigureAwait(false);
+        await cli.Output.WriteLineAsync(before.Ended is null ? $"Stopped {name}." : $"Took {name} off the list. It had {before.State} at {Time(before.Ended.Value)}.").ConfigureAwait(false);
         return 0;
     }
 
-    private static async Task WatchAsync(DaemonClient client, string name, TextWriter output, CancellationToken cancellationToken)
+    private static async Task WatchAsync(CliContext cli, string name)
     {
-        await foreach (var detail in client.WatchAsync(name, TimeSpan.FromSeconds(1), cancellationToken).ConfigureAwait(false))
+        await foreach (var detail in cli.Client.WatchAsync(name, TimeSpan.FromSeconds(1), cli.Cancellation).ConfigureAwait(false))
         {
-            await output.WriteLineAsync(DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)).ConfigureAwait(false);
-            WriteStats(detail, output);
-            await output.WriteLineAsync().ConfigureAwait(false);
+            await cli.Output.WriteLineAsync(DateTime.Now.ToString("HH:mm:ss", CultureInfo.CurrentCulture)).ConfigureAwait(false);
+            WriteStats(detail, cli.Output);
+            await cli.Output.WriteLineAsync().ConfigureAwait(false);
         }
     }
 
@@ -452,7 +453,7 @@ internal static class DaemonCommands
         }
     }
 
-    private static async Task<int> TapAsync(DaemonClient client, string pipeline, string module, string[] options, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    private static async Task<int> TapAsync(CliContext cli, string pipeline, string module, string[] options)
     {
         string? where = null;
         var sample = 1.0;
@@ -467,28 +468,28 @@ internal static class DaemonCommands
                     i++;
                     break;
                 default:
-                    await error.WriteLineAsync("meep tap takes --where <condition> and --sample <share of messages, such as 0.1>.").ConfigureAwait(false);
+                    await cli.Error.WriteLineAsync("meep tap takes --where <condition> and --sample <share of messages, such as 0.1>.").ConfigureAwait(false);
                     return 2;
             }
         }
 
         long dropped = 0;
-        await foreach (var (message, droppedSoFar) in client.TapAsync(pipeline, module, where, sample, cancellationToken).ConfigureAwait(false))
+        await foreach (var (message, droppedSoFar) in cli.Client.TapAsync(pipeline, module, where, sample, cli.Cancellation).ConfigureAwait(false))
         {
             if (droppedSoFar > dropped)
             {
-                await error.WriteLineAsync($"(dropped {droppedSoFar - dropped} messages while catching up)").ConfigureAwait(false);
+                await cli.Error.WriteLineAsync($"(dropped {droppedSoFar - dropped} messages while catching up)").ConfigureAwait(false);
                 dropped = droppedSoFar;
             }
-            await output.WriteLineAsync(JsonSerializer.Serialize(message, TapJson.Default.JsonElement)).ConfigureAwait(false);
+            await cli.Output.WriteLineAsync(JsonSerializer.Serialize(message, TapJson.Default.JsonElement)).ConfigureAwait(false);
         }
         return 0;
     }
 
-    private static async Task<int> InjectAsync(DaemonClient client, string pipeline, string module, string content, bool json, TextWriter output, CancellationToken cancellationToken)
+    private static async Task<int> InjectAsync(CliContext cli, string pipeline, string module, string content, bool json)
     {
-        var injected = await client.InjectAsync(pipeline, module, content, json, cancellationToken).ConfigureAwait(false);
-        await output.WriteLineAsync($"Sent {injected.Type} {injected.Id} into {injected.Module}.").ConfigureAwait(false);
+        var injected = await cli.Client.InjectAsync(pipeline, module, content, json, cli.Cancellation).ConfigureAwait(false);
+        await cli.Output.WriteLineAsync($"Sent {injected.Type} {injected.Id} into {injected.Module}.").ConfigureAwait(false);
         return 0;
     }
 }
