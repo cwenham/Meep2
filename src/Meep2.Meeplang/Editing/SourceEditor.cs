@@ -307,94 +307,118 @@ public static class SourceEditor
         switch (edit.Kind)
         {
             case EditKind.SetDefault:
-            {
-                var name = Required(edit.Name, "the setting");
-                var value = Required(edit);
-                if (syntax.Defaults.FirstOrDefault(d => d.Name == name) is { } setting)
-                {
-                    text.Replace(setting.Value.Span.Line, setting.Value.Span.Column, End(setting.Value.Span), value);
-                }
-                else if (syntax.Defaults.Count > 0)
-                {
-                    var last = syntax.Defaults.Max(d => d.Value.Span.Line);
-                    text.InsertLine(last + 1, $"{text.IndentOf(syntax.Defaults[0].NameSpan.Line)}{name} = {value}");
-                }
-                else
-                {
-                    InsertBlock(text, TopOf(syntax, text), ["defaults", $"{Unit(syntax, text)}{name} = {value}"], newSection: true);
-                }
+                SetDefault(syntax, text, edit);
                 break;
-            }
             case EditKind.UnsetDefault:
-            {
-                var name = Required(edit.Name, "the setting");
-                var setting = syntax.Defaults.FirstOrDefault(d => d.Name == name)
-                    ?? throw new EditException($"The defaults block has no {name}." + (syntax.Defaults.Count == 0 ? " The file has no defaults block." : $" It has {string.Join(", ", syntax.Defaults.Select(d => d.Name))}."));
-                if (syntax.Defaults.Count == 1 && HeaderOf(syntax, text) is { } header)
-                    text.RemoveLines(header, setting.Value.Span.Line); // the last one goes with its header
-                else
-                    text.RemoveLines(setting.NameSpan.Line, setting.Value.Span.Line);
+                UnsetDefault(syntax, text, edit);
                 break;
-            }
             case EditKind.SetConstant:
-            {
-                var name = Required(edit.Name, "the constant");
-                if (!IsIdentifier(name))
-                    throw new EditException($"{name} can't be a constant's name: names are letters, digits and underscores, starting with a letter.");
-                var value = Required(edit);
-                if (syntax.Constants.FirstOrDefault(c => c.Name == name) is { } constant)
-                    text.Replace(constant.Value.Span.Line, constant.Value.Span.Column, End(constant.Value.Span), value);
-                else
-                    InsertBlock(text, AfterSettings(syntax, text, constants: true), [$"const {name} = {value}"], newSection: syntax.Constants.Count == 0);
+                SetConstant(syntax, text, edit);
                 break;
-            }
             case EditKind.UnsetConstant:
-            {
-                var name = Required(edit.Name, "the constant");
-                var constant = syntax.Constants.FirstOrDefault(c => c.Name == name)
-                    ?? throw new EditException($"There's no constant called {name}." + Suggestions(name, syntax.Constants.Select(c => c.Name)));
-                text.RemoveLines(constant.NameSpan.Line, constant.NameSpan.Line);
+                UnsetConstant(syntax, text, edit);
                 break;
-            }
             case EditKind.AddPlugin:
-            {
-                var line = Required(edit).Trim();
-                if (!line.StartsWith("#plugin", StringComparison.Ordinal))
-                    line = "#plugin " + line;
-                var at = syntax.Plugins.Count > 0 ? syntax.Plugins.Max(p => p.Span.Line) + 1 : AfterSettings(syntax, text, constants: false);
-                InsertBlock(text, at, [line], newSection: syntax.Plugins.Count == 0);
+                AddPlugin(syntax, text, edit);
                 break;
-            }
             case EditKind.RemovePlugin:
-            {
-                var name = Required(edit.Name, "the plugin");
-                var found = syntax.Plugins.Where(p => Names(p).Contains(name, StringComparer.OrdinalIgnoreCase)).ToList();
-                var plugin = found switch
-                {
-                    [var one] => one,
-                    [] => throw new EditException($"There's no plugin called {name}." + (syntax.Plugins.Count == 0 ? " The file has none." : $" The file has {string.Join(", ", syntax.Plugins.Select(p => p.Alias ?? p.ToString()))}.")),
-                    _ => throw new EditException($"More than one plugin could be {name}: {string.Join(", ", found)}. Name it by the address or path on its line."),
-                };
-                text.RemoveLines(plugin.Span.Line, plugin.Span.Line);
+                RemovePlugin(syntax, text, edit);
                 break;
-            }
             default:
                 throw new EditException($"There's no edit called {edit.Kind}.");
         }
         return text.ToString();
+    }
 
-        // What a plugin line can be called by: its as name, its address or path, and its last part without .dll.
-        static IEnumerable<string> Names(PluginDirective plugin)
+    // Sets a default, in the defaults block, which is made if the file has none.
+    private static void SetDefault(PipelineSyntax syntax, Text text, SourceEdit edit)
+    {
+        var name = Required(edit.Name, "the setting");
+        var value = Required(edit);
+        if (syntax.Defaults.FirstOrDefault(d => d.Name == name) is { } setting)
         {
-            if (plugin.Alias is { } alias)
-                yield return alias;
-            yield return plugin.Name;
-            yield return plugin.ToString();
-            var last = plugin.Name.Replace('\\', '/').Split('/')[^1];
-            yield return last;
-            if (last.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
-                yield return last[..^4];
+            text.Replace(setting.Value.Span.Line, setting.Value.Span.Column, End(setting.Value.Span), value);
         }
+        else if (syntax.Defaults.Count > 0)
+        {
+            var last = syntax.Defaults.Max(d => d.Value.Span.Line);
+            text.InsertLine(last + 1, $"{text.IndentOf(syntax.Defaults[0].NameSpan.Line)}{name} = {value}");
+        }
+        else
+        {
+            InsertBlock(text, TopOf(syntax, text), ["defaults", $"{Unit(syntax, text)}{name} = {value}"], newSection: true);
+        }
+    }
+
+    // Takes a default out, and the defaults block with its last one.
+    private static void UnsetDefault(PipelineSyntax syntax, Text text, SourceEdit edit)
+    {
+        var name = Required(edit.Name, "the setting");
+        var setting = syntax.Defaults.FirstOrDefault(d => d.Name == name)
+            ?? throw new EditException($"The defaults block has no {name}." + (syntax.Defaults.Count == 0 ? " The file has no defaults block." : $" It has {string.Join(", ", syntax.Defaults.Select(d => d.Name))}."));
+        if (syntax.Defaults.Count == 1 && HeaderOf(syntax, text) is { } header)
+            text.RemoveLines(header, setting.Value.Span.Line); // the last one goes with its header
+        else
+            text.RemoveLines(setting.NameSpan.Line, setting.Value.Span.Line);
+    }
+
+    // Declares a constant, or changes its value.
+    private static void SetConstant(PipelineSyntax syntax, Text text, SourceEdit edit)
+    {
+        var name = Required(edit.Name, "the constant");
+        if (!IsIdentifier(name))
+            throw new EditException($"{name} can't be a constant's name: names are letters, digits and underscores, starting with a letter.");
+        var value = Required(edit);
+        if (syntax.Constants.FirstOrDefault(c => c.Name == name) is { } constant)
+            text.Replace(constant.Value.Span.Line, constant.Value.Span.Column, End(constant.Value.Span), value);
+        else
+            InsertBlock(text, AfterSettings(syntax, text, constants: true), [$"const {name} = {value}"], newSection: syntax.Constants.Count == 0);
+    }
+
+    // Takes a constant out.
+    private static void UnsetConstant(PipelineSyntax syntax, Text text, SourceEdit edit)
+    {
+        var name = Required(edit.Name, "the constant");
+        var constant = syntax.Constants.FirstOrDefault(c => c.Name == name)
+            ?? throw new EditException($"There's no constant called {name}." + Suggestions(name, syntax.Constants.Select(c => c.Name)));
+        text.RemoveLines(constant.NameSpan.Line, constant.NameSpan.Line);
+    }
+
+    // Adds a #plugin line, after the others.
+    private static void AddPlugin(PipelineSyntax syntax, Text text, SourceEdit edit)
+    {
+        var line = Required(edit).Trim();
+        if (!line.StartsWith("#plugin", StringComparison.Ordinal))
+            line = "#plugin " + line;
+        var at = syntax.Plugins.Count > 0 ? syntax.Plugins.Max(p => p.Span.Line) + 1 : AfterSettings(syntax, text, constants: false);
+        InsertBlock(text, at, [line], newSection: syntax.Plugins.Count == 0);
+    }
+
+    // Takes out the #plugin line a name finds.
+    private static void RemovePlugin(PipelineSyntax syntax, Text text, SourceEdit edit)
+    {
+        var name = Required(edit.Name, "the plugin");
+        var found = syntax.Plugins.Where(p => Names(p).Contains(name, StringComparer.OrdinalIgnoreCase)).ToList();
+        var plugin = found switch
+        {
+            [var one] => one,
+            [] => throw new EditException($"There's no plugin called {name}." + (syntax.Plugins.Count == 0 ? " The file has none." : $" The file has {string.Join(", ", syntax.Plugins.Select(p => p.Alias ?? p.ToString()))}.")),
+            _ => throw new EditException($"More than one plugin could be {name}: {string.Join(", ", found)}. Name it by the address or path on its line."),
+        };
+        text.RemoveLines(plugin.Span.Line, plugin.Span.Line);
+    }
+
+    // What a plugin line can be called by: its as name, its address or path, and its last part without .dll.
+    private static IEnumerable<string> Names(PluginDirective plugin)
+    {
+        if (plugin.Alias is { } alias)
+            yield return alias;
+        yield return plugin.Name;
+        yield return plugin.ToString();
+        var last = plugin.Name.Replace('\\', '/').Split('/')[^1];
+        yield return last;
+        if (last.EndsWith(".dll", StringComparison.OrdinalIgnoreCase))
+            yield return last[..^4];
     }
 
     private static string Suggestions(string name, IEnumerable<string> names) =>
