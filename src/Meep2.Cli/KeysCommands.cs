@@ -1,8 +1,8 @@
 using System.ComponentModel;
-using System.Diagnostics;
 using System.Net;
 using Meep2.Daemon;
 using Meep2.Plugins;
+using Meep2.SDK.Modules;
 
 namespace Meep2.Cli;
 
@@ -141,10 +141,10 @@ internal static class KeysCommands
             list = PluginSignature.WriteList(folder, files);
             var signaturePath = Path.Combine(folder, PluginSignature.FileName);
             File.Delete(signaturePath);
-            var (code, said) = await SshKeygenAsync(["-Y", "sign", "-n", PluginSignature.Namespace, "-f", keyPath, list], cancellationToken).ConfigureAwait(false);
-            if (code != 0 || !File.Exists(signaturePath))
+            var signed = await SshKeygenAsync(["-Y", "sign", "-n", PluginSignature.Namespace, "-f", keyPath, list], cancellationToken).ConfigureAwait(false);
+            if (!signed.Succeeded || !File.Exists(signaturePath))
             {
-                await error.WriteLineAsync($"ssh-keygen couldn't sign {list}: {said.Trim()}").ConfigureAwait(false);
+                await error.WriteLineAsync($"ssh-keygen couldn't sign {list}: {signed.Said}").ConfigureAwait(false);
                 return 1;
             }
             signature = PluginSignature.Read(folder)!;
@@ -219,10 +219,10 @@ internal static class KeysCommands
             File.Delete(signature);
             try
             {
-                var (code, said) = await SshKeygenAsync(["-Y", "sign", "-n", PipelineSignature.Namespace, "-f", keyPath, Path.GetFullPath(path)], cancellationToken).ConfigureAwait(false);
-                if (code != 0 || !File.Exists(signature))
+                var signed = await SshKeygenAsync(["-Y", "sign", "-n", PipelineSignature.Namespace, "-f", keyPath, Path.GetFullPath(path)], cancellationToken).ConfigureAwait(false);
+                if (!signed.Succeeded || !File.Exists(signature))
                 {
-                    await error.WriteLineAsync($"ssh-keygen couldn't sign {path}: {said.Trim()}").ConfigureAwait(false);
+                    await error.WriteLineAsync($"ssh-keygen couldn't sign {path}: {signed.Said}").ConfigureAwait(false);
                     return 1;
                 }
             }
@@ -247,17 +247,9 @@ internal static class KeysCommands
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), path[2..])
             : path;
 
-    private static async Task<(int Code, string Error)> SshKeygenAsync(IEnumerable<string> arguments, CancellationToken cancellationToken)
-    {
-        var start = new ProcessStartInfo("ssh-keygen") { RedirectStandardError = true, RedirectStandardOutput = true, UseShellExecute = false };
-        foreach (var argument in arguments)
-            start.ArgumentList.Add(argument);
-        using var process = Process.Start(start)!;
-        var standardError = process.StandardError.ReadToEndAsync(cancellationToken);
-        var standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        await process.WaitOrKillAsync(cancellationToken).ConfigureAwait(false); // not left waiting for a passphrase (M6)
-        return (process.ExitCode, await standardError.ConfigureAwait(false) + await standardOutput.ConfigureAwait(false));
-    }
+    // Not left waiting for a passphrase when cancelled (M6).
+    private static Task<ProgramResult> SshKeygenAsync(IEnumerable<string> arguments, CancellationToken cancellationToken) =>
+        ProgramRunner.RunAsync("ssh-keygen", arguments, cancellationToken: cancellationToken);
 
     private static async Task AppendAsync(string path, string line, CancellationToken cancellationToken)
     {

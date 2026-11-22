@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using LibGit2Sharp;
+using Meep2.SDK.Modules;
 
 namespace Meep2.Git;
 
@@ -62,46 +62,28 @@ internal static class CommitSigning
     /// <summary>Signs a commit's content, returning the armoured signature, or null, with why not, if ssh-keygen couldn't.</summary>
     public static async Task<(string? Signature, string? WhyNot)> SignAsync(string content, string key)
     {
-        var start = new ProcessStartInfo("ssh-keygen")
-        {
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        };
-        foreach (var argument in new[] { "-Y", "sign", "-n", "git", "-f", key })
-            start.ArgumentList.Add(argument);
-        start.Environment["SSH_ASKPASS_REQUIRE"] = "never";
-        Process process;
+        ProgramResult signed;
         try
         {
-            process = Process.Start(start) ?? throw new InvalidOperationException();
+            using var limit = new CancellationTokenSource(s_limit);
+            signed = await ProgramRunner.RunAsync(
+                "ssh-keygen",
+                ["-Y", "sign", "-n", "git", "-f", key],
+                input: content,
+                environment: new Dictionary<string, string> { ["SSH_ASKPASS_REQUIRE"] = "never" },
+                cancellationToken: limit.Token).ConfigureAwait(false);
         }
         catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
             return (null, "ssh-keygen isn't on this machine");
         }
-        using (process)
+        catch (OperationCanceledException)
         {
-            var output = process.StandardOutput.ReadToEndAsync();
-            var error = process.StandardError.ReadToEndAsync();
-            await process.StandardInput.WriteAsync(content).ConfigureAwait(false);
-            process.StandardInput.Close();
-            using var limit = new CancellationTokenSource(s_limit);
-            try
-            {
-                await process.WaitForExitAsync(limit.Token).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-                process.Kill(entireProcessTree: true);
-                return (null, $"ssh-keygen didn't finish signing with {key}; a key with a passphrase needs to be in ssh-agent");
-            }
-            var signature = await output.ConfigureAwait(false);
-            return process.ExitCode == 0 && signature.Contains("BEGIN SSH SIGNATURE", StringComparison.Ordinal)
-                ? (signature.Trim(), null)
-                : (null, $"ssh-keygen couldn't sign with {key}: {(await error.ConfigureAwait(false)).Trim()}");
+            return (null, $"ssh-keygen didn't finish signing with {key}; a key with a passphrase needs to be in ssh-agent");
         }
+        return signed.Succeeded && signed.Output.Contains("BEGIN SSH SIGNATURE", StringComparison.Ordinal)
+            ? (signed.Output.Trim(), null)
+            : (null, $"ssh-keygen couldn't sign with {key}: {signed.Error.Trim()}");
     }
 
     private static string Expand(string path) =>

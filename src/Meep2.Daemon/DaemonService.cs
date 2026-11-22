@@ -1,6 +1,6 @@
-using System.Diagnostics;
 using System.Security;
 using System.Text;
+using Meep2.SDK.Modules;
 
 namespace Meep2.Daemon;
 
@@ -150,19 +150,8 @@ public static class DaemonService
 
     internal static async Task RunAsync(ServiceCommand command, CancellationToken cancellationToken)
     {
-        var start = new ProcessStartInfo(command.Words[0])
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        };
-        foreach (var word in command.Words.Skip(1))
-            start.ArgumentList.Add(word);
-        using var process = Process.Start(start) ?? throw new InvalidOperationException($"Couldn't run {command}.");
-        var output = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        var error = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitOrKillAsync(cancellationToken).ConfigureAwait(false);
-        if (process.ExitCode != 0 && !command.MayFail)
-            throw new InvalidOperationException($"{command} failed with {process.ExitCode}: {(await error.ConfigureAwait(false) + await output.ConfigureAwait(false)).Trim()}");
+        var result = await ProgramRunner.RunAsync(command.Words[0], command.Words.Skip(1), cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (!result.Succeeded && !command.MayFail)
+            throw new InvalidOperationException($"{command} failed with {result.ExitCode}: {result.Said}");
     }
 }
