@@ -11,13 +11,6 @@ internal static class KeysCommands
 {
     public const string TrustUsage = "Trust a key as: meep keys trust <name> ssh-ed25519 AAAA…, meep keys trust <name> <file.pub>, or meep keys trust github:<user>.";
 
-    private static readonly Lazy<HttpClient> s_http = new(() =>
-    {
-        var client = new HttpClient();
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Meep2/1.0");
-        return client;
-    });
-
     // meep keys trust <name> <type> <key> | <name> <file.pub> | github:<user>: adds keys to the allowed-signers file.
     public static async Task<int> TrustAsync(string[] words, PluginOptions options, TextWriter output, TextWriter error, CancellationToken cancellationToken)
     {
@@ -175,7 +168,7 @@ internal static class KeysCommands
     {
         if (user.Length == 0 || !user.All(c => char.IsAsciiLetterOrDigit(c) || c == '-'))
             throw new FormatException($"A GitHub user's name has letters, digits and -, not \"{user}\".");
-        using var response = await s_http.Value.GetAsync(new Uri(options.GitHub, $"{user}.keys"), cancellationToken).ConfigureAwait(false);
+        using var response = await MeepHttp.Client.GetAsync(new Uri(options.GitHub, $"{user}.keys"), cancellationToken).ConfigureAwait(false);
         if (response.StatusCode == HttpStatusCode.NotFound)
             throw new PluginException($"GitHub has no user called {user}.");
         response.EnsureSuccessStatusCode();

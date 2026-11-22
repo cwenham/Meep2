@@ -39,6 +39,26 @@ public class SourceTests
     }
 
     [Test]
+    public async Task A_pipeline_from_a_url_is_asked_for_as_meep()
+    {
+        string? agent = null;
+        await using var server = new TestServer(async context =>
+        {
+            agent = context.Request.UserAgent;
+            if (context.Request.Url!.AbsolutePath == "/p/ticker.meep")
+                await TestServer.Reply(context, 200, Ticker, "text/plain");
+            else
+                await TestServer.Reply(context, 404, "", "text/plain");
+        });
+        using var home = new TemporaryFolder();
+        var run = await Run(new PluginOptions { Home = home.Path, Trusted = TrustedKeys.None, DeveloperMode = true }, "run", $"{server.Url}/p/ticker.meep");
+
+        await Assert.That(run.Error).IsEqualTo("");
+        await Assert.That(run.Output).Contains("tick");
+        await Assert.That(agent).IsEqualTo("Meep2/1.0");
+    }
+
+    [Test]
     public async Task A_pipeline_from_a_url_runs_when_a_trusted_key_signed_it()
     {
         using var key = SshKeyPair.CreateEd25519("publisher");

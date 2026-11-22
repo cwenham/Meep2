@@ -67,14 +67,7 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
 {
     private const string ManifestName = ".meep-install.json";
     private static readonly NuGetFramework s_target = NuGetFramework.Parse("net11.0");
-    private static readonly Lazy<HttpClient> s_http = new(() =>
-    {
-        var client = new HttpClient();
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("Meep2/1.0");
-        return client;
-    });
-
-    private readonly HttpClient _http = http ?? s_http.Value;
+    private readonly HttpClient _http = http ?? MeepHttp.Client;
 
     /// <summary>The settings it installs with.</summary>
     public PluginOptions Options => options;

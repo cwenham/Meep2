@@ -19,7 +19,8 @@ namespace Meep2.Daemon;
 /// </remarks>
 public static class PipelineSources
 {
-    private static readonly HttpClient s_http = new() { Timeout = TimeSpan.FromSeconds(30) };
+    // How long a pipeline, an include or a signature from a URL has to arrive.
+    private static readonly TimeSpan s_downloadLimit = TimeSpan.FromSeconds(30);
 
     /// <summary>Reads a pipeline, checking it can be trusted.</summary>
     /// <param name="address">Where it is.</param>
@@ -141,11 +142,14 @@ public static class PipelineSources
     internal const int MaxDownload = 4 * 1024 * 1024;
 
     // Reads a file from a URL, up to the limit, or null if it isn't there.
-    private static async Task<byte[]?> GetAsync(string url, CancellationToken cancellationToken)
+    private static async Task<byte[]?> GetAsync(string url, CancellationToken cancelled)
     {
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancelled);
+        limit.CancelAfter(s_downloadLimit);
+        var cancellationToken = limit.Token;
         try
         {
-            using var response = await s_http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
+            using var response = await MeepHttp.Client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
                 return null;
             response.EnsureSuccessStatusCode();
