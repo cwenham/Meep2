@@ -13,7 +13,7 @@ internal interface ICheckedComputed
     bool AppliesTo(Type messageType);
 
     /// <summary>Why the expression doesn't fit messages of this type, and where, or null if it does.</summary>
-    (string Problem, SourceSpan Span)? ProblemWith(Type messageType);
+    ExpressionProblem? ProblemWith(Type messageType);
 
     /// <summary>
     /// Which messages the parameter is worked out for: null for all, true for errors only, false for the rest

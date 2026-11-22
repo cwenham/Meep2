@@ -854,8 +854,8 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
                         }
                         continue;
                     }
-                    if (!checkedAgainst.Any(computed.AppliesTo) && computed.ProblemWith(checkedAgainst[0]) is var (problem, span))
-                        diagnostics.Error(problem, span);
+                    if (!checkedAgainst.Any(computed.AppliesTo) && computed.ProblemWith(checkedAgainst[0]) is { } problem)
+                        diagnostics.Error(problem.Message, problem.Span);
                 }
             }
         }

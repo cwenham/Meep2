@@ -101,7 +101,7 @@ public class ExpressionTests
         var expression = Compile<bool>("msg.Valeu < 30");
 
         await Assert.That(expression.AppliesTo(typeof(Number))).IsFalse();
-        await Assert.That(expression.ProblemWith(typeof(Number))!.Value.Problem).IsEqualTo("Number has no 'Valeu'. Did you mean 'Value'?");
+        await Assert.That(expression.ProblemWith(typeof(Number))!.Message).IsEqualTo("Number has no 'Valeu'. Did you mean 'Value'?");
     }
 
     [Test]
@@ -109,7 +109,7 @@ public class ExpressionTests
     {
         var expression = Compile<bool>("msg.Value == \"30\"");
 
-        await Assert.That(expression.ProblemWith(typeof(Number))!.Value.Problem).IsEqualTo("Can't compare a whole number with text.");
+        await Assert.That(expression.ProblemWith(typeof(Number))!.Message).IsEqualTo("Can't compare a whole number with text.");
     }
 
     [Test]
@@ -163,7 +163,7 @@ public class ExpressionTests
     {
         var expression = Compile<int>("fam.Sorce.Value", Scope(fam: name => name == "Source" ? new FamTarget(typeof(Number)) : null));
 
-        await Assert.That(expression.ProblemWith(typeof(Number))!.Value.Problem).IsEqualTo("There's no module called Sorce for fam to find. Did you mean 'Source'?");
+        await Assert.That(expression.ProblemWith(typeof(Number))!.Message).IsEqualTo("There's no module called Sorce for fam to find. Did you mean 'Source'?");
     }
 
     [Test]

@@ -91,10 +91,10 @@ internal sealed class CompiledComputed<T>(ExpressionSyntax syntax, CompileScope 
 
     public override bool AppliesTo(Type messageType) => For(messageType).Function is not null;
 
-    public (string Problem, SourceSpan Span)? ProblemWith(Type messageType)
+    public ExpressionProblem? ProblemWith(Type messageType)
     {
         var compiled = For(messageType);
-        return compiled.Function is null ? (compiled.Problem!, compiled.ProblemSpan) : null;
+        return compiled.Function is null ? new ExpressionProblem(compiled.Problem!, compiled.ProblemSpan) : null;
     }
 
     public override string ToString() => text;
