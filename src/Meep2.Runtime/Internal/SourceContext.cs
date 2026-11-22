@@ -21,7 +21,7 @@ internal sealed class SourceContext(SourceNode node) : NodeContext<SourceNode>(n
     public void Close()
     {
         _closed = true;
-        Node.ListeningAt = null;
+        Node.PeerCounts.ListeningAt = null;
     }
 
     /// <summary>Whether the source has emitted a message, other than an error, since this was last asked (Q79).</summary>

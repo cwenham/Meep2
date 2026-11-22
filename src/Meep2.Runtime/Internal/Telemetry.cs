@@ -242,7 +242,7 @@ internal static class Telemetry
         {
             foreach (var node in pipeline.Nodes)
             {
-                var traffic = node.Traffic;
+                var traffic = node.Counters.Traffic;
                 if (traffic == default)
                     continue; // modules that don't talk to the network
                 yield return Measure(traffic.Received, pipeline, node, "receive", "network.io.direction");

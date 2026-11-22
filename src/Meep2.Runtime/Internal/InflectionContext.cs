@@ -157,8 +157,8 @@ internal sealed class InflectionContext(InflectionNode node) : NodeContext<Infle
             _passedOn = true;
             if (!Node.IsPassthrough)
             {
-                Node.CountPassed();
-                Node.Tapped(message);
+                Node.Counters.Passed();
+                Node.Taps.Offer(message);
                 Node.Pipeline.Deliver(Node, message);
             }
             return;

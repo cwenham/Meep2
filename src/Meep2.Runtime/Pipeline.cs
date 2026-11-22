@@ -206,7 +206,7 @@ public sealed class Pipeline : IAsyncDisposable
         for (var i = 0; i < readings.Length; i++)
         {
             var node = layout.Nodes[i];
-            readings[i] = new ModuleReading(layout.Modules[i], node.GetStats(), node.Traffic, node.Timing.Total, node is SourceNode);
+            readings[i] = new ModuleReading(layout.Modules[i], node.GetStats(), node.Counters.Traffic, node.Timing.Total, node is SourceNode);
         }
         return readings;
     }
@@ -218,7 +218,7 @@ public sealed class Pipeline : IAsyncDisposable
     /// Bytes one module has read from the network and written to it since the pipeline started, as it counted them
     /// (<see cref="ModuleContext.CountBytes"/>). Nothing for a module that doesn't talk to the network.
     /// </summary>
-    public ModuleTraffic GetTraffic(ModuleInfo module) => NodeOf(module).Traffic;
+    public ModuleTraffic GetTraffic(ModuleInfo module) => NodeOf(module).Counters.Traffic;
 
     /// <summary>Where the pipeline's modules are listening now, as each says it (<see cref="ModuleContext.Listening"/>).</summary>
     public IReadOnlyList<ListeningAt> GetListening()
@@ -227,7 +227,7 @@ public sealed class Pipeline : IAsyncDisposable
         var listening = new List<ListeningAt>();
         for (var i = 0; i < layout.Nodes.Length; i++)
         {
-            if (layout.Nodes[i].ListeningAt is { } address)
+            if (layout.Nodes[i].PeerCounts.ListeningAt is { } address)
                 listening.Add(new ListeningAt(layout.Modules[i], address));
         }
         return listening;
@@ -237,13 +237,13 @@ public sealed class Pipeline : IAsyncDisposable
     /// What one module has received from each place, as it counted them (<see cref="ModuleContext.Arrival"/>): from
     /// other Meep hosts by origin, and from elsewhere by the client's address. Nothing for a module that counts none.
     /// </summary>
-    public IReadOnlyList<PeerCount> GetArrivals(ModuleInfo module) => NodeOf(module).Arrivals?.Read() ?? [];
+    public IReadOnlyList<PeerCount> GetArrivals(ModuleInfo module) => NodeOf(module).PeerCounts.Arrivals?.Read() ?? [];
 
     /// <summary>
     /// What one module has sent to each place, by the host and port it connected to, as it counted them
     /// (<see cref="ModuleContext.Destination"/>). Nothing for a module that counts none.
     /// </summary>
-    public IReadOnlyList<PeerCount> GetDestinations(ModuleInfo module) => NodeOf(module).Destinations?.Read() ?? [];
+    public IReadOnlyList<PeerCount> GetDestinations(ModuleInfo module) => NodeOf(module).PeerCounts.Destinations?.Read() ?? [];
 
     /// <summary>
     /// For every module that has counted any, its arrivals (<paramref name="arrivals"/>) or its destinations, in the
@@ -255,7 +255,7 @@ public sealed class Pipeline : IAsyncDisposable
         var read = new List<ModulePeers>();
         for (var i = 0; i < layout.Nodes.Length; i++)
         {
-            if ((arrivals ? layout.Nodes[i].Arrivals : layout.Nodes[i].Destinations) is { } table)
+            if ((arrivals ? layout.Nodes[i].PeerCounts.Arrivals : layout.Nodes[i].PeerCounts.Destinations) is { } table)
                 read.Add(new ModulePeers(layout.Modules[i], table.Read()));
         }
         return read;
@@ -343,7 +343,7 @@ public sealed class Pipeline : IAsyncDisposable
         if (Volatile.Read(ref _state) == Finished)
             throw new InvalidOperationException($"{Name} has finished, so there's nothing to tap.");
         var tap = new DebugTap(node, options ?? new DebugTapOptions());
-        node.AddTap(tap);
+        node.Taps.Add(tap);
         if (Volatile.Read(ref _state) == Finished)
             tap.Complete(); // it finished while the tap was being added
         return tap;
@@ -374,7 +374,7 @@ public sealed class Pipeline : IAsyncDisposable
         }
         else
         {
-            node.Tapped(message);
+            node.Taps.Offer(message);
             Deliver(node, message);
         }
         TrackingScope.ReleaseAll(created);
@@ -645,7 +645,7 @@ public sealed class Pipeline : IAsyncDisposable
             Volatile.Write(ref _state, Finished);
             s_running.TryRemove(this, out _);
             foreach (var node in _nodes)
-                node.CloseTaps();
+                node.Taps.CloseAll();
             foreach (var node in _nodes)
                 await node.DisposeModuleAsync().ConfigureAwait(false);
             _abort.Dispose();
@@ -735,12 +735,12 @@ public sealed class Pipeline : IAsyncDisposable
         Stamper.Stamp(message, emitter, from, defaultParent, this, ref created);
         if (scope is not null)
             message.Tracking = message.Tracking.Append(scope);
-        from.CountEmitted();
+        from.Counters.Emitted();
         if (from is SourceNode && message is not ErrorMessage)
             _sourceWindow?.Add(message.Id);
         if (Telemetry.Tracing)
             Telemetry.Emitted(from, emitter, message);
-        from.Tapped(message);
+        from.Taps.Offer(message);
         Deliver(from, message);
         TrackingScope.ReleaseAll(created);
     }
@@ -759,7 +759,7 @@ public sealed class Pipeline : IAsyncDisposable
     {
         if (depth > MaxForwardDepth)
         {
-            target.CountFiltered();
+            target.Counters.Filtered();
             return;
         }
         var isError = message is ErrorMessage;
@@ -775,16 +775,16 @@ public sealed class Pipeline : IAsyncDisposable
         if (target.IsStopped)
         {
             // The error policy stopped this module's branch. An error dropped here is reported as unhandled.
-            target.CountDropped();
+            target.Counters.Dropped();
             message.Tracking.Flag(MessageOutcome.Dropped);
             return;
         }
         if (target.Router is { } router)
         {
             // Distribute: the message goes on down one copy of the branch below, chosen here, on this thread.
-            target.CountReceived();
-            target.CountPassed();
-            target.Tapped(message);
+            target.Counters.Received();
+            target.Counters.Passed();
+            target.Taps.Offer(message);
             Route(target, router, message, depth);
             return;
         }
@@ -799,7 +799,7 @@ public sealed class Pipeline : IAsyncDisposable
             else if (target.HasExpiredFor(message))
             {
                 // Expired messages stop at the next module that would take them (Q12).
-                target.CountExpired();
+                target.Counters.Expired();
                 message.Tracking.Flag(MessageOutcome.Expired);
             }
             else
@@ -807,8 +807,8 @@ public sealed class Pipeline : IAsyncDisposable
                 target.Enqueue(message, input);
                 if (target.IsPassthrough)
                 {
-                    target.CountPassed();
-                    target.Tapped(message);
+                    target.Counters.Passed();
+                    target.Taps.Offer(message);
                     Forward(target, message, depth);
                 }
             }
@@ -820,12 +820,12 @@ public sealed class Pipeline : IAsyncDisposable
         }
         else if (!wanted)
         {
-            target.CountFiltered();
+            target.Counters.Filtered();
         }
         else
         {
             // None of the module's inflections takes this type: that's an error, not a silent drop (Q54).
-            target.CountRefused();
+            target.Counters.Refused();
             var error = new ErrorMessage { Error = $"{target.Info} doesn't take {message.GetType().Name} messages." };
             Emit(target, target.Info, error, defaultParent: message);
         }
