@@ -52,6 +52,21 @@ internal sealed class DaemonApi(MeepDaemon daemon)
         };
     }
 
+    /// <summary>Where the running pipelines' Listens are bound now.</summary>
+    internal static List<ListenInfo> Listening(IEnumerable<HostedPipeline> pipelines)
+    {
+        var listening = new List<ListenInfo>();
+        foreach (var hosted in pipelines.OrderBy(p => p.Name, StringComparer.Ordinal))
+        {
+            if (hosted.Ended is not null || hosted.Pipeline is not { } pipeline || hosted.Live is not { } live)
+                continue;
+            var keys = live.ModuleKeys();
+            foreach (var at in pipeline.GetListening())
+                listening.Add(new ListenInfo(hosted.Name, keys.GetValueOrDefault(at.Module) ?? "", at.Module.ToString(), at.Address));
+        }
+        return listening;
+    }
+
     /// <summary>
     /// Where the running pipelines' Fetches and Sends send, as their addresses say: those that reach the network, by
     /// an address fixed when the pipeline started or worked out for each message.
@@ -111,7 +126,7 @@ internal sealed class DaemonApi(MeepDaemon daemon)
             Id = identity.Id,
             Names = identity.Names,
             Addresses = identity.Addresses,
-            Listening = Listening(),
+            Listening = Listening(daemon.Hosted),
             Sending = Sending(daemon.Hosted),
             Clock = DaemonClock.Now,
         }, DaemonJson.Default.DaemonInfo);
@@ -164,21 +179,6 @@ internal sealed class DaemonApi(MeepDaemon daemon)
             throw new DaemonException(400, $"{name}'s file doesn't load, so it runs as it was.", [.. change.Diagnostics.Where(d => d.IsError).Select(d => d.ToString())]);
         daemon.Log($"[{name}] reloaded: {HostedPipeline.Summary(change.Report!)}");
         return Answer.Json(200, Reloading.Describe(change), DaemonJson.Default.ChangeResult);
-    }
-
-    // Where the running pipelines' Listens are bound now.
-    private List<ListenInfo> Listening()
-    {
-        var listening = new List<ListenInfo>();
-        foreach (var hosted in daemon.Hosted.OrderBy(p => p.Name, StringComparer.Ordinal))
-        {
-            if (hosted.Ended is not null || hosted.Pipeline is not { } pipeline || hosted.Live is not { } live)
-                continue;
-            var keys = live.ModuleKeys();
-            foreach (var at in pipeline.GetListening())
-                listening.Add(new ListenInfo(hosted.Name, keys.GetValueOrDefault(at.Module) ?? "", at.Module.ToString(), at.Address));
-        }
-        return listening;
     }
 
     private static T Deserialize<T>(JsonElement json, JsonTypeInfo<T> type)

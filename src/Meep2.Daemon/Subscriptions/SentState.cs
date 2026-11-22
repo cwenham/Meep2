@@ -207,15 +207,7 @@ internal sealed class SentState
 
     private List<ListenInfo>? ListensChanged(IReadOnlyList<HostedPipeline> listed)
     {
-        var listens = new List<ListenInfo>();
-        foreach (var hosted in listed)
-        {
-            if (hosted.Counts is null || hosted.Ended is not null || hosted.Pipeline is not { } pipeline || hosted.Live is not { } live)
-                continue;
-            var keys = live.ModuleKeys();
-            foreach (var at in pipeline.GetListening())
-                listens.Add(new ListenInfo(hosted.Name, keys.GetValueOrDefault(at.Module) ?? "", at.Module.ToString(), at.Address));
-        }
+        var listens = DaemonApi.Listening(listed);
         var print = string.Join('\n', listens.Select(l => $"{l.Pipeline}|{l.Module}|{l.Label}|{l.Address}"));
         if (print == _listens)
             return null;
