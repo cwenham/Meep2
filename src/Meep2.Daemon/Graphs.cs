@@ -3,6 +3,7 @@ using Meep2.Meeplang.Parsing;
 using Meep2.Meeplang.Syntax;
 using Meep2.Runtime;
 using Meep2.SDK.Messages;
+using Meep2.SDK.Modules;
 
 namespace Meep2.Daemon;
 
@@ -50,14 +51,18 @@ public static class Graphs
         ArgumentNullException.ThrowIfNull(live);
         ArgumentNullException.ThrowIfNull(pipeline);
         var keys = live.ModuleKeys();
+        var linkKeys = s_linkKeys.GetValue(keys, _ => new System.Collections.Concurrent.ConcurrentDictionary<(ModuleInfo, ModuleInfo), string>());
         var links = new List<LinkDetail>();
         foreach (var link in pipeline.GetLinkStats())
         {
             if (keys.TryGetValue(link.From, out var from) && keys.TryGetValue(link.To, out var to))
-                links.Add(new LinkDetail($"{from}>{to}", link.Carried, link.Errors));
+                links.Add(new LinkDetail(linkKeys.GetOrAdd((link.From, link.To), static (_, ends) => $"{ends.From}>{ends.To}", (From: from, To: to)), link.Carried, link.Errors));
         }
         return links;
     }
+
+    // Each link's key, kept with the modules' keys they're made from, which change with the graph (E1).
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<IReadOnlyDictionary<ModuleInfo, string>, System.Collections.Concurrent.ConcurrentDictionary<(ModuleInfo, ModuleInfo), string>> s_linkKeys = [];
 
     private static GraphModule Module(ModuleShape module, Files files)
     {
