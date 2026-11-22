@@ -24,6 +24,12 @@ internal sealed record HostSettings
     /// </summary>
     public bool MeepHostPublic { get; set; }
 
+    /// <summary>
+    /// --meep-hosts: hosts known to be Meep, given origins from the first request, as <c>meep-hosts</c> names them in
+    /// the daemon's settings; for <c>meep run</c>, which has no settings file, such as machines on a Tailscale network.
+    /// </summary>
+    public List<string> MeepHosts { get; } = [];
+
     /// <summary>--detach: run in the background (meep run only).</summary>
     public bool Detach { get; set; }
 
@@ -45,6 +51,11 @@ internal sealed record HostSettings
             yield return "--watch";
         if (MeepHostPublic)
             yield return "--meep-host-public";
+        if (MeepHosts.Count > 0)
+        {
+            yield return "--meep-hosts";
+            yield return string.Join(',', MeepHosts);
+        }
         if (Otlp is not null)
         {
             yield return "--otlp";
@@ -84,6 +95,13 @@ internal sealed record HostSettings
                 case "--meep-host-public":
                     settings.MeepHostPublic = true;
                     break;
+                case "--meep-hosts" when Hosts(next) is { } hosts:
+                    settings.MeepHosts.AddRange(hosts);
+                    i++;
+                    break;
+                case "--meep-hosts":
+                    error.WriteLine("--meep-hosts needs hosts known to be Meep, separated by commas, each a host or a host and port, such as studio.local,10.0.0.5:8080.");
+                    return null;
                 case "--otlp" when next is not null && Uri.TryCreate(next, UriKind.Absolute, out _):
                     settings.Otlp = next;
                     i++;
@@ -116,6 +134,13 @@ internal sealed record HostSettings
         }
         return settings;
     }
+
+    // studio.local,10.0.0.5:8080, as the daemon's meep-hosts setting takes them.
+    private static string[]? Hosts(string? text) =>
+        text?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) is { Length: > 0 } hosts
+        && hosts.All(h => Meep2.Modules.MeepHosts.Named(h) is not null)
+            ? hosts
+            : null;
 
     // 0.1, or 10%.
     private static double? Share(string? text)

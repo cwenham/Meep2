@@ -239,7 +239,7 @@ Requests a second are the same or a little better. Each request allocates about 
 ## Built from the answers
 
 - **Q230** (0402069): `meep run` and `meep daemon` take `--meep-host-public`, and `--detach` and `meep daemon install` pass it on. A daemon now only ever sets the process-wide flag, never clears it, so a daemon without it doesn't undo it for another in the same process, as tests run them; the test that came with this found that race.
-- **Q231** (d3e5694): 100.64/10 isn't private. `docs/verbs.md` says what is, and that Tailscale hosts go in `meep-hosts`. Since `meep run` has no settings file, it can't name them, so a run on a Tailscale network tells them nothing; `--meep-hosts <names>` would fix that if it's wanted.
+- **Q231** (d3e5694): 100.64/10 isn't private. `docs/verbs.md` says what is, and that Tailscale hosts go in `meep-hosts`. Since `meep run` has no settings file, it can't name them, so `meep run` and `meep daemon` now take `--meep-hosts`, a comma-separated list as the setting takes; a daemon adds them to its settings' list.
 - **Q236** (8834219): `POST /pipelines`, from a client that may start pipelines, may have a body of 24 MiB and 64 KiB, enough for 4 MiB of text however JSON escapes it (six bytes for a `<`); the text is then checked against 4 MiB, with its own message. Every other request, and every `/ws` frame, stays at 1 MiB, so a pipeline started by text over a WebSocket can still be at most 1 MiB; I left that, since the frame's size is checked before its path is known.
 - **Q235** (f5f3db2): `docs/writing-verbs.md`, under "Parents and family", says why a module should keep values rather than messages and make each message afresh rather than `with` the last, with M8's numbers, and the checklist has a line for it.
 - **Q232, Q233, Q234, Q237**: kept as built.
@@ -248,4 +248,4 @@ Requests a second are the same or a little better. Each request allocates about 
 
 The build has no warnings, and the full suite of 677 (the 615 before this work and 62 new) passed on the last run, and on most runs through the phase; the failures I saw are those in "Found in passing". `npm test` in `editors/vscode` passes, the grammar and the new manifest check.
 
-After the answers, the suite is 678: two new tests, and one case fewer in the private-address test, for 100.64/10's upper edge, which no longer has a boundary to check. All 678 passed.
+After the answers, the suite is 678: two new tests, and one case fewer in the private-address test, for 100.64/10's upper edge, which no longer has a boundary to check. All 678 passed. With `--meep-hosts`, one more: 679, all passing.

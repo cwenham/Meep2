@@ -122,6 +122,6 @@ public class CliTests
         await Assert.That(versionCode).IsEqualTo(0);
         await Assert.That(version).StartsWith("meep ");
         await Assert.That(noArgumentsCode).IsEqualTo(2);
-        await Assert.That(usage).Contains("meep run [--dev] [--watch] [--otlp <url>] [--sample <share>] [--meep-host-public] [--detach] <pipeline>");
+        await Assert.That(usage).Contains("meep run [--dev] [--watch] [--otlp <url>] [--sample <share>] [--meep-host-public] [--meep-hosts <hosts>] [--detach] <pipeline>");
     }
 }

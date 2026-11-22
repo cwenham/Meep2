@@ -396,6 +396,28 @@ public class HostingTests
     }
 
     [Test]
+    public async Task Meep_run_can_name_hosts_known_to_be_meep()
+    {
+        var settings = HostSettings.Parse(["--meep-hosts", "meep-test-run.example, 100.64.0.9:8080", "--meep-hosts", "studio.local", "ticker.meep"], new SharedText());
+        await Assert.That(settings!.MeepHosts).IsEquivalentTo(["meep-test-run.example", "100.64.0.9:8080", "studio.local"]);
+        await Assert.That(string.Join(' ', settings.Options())).Contains("--meep-hosts meep-test-run.example,100.64.0.9:8080,studio.local"); // so --detach and the service keep them
+        var error = new SharedText();
+        await Assert.That(HostSettings.Parse(["--meep-hosts", "http://studio.local/", "ticker.meep"], error)).IsNull();
+        await Assert.That(error.ToString()).Contains("--meep-hosts needs hosts known to be Meep");
+
+        using var folder = new TemporaryFolder();
+        var file = folder.Write("counted.meep", """
+            Interval 10ms count=1
+                WriteLine "{msg.Count}"
+            """);
+        await Assert.That(MeepHosts.MayTell("100.64.0.9:8080", "100.64.0.9")).IsFalse();
+        var code = await Wait.For(MeepCommand.RunAsync(["run", "--meep-hosts", "100.64.0.9:8080", file], new SharedText(), new SharedText(), folder.Path, CancellationToken.None));
+
+        await Assert.That(code).IsEqualTo(0);
+        await Assert.That(MeepHosts.MayTell("100.64.0.9:8080", "100.64.0.9")).IsTrue();
+    }
+
+    [Test]
     public async Task Meep_run_refuses_a_share_it_cant_use()
     {
         var error = new SharedText();
