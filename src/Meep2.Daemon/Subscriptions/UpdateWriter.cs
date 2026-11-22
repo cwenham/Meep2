@@ -1,3 +1,6 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+
 namespace Meep2.Daemon.Subscriptions;
 
 /// <summary>
@@ -68,5 +71,83 @@ internal abstract class UpdateWriter
                 Null();
         }
         EndArray();
+    }
+
+    /// <summary>
+    /// Counts by key that changed, as a map: the whole array for a key new to the client, only what changed otherwise,
+    /// and null for a key that's gone.
+    /// </summary>
+    public void Changes(List<CountChange> changes)
+    {
+        StartMap(changes.Count);
+        foreach (var (key, now, before) in changes)
+        {
+            Name(key);
+            if (now is null)
+                Null();
+            else
+                Changed(now, before ?? now, all: before is null);
+        }
+        EndMap();
+    }
+
+    /// <summary>Named counts, as a map.</summary>
+    public void Named(List<NamedCount> values)
+    {
+        StartMap(values.Count);
+        foreach (var (name, value) in values)
+            Property(name, value);
+        EndMap();
+    }
+
+    /// <summary>A JSON value, as it is.</summary>
+    public void Node(JsonNode? node)
+    {
+        switch (node)
+        {
+            case null:
+                Null();
+                break;
+            case JsonObject map:
+                StartMap(map.Count);
+                foreach (var (name, value) in map)
+                {
+                    Name(name);
+                    Node(value);
+                }
+                EndMap();
+                break;
+            case JsonArray array:
+                StartArray(array.Count);
+                foreach (var value in array)
+                    Node(value);
+                EndArray();
+                break;
+            default:
+                Value(node);
+                break;
+        }
+    }
+
+    private void Value(JsonNode node)
+    {
+        switch (node.GetValueKind())
+        {
+            case JsonValueKind.String:
+                String(node.GetValue<string>());
+                break;
+            case JsonValueKind.True or JsonValueKind.False:
+                Bool(node.GetValue<bool>());
+                break;
+            case JsonValueKind.Number:
+                if (node.AsValue().TryGetValue<long>(out var whole))
+                    Number(whole);
+                else
+                    Number(node.GetValue<double>());
+                break;
+            default:
+                Null();
+                break;
+        }
     }
 }
