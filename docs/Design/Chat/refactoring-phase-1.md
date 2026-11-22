@@ -181,7 +181,7 @@ Requests a second are the same or a little better. Each request allocates about 
 - **Fetch with `root=` reads files only**, rather than ignoring `root=` for web addresses.
 - **`FileKinds` reads the file's type through .NET's own `stat` wrapper (`SystemNative_Stat`)**, reading only the mode, which .NET lays out the same on every Unix, rather than libc's `stat`, whose layout differs between macOS and Linux.
 - **S4 left answers and `end` events unwaited**, since there's one for each request.
-- **S11's setting is a true-or-false, `meep-host-public`**, beside `meep-hosts` (Q230). It's for the whole process, as `meep-hosts` is; `meep run` has no settings file, so it always answers only private clients.
+- **S11's setting is a true-or-false, `meep-host-public`**, beside `meep-hosts` (Q230). It's for the whole process, as `meep-hosts` is; `meep run` has no settings file, so it takes `--meep-host-public` instead (Q230).
 - **S11 doesn't ask public hosts at all** (Q232), and names are looked up to decide (Q231).
 - **A Listen still counts the origin a public client gives**, as a claim, rather than counting it by its address; the docs say so.
 - **M1 freezes the counts as they were**, so subscriptions keep working for ended pipelines, rather than dropping their counts when they end.
@@ -190,7 +190,7 @@ Requests a second are the same or a little better. Each request allocates about 
 - **`PrivateFolders` is public in the SDK.** I first made it internal, visible to Meep's own assemblies, but letting Modules see the SDK's internals changes which members it can override, and broke Batch and Zip; it's also useful to plugins that keep files in Meep's folder.
 - **Saved trees are always 600**, even with `file=`, since they hold the words they learned; a folder named with `file=` is made as usual, and only the default `trees` folder is made private.
 - **The tokens file is still narrowed after it's written**, for a file made before this change.
-- **S9's limit is `SocketSession.MaxFrame`**, 1 MiB, so a pipeline sent to the daemon as text can be at most 1 MiB, though one from a URL can be 4 MiB (Q236).
+- **S9's limit is `SocketSession.MaxFrame`**, 1 MiB, for everything but starting a pipeline from its text, which can be 4 MiB, as one from a URL can (Q236).
 - **`meep lsp` stops only when framing is lost**, saying why, rather than guessing where the next message starts.
 - **M6 kills on cancellation only**, as the finding asks; `CommitSigning`, which has no cancellation, already kills on its timeout.
 - **M8 runs as a measurement of its own**, like `flows` and `subscriptions`, rather than under BenchmarkDotNet, which measures time and allocation, not what's kept.
@@ -236,6 +236,16 @@ Requests a second are the same or a little better. Each request allocates about 
 
 **Answer:** No.
 
+## Built from the answers
+
+- **Q230** (0402069): `meep run` and `meep daemon` take `--meep-host-public`, and `--detach` and `meep daemon install` pass it on. A daemon now only ever sets the process-wide flag, never clears it, so a daemon without it doesn't undo it for another in the same process, as tests run them; the test that came with this found that race.
+- **Q231** (d3e5694): 100.64/10 isn't private. `docs/verbs.md` says what is, and that Tailscale hosts go in `meep-hosts`. Since `meep run` has no settings file, it can't name them, so a run on a Tailscale network tells them nothing; `--meep-hosts <names>` would fix that if it's wanted.
+- **Q236** (8834219): `POST /pipelines`, from a client that may start pipelines, may have a body of 24 MiB and 64 KiB, enough for 4 MiB of text however JSON escapes it (six bytes for a `<`); the text is then checked against 4 MiB, with its own message. Every other request, and every `/ws` frame, stays at 1 MiB, so a pipeline started by text over a WebSocket can still be at most 1 MiB; I left that, since the frame's size is checked before its path is known.
+- **Q235** (f5f3db2): `docs/writing-verbs.md`, under "Parents and family", says why a module should keep values rather than messages and make each message afresh rather than `with` the last, with M8's numbers, and the checklist has a line for it.
+- **Q232, Q233, Q234, Q237**: kept as built.
+
 ## The test run
 
 The build has no warnings, and the full suite of 677 (the 615 before this work and 62 new) passed on the last run, and on most runs through the phase; the failures I saw are those in "Found in passing". `npm test` in `editors/vscode` passes, the grammar and the new manifest check.
+
+After the answers, the suite is 678: two new tests, and one case fewer in the private-address test, for 100.64/10's upper edge, which no longer has a boundary to check. All 678 passed.
