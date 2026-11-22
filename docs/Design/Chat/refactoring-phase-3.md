@@ -149,8 +149,16 @@ Every row is within its error bars or a little faster on the branch, and allocat
 
 **Q240.** The shared helpers are public in the SDK, which plugins are written against and which goal 9 will package: `ProgramRunner`, `HomeFolder`, `DurationText` and `ValueOrWhyNot` (and `PrivateFolders` from phase 1). Should they stay there, as things plugins may use too, or move to an internal assembly of Meep's own (say `Meep2.Shared`, referenced by every project, with nothing in it promised to plugins)? I lean towards `Meep2.Shared`, before the SDK is packaged, keeping in the SDK only what a module needs.
 
+**Answer:** Move to Meep2.Shared.
+
 **Q241.** Should Send and Listen share framing too: a base record for WebSocket framing (`ping`, `max-queued`) and one for TCP framing (`end`, `length`)? A record takes one base, so it would mean framing records derived from `ConnectionParameters`, and Send's retries (`timeout`, `tries`, `retry-delay`) written out twice again, or an interface for those. `max-queued` also means "wait" on a Send and "drop" on a Listen. I'd leave them as they are.
+
+**Answer:** Leave as they are.
 
 **Q242.** Durations in messages are now written as Meeplang writes them: "didn't answer within 1m40s" rather than "100s", and "failed 3 times within 1m30s" rather than "1.5m". Is that wording what you want, or should messages keep a single unit?
 
+**Answer:** Yes, that's good.
+
 **Q243.** A pipeline or include from a URL that takes longer than 30 seconds fails with a cancellation that doesn't say why. Should it say "… didn't arrive within 30s", as Fetch does? It's a small change, which I'd make in phase 5 with P1, since that changes how includes are read.
+
+**Answer:** Yes.
