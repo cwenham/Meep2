@@ -178,8 +178,7 @@ public class FlowEvidenceTests
     [Arguments("172.32.0.1", false)]
     [Arguments("192.168.1.30", true)]
     [Arguments("169.254.10.10", true)]
-    [Arguments("100.64.0.1", true)]
-    [Arguments("100.128.0.1", false)]
+    [Arguments("100.64.0.1", false)] // carriers' shared range (Q231)
     [Arguments("fd00::5", true)]
     [Arguments("fe80::1", true)]
     [Arguments("::ffff:192.168.1.30", true)]

@@ -173,8 +173,9 @@ public static class MeepHosts
 
     /// <summary>
     /// Whether an address is on this machine or a private network: loopback, the private IPv4 ranges (10/8,
-    /// 172.16/12, 192.168/16), link-local, the shared range carriers and overlay networks use (100.64/10), and IPv6's
-    /// unique-local and link-local ranges.
+    /// 172.16/12, 192.168/16), link-local, and IPv6's unique-local and link-local ranges. Not the shared range carriers
+    /// use (100.64/10), where others' machines may be (Q231): Tailscale's machines, which are given addresses there,
+    /// are named in <c>meep-hosts</c> instead.
     /// </summary>
     internal static bool IsPrivate(IPAddress address)
     {
@@ -189,8 +190,7 @@ public static class MeepHosts
             return b[0] == 10
                 || (b[0] == 172 && (b[1] & 0xF0) == 16)
                 || (b[0] == 192 && b[1] == 168)
-                || (b[0] == 169 && b[1] == 254)
-                || (b[0] == 100 && (b[1] & 0xC0) == 64);
+                || (b[0] == 169 && b[1] == 254);
         }
         return address.IsIPv6UniqueLocal || address.IsIPv6LinkLocal || address.IsIPv6SiteLocal;
     }
