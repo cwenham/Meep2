@@ -25,13 +25,14 @@ internal abstract class Framing
     public async IAsyncEnumerable<byte[]> ReadAsync(Stream stream, long limit, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var reader = PipeReader.Create(stream, new StreamPipeReaderOptions(leaveOpen: true));
+        long searched = 0; // how far into what's waiting has been searched for an end already (E7)
         try
         {
             while (true)
             {
                 var result = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
                 var buffer = result.Buffer;
-                while (TryRead(ref buffer, out var message))
+                while (TryRead(ref buffer, ref searched, out var message))
                 {
                     if (message.Length > Math.Max(limit, MinimumLimit))
                         throw new FramingException($"sent a message longer than {limit} bytes, so its connection was closed");
@@ -57,8 +58,12 @@ internal abstract class Framing
     /// <summary>A message's size can always reach this, whatever max-size says.</summary>
     protected virtual long MinimumLimit => 0;
 
-    /// <summary>Takes one whole message off the front of the buffer, if there is one.</summary>
-    protected abstract bool TryRead(ref ReadOnlySequence<byte> buffer, out byte[] message);
+    /// <summary>
+    /// Takes one whole message off the front of the buffer, if there is one. <paramref name="searched"/> is how many of
+    /// its bytes are known not to hold an end, so a message that arrives in pieces isn't searched from its start again
+    /// for each piece; it's set back to 0 when a message is taken.
+    /// </summary>
+    protected abstract bool TryRead(ref ReadOnlySequence<byte> buffer, ref long searched, out byte[] message);
 
     /// <summary>What's left when the connection ends: the last message, without its end.</summary>
     protected virtual byte[] Last(ReadOnlySequence<byte> buffer) => buffer.ToArray();
@@ -68,15 +73,17 @@ internal abstract class Framing
     {
         public override string Ending => "\n";
 
-        protected override bool TryRead(ref ReadOnlySequence<byte> buffer, out byte[] message)
+        protected override bool TryRead(ref ReadOnlySequence<byte> buffer, ref long searched, out byte[] message)
         {
-            if (buffer.PositionOf((byte)'\n') is not { } end)
+            if (buffer.Slice(searched).PositionOf((byte)'\n') is not { } end)
             {
+                searched = buffer.Length;
                 message = [];
                 return false;
             }
             message = WithoutReturn(buffer.Slice(0, end));
             buffer = buffer.Slice(buffer.GetPosition(1, end));
+            searched = 0;
             return true;
         }
 
@@ -91,16 +98,19 @@ internal abstract class Framing
     {
         public override string Ending => text;
 
-        protected override bool TryRead(ref ReadOnlySequence<byte> buffer, out byte[] message)
+        protected override bool TryRead(ref ReadOnlySequence<byte> buffer, ref long searched, out byte[] message)
         {
-            var reader = new SequenceReader<byte>(buffer);
+            var reader = new SequenceReader<byte>(buffer.Slice(searched));
             if (!reader.TryReadTo(out ReadOnlySequence<byte> found, marker, advancePastDelimiter: true))
             {
+                // A marker may start in the last bytes and end in the next piece.
+                searched = Math.Max(0, buffer.Length - (marker.Length - 1));
                 message = [];
                 return false;
             }
-            message = found.ToArray();
+            message = buffer.Slice(0, found.End).ToArray();
             buffer = buffer.Slice(reader.Position);
+            searched = 0;
             return true;
         }
     }
@@ -112,7 +122,7 @@ internal abstract class Framing
 
         protected override long MinimumLimit => length;
 
-        protected override bool TryRead(ref ReadOnlySequence<byte> buffer, out byte[] message)
+        protected override bool TryRead(ref ReadOnlySequence<byte> buffer, ref long searched, out byte[] message)
         {
             if (buffer.Length < length)
             {

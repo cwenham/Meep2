@@ -413,6 +413,30 @@ public class ServerTests
     }
 
     [Test]
+    [Arguments(null, "one\r\ntwo\nthree")]
+    [Arguments("\r\n.\r\n", "one\r\n.\r\ntwo\r\n.\r\nthree")]
+    public async Task Tcp_framing_finds_ends_that_arrive_split_across_pieces(string? end, string sent)
+    {
+        // Two bytes at a time, so every end arrives in pieces and is searched for over several reads (E7).
+        var messages = new List<string>();
+        await foreach (var message in Framing.For(end, null).ReadAsync(new TrickleStream(Encoding.ASCII.GetBytes(sent), 2), 1024, CancellationToken.None))
+            messages.Add(Encoding.ASCII.GetString(message));
+
+        await Assert.That(messages).IsEquivalentTo(["one", "two", "three"]);
+    }
+
+    // Gives at most so many bytes for each read.
+    private sealed class TrickleStream(byte[] bytes, int piece) : MemoryStream(bytes)
+    {
+        public override int Read(byte[] buffer, int offset, int count) => base.Read(buffer, offset, Math.Min(count, piece));
+
+        public override int Read(Span<byte> buffer) => base.Read(buffer[..Math.Min(buffer.Length, piece)]);
+
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) =>
+            base.ReadAsync(buffer[..Math.Min(buffer.Length, piece)], cancellationToken);
+    }
+
+    [Test]
     public async Task Listen_and_Send_talk_over_tcp()
     {
         var port = TestServer.FreePort();
