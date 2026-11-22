@@ -280,13 +280,8 @@ public sealed record SendBroadcastParameters
 [Emits(typeof(WebSocketBinary))]
 [Emits(typeof(WebSocketConnected), When = nameof(SendWebSocketParameters.Connections))]
 [Emits(typeof(WebSocketDisconnected), When = nameof(SendWebSocketParameters.Connections))]
-public sealed class SendWebSocket(SendWebSocketParameters parameters) : APassthrough<Message>, IChosenByParameters<SendWebSocketParameters>, IAsyncDisposable, ISendsTo
+public sealed class SendWebSocket(SendWebSocketParameters parameters) : ConnectionSend<SendWebSocketParameters>(parameters), IChosenByParameters<SendWebSocketParameters>
 {
-    /// <inheritdoc/>
-    public Computed<string> Address => parameters.Url;
-
-    private readonly Connections _connections = new();
-
     /// <summary>Takes ws:// and wss:// addresses.</summary>
     public static string? WhyNot(SendWebSocketParameters parameters, Message message)
     {
@@ -298,30 +293,12 @@ public sealed class SendWebSocket(SendWebSocketParameters parameters) : APassthr
     private static bool IsWebSocket(string address, out Uri? uri) =>
         Uri.TryCreate(address, UriKind.Absolute, out uri) && (uri.Scheme == Uri.UriSchemeWs || uri.Scheme == Uri.UriSchemeWss);
 
-    /// <inheritdoc/>
-    protected override async ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
+    private protected override SharedClient? ClientFor(string url, ModuleContext context)
     {
-        if (message is ErrorMessage error)
-        {
-            context.LeftAlone(error);
-            return;
-        }
-        string url;
-        string? text;
-        try
-        {
-            url = parameters.Url.Evaluate(message);
-            text = parameters.Text?.Evaluate(message);
-        }
-        catch (EvaluationException exception)
-        {
-            context.EmitError(exception.Message, exception);
-            return;
-        }
         if (!IsWebSocket(url, out var uri))
         {
             context.EmitError($"Send.WebSocket needs a ws:// or wss:// address, not {url}");
-            return;
+            return null;
         }
 
         // A Meep host gets a connection from this Send alone, so its origin is exact (Q216); anywhere else, one connection
@@ -332,13 +309,9 @@ public sealed class SendWebSocket(SendWebSocketParameters parameters) : APassthr
         var origin = hostId is not null ? context.Origin : null;
         var own = origin is not null && MeepHosts.IsMeep(endpoint, uri!.Host, uri.Port);
         if (origin is not null)
-            _connections.Leave(WebSocketClient.Key(uri!, own ? null : origin));
-        var client = _connections.Join(WebSocketClient.Key(uri!, own ? origin : null), context, parameters.Connections, () => new WebSocketClient(uri!, parameters, hostId, own ? origin : null));
-        await Connections.SendAsync(client, message, text, null, parameters, context, cancellationToken).ConfigureAwait(false);
+            Joined.Leave(WebSocketClient.Key(uri!, own ? null : origin));
+        return Joined.Join(WebSocketClient.Key(uri!, own ? origin : null), context, Parameters.Connections, () => new WebSocketClient(uri!, Parameters, hostId, own ? origin : null));
     }
-
-    /// <summary>Leaves the connections it used, which close once nothing uses them.</summary>
-    public ValueTask DisposeAsync() => _connections.DisposeAsync();
 }
 
 /// <summary>Parameters for <see cref="SendWebSocket"/>.</summary>
@@ -378,13 +351,8 @@ public sealed record SendWebSocketParameters : SendConnectionParameters
 [Emits(typeof(TcpMessage))]
 [Emits(typeof(TcpConnected), When = nameof(SendTcpParameters.Connections))]
 [Emits(typeof(TcpDisconnected), When = nameof(SendTcpParameters.Connections))]
-public sealed class SendTcp(SendTcpParameters parameters) : APassthrough<Message>, IChosenByParameters<SendTcpParameters>, IAsyncDisposable, ISendsTo
+public sealed class SendTcp(SendTcpParameters parameters) : ConnectionSend<SendTcpParameters>(parameters), IChosenByParameters<SendTcpParameters>
 {
-    /// <inheritdoc/>
-    public Computed<string> Address => parameters.Url;
-
-    private readonly Connections _connections = new();
-
     /// <summary>Takes tcp:// addresses with a port, and one way of telling where the server's messages end.</summary>
     public static string? WhyNot(SendTcpParameters parameters, Message message)
     {
@@ -397,38 +365,17 @@ public sealed class SendTcp(SendTcpParameters parameters) : APassthrough<Message
         return null;
     }
 
-    /// <inheritdoc/>
-    protected override async ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
+    private protected override string? End => Parameters.End;
+
+    private protected override SharedClient? ClientFor(string url, ModuleContext context)
     {
-        if (message is ErrorMessage error)
-        {
-            context.LeftAlone(error);
-            return;
-        }
-        string url;
-        string? text;
-        try
-        {
-            url = parameters.Url.Evaluate(message);
-            text = parameters.Text?.Evaluate(message);
-        }
-        catch (EvaluationException exception)
-        {
-            context.EmitError(exception.Message, exception);
-            return;
-        }
         if (!Endpoints.TryTcp(url, out var host, out var port))
         {
             context.EmitError($"Send.TCP needs a tcp:// address with a port, not {url}");
-            return;
+            return null;
         }
-
-        var client = _connections.Join(TcpServerClient.Key(host, port), context, parameters.Connections, () => new TcpServerClient(url, host, port, parameters));
-        await Connections.SendAsync(client, message, text, parameters.End, parameters, context, cancellationToken).ConfigureAwait(false);
+        return Joined.Join(TcpServerClient.Key(host, port), context, Parameters.Connections, () => new TcpServerClient(url, host, port, Parameters));
     }
-
-    /// <summary>Leaves the connections it used, which close once nothing uses them.</summary>
-    public ValueTask DisposeAsync() => _connections.DisposeAsync();
 }
 
 /// <summary>Parameters for <see cref="SendTcp"/>.</summary>
