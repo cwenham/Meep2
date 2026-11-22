@@ -126,6 +126,38 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
 
     // Reads a request and emits it, then waits until its lease has closed. Kestrel finishes the response when this
     // returns, so nothing touches the request after that.
+    // A request's body: read whole, with its text, or left to stream.
+    private static async Task<ArrivedBody> ReadBodyAsync(Stream body, Microsoft.AspNetCore.Http.HttpRequest request, HttpListenParameters parameters, CancellationToken cancellationToken)
+    {
+        if (parameters.Stream)
+            return new ArrivedBody(default, "", new StreamedBody(body, "request body"));
+        var bytes = await Bodies.ReadAsync(body, request.ContentLength ?? -1, parameters.MaxSize, cancellationToken).ConfigureAwait(false);
+        return new ArrivedBody(bytes, EncodingOf(request.ContentType).GetString(bytes.Span), null);
+    }
+
+    // The message a request is, with its body.
+    private static HttpRequest MessageOf(HttpContext http, string url, ArrivedBody body)
+    {
+        var request = http.Request;
+        var connection = http.Connection;
+        return new HttpRequest
+        {
+            Method = request.Method,
+            Url = url,
+            Path = request.Path.Value ?? "/",
+            Query = Bodies.ToDictionary(request.Query),
+            Headers = Bodies.ToDictionary(request.Headers),
+            ContentType = request.ContentType,
+            Body = body.Bytes,
+            Text = body.Text,
+            RemoteAddress = connection.RemoteIpAddress is { } remote ? new IPEndPoint(remote, connection.RemotePort).ToString() : null,
+            Streamed = body.Streamed,
+        };
+    }
+
+    // A request's body as it goes into its message.
+    private sealed record ArrivedBody(ReadOnlyMemory<byte> Bytes, string Text, StreamedBody? Streamed);
+
     private async Task AcceptAsync(HttpContext http, ModuleContext context, CancellationToken cancellationToken)
     {
         var request = http.Request;
@@ -140,44 +172,21 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
         });
         try
         {
-            ReadOnlyMemory<byte> body = default;
-            var text = "";
-            StreamedBody? streamed = null;
-            if (parameters.Stream)
+            ArrivedBody body;
+            try
             {
-                streamed = new StreamedBody(requestBody, "request body");
+                body = await ReadBodyAsync(requestBody, request, parameters, cancellationToken).ConfigureAwait(false);
             }
-            else
+            catch (BodyTooLargeException)
             {
-                try
-                {
-                    body = await Bodies.ReadAsync(requestBody, request.ContentLength ?? -1, parameters.MaxSize, cancellationToken).ConfigureAwait(false);
-                }
-                catch (BodyTooLargeException)
-                {
-                    tally.Count(received: 1);
-                    await lease.AnswerAsync(413, Bodies.PlainText, Encoding.UTF8.GetBytes("The request's body is larger than this server accepts."), null, CancellationToken.None).ConfigureAwait(false);
-                    await lease.CloseAsync().ConfigureAwait(false);
-                    context.EmitError($"A request to {url} sent more than {parameters.MaxSize} bytes, so it was refused with 413.");
-                    return;
-                }
-                text = EncodingOf(request.ContentType).GetString(body.Span);
+                tally.Count(received: 1);
+                await lease.AnswerAsync(413, Bodies.PlainText, Encoding.UTF8.GetBytes("The request's body is larger than this server accepts."), null, CancellationToken.None).ConfigureAwait(false);
+                await lease.CloseAsync().ConfigureAwait(false);
+                context.EmitError($"A request to {url} sent more than {parameters.MaxSize} bytes, so it was refused with 413.");
+                return;
             }
 
-            var connection = http.Connection;
-            var emitting = new HttpRequest
-                {
-                    Method = request.Method,
-                    Url = url,
-                    Path = request.Path.Value ?? "/",
-                    Query = Bodies.ToDictionary(request.Query),
-                    Headers = Bodies.ToDictionary(request.Headers),
-                    ContentType = request.ContentType,
-                    Body = body,
-                    Text = text,
-                    RemoteAddress = connection.RemoteIpAddress is { } remote ? new IPEndPoint(remote, connection.RemotePort).ToString() : null,
-                    Streamed = streamed,
-                };
+            var emitting = MessageOf(http, url, body);
             if (traceParent is not null)
                 context.ContinueTrace(emitting, traceParent);
             tally.Count(received: 1);

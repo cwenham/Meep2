@@ -39,22 +39,8 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
     /// <inheritdoc/>
     protected override async ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
     {
-        string url;
-        try
-        {
-            url = parameters.Url.Evaluate(message);
-        }
-        catch (EvaluationException exception)
-        {
-            context.EmitError(exception.Message, exception);
+        if (!TryAddress(message, context, out var url, out var uri))
             return;
-        }
-
-        if (!Addresses.IsWeb(url, out var uri))
-        {
-            context.EmitError($"Fetch.HTTP needs an http or https address, not {url}");
-            return;
-        }
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(parameters.Timeout);
@@ -101,6 +87,26 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         {
             response?.Dispose();
         }
+    }
+
+    // The address worked out for a message, if it's one on the web. False, having emitted why, if it isn't.
+    private bool TryAddress(Message message, ModuleContext context, out string url, out Uri? uri)
+    {
+        uri = null;
+        try
+        {
+            url = parameters.Url.Evaluate(message);
+        }
+        catch (EvaluationException exception)
+        {
+            url = "";
+            context.EmitError(exception.Message, exception);
+            return false;
+        }
+        if (Addresses.IsWeb(url, out uri))
+            return true;
+        context.EmitError($"Fetch.HTTP needs an http or https address, not {url}");
+        return false;
     }
 
     /// <summary>The most redirects followed for one request, as <see cref="HttpClientHandler"/> follows by default.</summary>

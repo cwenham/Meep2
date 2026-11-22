@@ -184,17 +184,7 @@ public sealed class WebSocketListen(WebSocketListenParameters parameters) : ASou
             using var idle = parameters.IdleTimeout is { } timeout ? CloseWhenIdle(lease, timeout, reading.Token) : null;
             if (parameters.Connections)
             {
-                context.Emit(
-                    new WebSocketConnected
-                    {
-                        Url = lease.Url,
-                        RemoteAddress = lease.Remote,
-                        Connection = lease.Number,
-                        Path = request.Path.Value ?? "/",
-                        Query = Bodies.ToDictionary(request.Query),
-                        Headers = Bodies.ToDictionary(request.Headers),
-                    },
-                    lease);
+                context.Emit(Connected(lease, request), lease);
                 emitted = true;
             }
             try
@@ -220,9 +210,7 @@ public sealed class WebSocketListen(WebSocketListenParameters parameters) : ASou
             }
             catch (Exception exception) when (exception is WebSocketException or IOException or ObjectDisposedException or OperationCanceledException)
             {
-                reason = lease.IsClosed ? "The connection was closed from this end."
-                    : cancellationToken.IsCancellationRequested ? "The pipeline stopped."
-                    : $"The connection failed: {exception.Message}";
+                reason = WhyEnded(lease, exception, cancellationToken);
             }
             reading.Cancel();
 
@@ -234,6 +222,23 @@ public sealed class WebSocketListen(WebSocketListenParameters parameters) : ASou
             await lease.CloseAsync().ConfigureAwait(false);
         await lease.Closed.ConfigureAwait(false);
     }
+
+    // The message a client's connecting is, with the request it connected with.
+    private static WebSocketConnected Connected(WebSocketConnectionLease lease, AspRequest request) => new()
+    {
+        Url = lease.Url,
+        RemoteAddress = lease.Remote,
+        Connection = lease.Number,
+        Path = request.Path.Value ?? "/",
+        Query = Bodies.ToDictionary(request.Query),
+        Headers = Bodies.ToDictionary(request.Headers),
+    };
+
+    // Why a connection that failed while it was read ended, as its WebSocketDisconnected says.
+    private static string WhyEnded(WebSocketConnectionLease lease, Exception exception, CancellationToken cancellationToken) =>
+        lease.IsClosed ? "The connection was closed from this end."
+        : cancellationToken.IsCancellationRequested ? "The pipeline stopped."
+        : $"The connection failed: {exception.Message}";
 
     /// <summary>A message that arrived on a WebSocket, as Listen and Send emit it.</summary>
     internal static Message Received(Frame frame, string? url, string? remote, long connection) =>

@@ -438,36 +438,20 @@ public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Messa
             context.LeftAlone(error);
             return;
         }
-        string url;
-        string? text;
-        string? contentType;
-        try
-        {
-            url = parameters.Url.Evaluate(message);
-            text = parameters.Text?.Evaluate(message);
-            contentType = parameters.ContentType?.Evaluate(message);
-        }
-        catch (EvaluationException exception)
-        {
-            context.EmitError(exception.Message, exception);
+        if (Outgoing(message, context) is not { } request)
             return;
-        }
-        if (!Addresses.IsWeb(url, out var uri))
-        {
-            context.EmitError($"Send.HTTP needs an http or https address, not {url}");
-            return;
-        }
+        var (url, uri, text, contentType) = request;
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(parameters.Timeout);
-        var endpoint = Peers.EndpointOf(uri!);
+        var endpoint = Peers.EndpointOf(uri);
         var tally = endpoint is null ? Tally.None : context.Destination(endpoint);
         HttpResponseMessage? answer = null;
         try
         {
             using var content = await ContentAsync(message, text, contentType, context, tally, timeout.Token).ConfigureAwait(false);
             // A body is counted as it's sent, each time a redirect sends it again; a stream as it's read.
-            var reached = await HttpFetch.SendAsync(HttpMethod.Post, uri!, content, HttpCompletionOption.ResponseContentRead, context, timeout.Token, sending: sent => context.CountBytes(0, sent)).ConfigureAwait(false);
+            var reached = await HttpFetch.SendAsync(HttpMethod.Post, uri, content, HttpCompletionOption.ResponseContentRead, context, timeout.Token, sending: sent => context.CountBytes(0, sent)).ConfigureAwait(false);
             using var response = answer = reached.Response;
             tally = reached.Counted(endpoint, tally, context);
             tally.Count(sent: 1, received: 1, bytesSent: content is StreamContent ? 0 : content.Headers.ContentLength ?? 0);
@@ -493,6 +477,33 @@ public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Messa
             context.EmitError(exception.Message, exception);
         }
     }
+
+    // The address, text and content type worked out for a message. Null, having emitted why, if they can't be, or
+    // the address isn't on the web.
+    private Request? Outgoing(Message message, ModuleContext context)
+    {
+        string url;
+        string? text;
+        string? contentType;
+        try
+        {
+            url = parameters.Url.Evaluate(message);
+            text = parameters.Text?.Evaluate(message);
+            contentType = parameters.ContentType?.Evaluate(message);
+        }
+        catch (EvaluationException exception)
+        {
+            context.EmitError(exception.Message, exception);
+            return null;
+        }
+        if (Addresses.IsWeb(url, out var uri))
+            return new Request(url, uri!, text, contentType);
+        context.EmitError($"Send.HTTP needs an http or https address, not {url}");
+        return null;
+    }
+
+    // What one message sends: where to, and the text and its type, if they're given.
+    private sealed record Request(string Url, Uri Uri, string? Text, string? ContentType);
 
     private static async Task<HttpContent> ContentAsync(Message message, string? text, string? contentType, ModuleContext context, Tally tally, CancellationToken cancellationToken)
     {
