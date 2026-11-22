@@ -146,32 +146,13 @@ public static class VerbCatalogue
         null => null,
         string text => "\"" + text.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\"", "\\\"", StringComparison.Ordinal) + "\"",
         bool flag => flag ? "true" : "false",
-        TimeSpan span => Duration(span),
+        TimeSpan span => DurationText.Write(span),
         Enum choice => choice.ToString().ToLowerInvariant(),
         IFormattable number when value.GetType().IsPrimitive || value is decimal => number.ToString(null, CultureInfo.InvariantCulture),
         ICollection { Count: 0 } => null,
         _ when value.GetType().IsValueType && Equals(value, Activator.CreateInstance(value.GetType())) => null,
         _ => value.ToString(),
     };
-
-    // 100 seconds as 1m40s, as Meeplang reads durations.
-    private static string Duration(TimeSpan span)
-    {
-        if (span == TimeSpan.Zero)
-            return "0s";
-        var text = new StringBuilder();
-        void Part(int amount, string unit)
-        {
-            if (amount > 0)
-                text.Append(amount.ToString(CultureInfo.InvariantCulture)).Append(unit);
-        }
-        Part((int)span.TotalDays, "d");
-        Part(span.Hours, "h");
-        Part(span.Minutes, "m");
-        Part(span.Seconds, "s");
-        Part(span.Milliseconds, "ms");
-        return text.ToString();
-    }
 
     private static string NameOf(Type type) => ExpressionBinder.FriendlyName(type);
 

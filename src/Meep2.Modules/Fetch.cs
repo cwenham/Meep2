@@ -296,8 +296,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         return headers;
     }
 
-    internal static string Describe(TimeSpan time) =>
-        time.TotalSeconds >= 1 ? $"{time.TotalSeconds:0.###}s" : $"{time.TotalMilliseconds:0.###}ms";
+    internal static string Describe(TimeSpan time) => DurationText.Write(time);
 
     private static HttpClient CreateClient()
     {

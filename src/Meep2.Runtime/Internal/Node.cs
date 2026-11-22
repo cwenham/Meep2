@@ -1,4 +1,3 @@
-using System.Globalization;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
 
@@ -283,9 +282,5 @@ internal abstract class Node(Pipeline pipeline, NodeSpec spec)
         info.Inflection is { } inflection && inflection != info.Verb ? $"{info} ({inflection})" : info.ToString();
 
     /// <summary>A duration as Meeplang writes it: 250ms, 5s, 2m.</summary>
-    internal static string Describe(TimeSpan duration) =>
-        duration.TotalMilliseconds < 1000 ? $"{duration.TotalMilliseconds.ToString("0.###", CultureInfo.InvariantCulture)}ms"
-        : duration.TotalSeconds < 60 ? $"{duration.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s"
-        : duration.TotalMinutes < 60 ? $"{duration.TotalMinutes.ToString("0.###", CultureInfo.InvariantCulture)}m"
-        : $"{duration.TotalHours.ToString("0.###", CultureInfo.InvariantCulture)}h";
+    internal static string Describe(TimeSpan duration) => DurationText.Write(duration);
 }

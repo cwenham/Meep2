@@ -103,7 +103,7 @@ public sealed class Zip(ZipParameters parameters) : AInflection<Message>
                 break;
             }
             _due.Dequeue();
-            GiveUp(next, context, next.Expires ? " before it expired" : $" within {Written(parameters.Within!.Value)}");
+            GiveUp(next, context, next.Expires ? " before it expired" : $" within {DurationText.Write(parameters.Within!.Value)}");
         }
         Compact();
         return ValueTask.CompletedTask;
@@ -212,14 +212,6 @@ public sealed class Zip(ZipParameters parameters) : AInflection<Message>
     }
 
     private static long Ticks(TimeSpan time) => (long)(time.TotalSeconds * Stopwatch.Frequency);
-
-    private static string Written(TimeSpan time) => time switch
-    {
-        { TotalSeconds: < 1 } => $"{time.TotalMilliseconds.ToString("0.###", CultureInfo.InvariantCulture)}ms",
-        { TotalMinutes: < 1 } => $"{time.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s",
-        { TotalHours: < 1 } => $"{time.TotalMinutes.ToString("0.###", CultureInfo.InvariantCulture)}m",
-        _ => $"{time.TotalHours.ToString("0.###", CultureInfo.InvariantCulture)}h",
-    };
 
     private sealed class Waiting(Message message, int input, string key, long due, bool expires)
     {

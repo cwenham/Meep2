@@ -18,23 +18,5 @@ public static class Durations
     }
 
     /// <summary>Writes a duration as Meeplang does, such as 250ms, 30s or 1h30m.</summary>
-    public static string Format(TimeSpan duration)
-    {
-        if (duration < TimeSpan.Zero)
-            return "-" + Format(duration.Negate());
-        if (duration == TimeSpan.Zero)
-            return "0s";
-        var text = new System.Text.StringBuilder();
-        if (duration.Days > 0)
-            text.Append(duration.Days).Append('d');
-        if (duration.Hours > 0)
-            text.Append(duration.Hours).Append('h');
-        if (duration.Minutes > 0)
-            text.Append(duration.Minutes).Append('m');
-        if (duration.Seconds > 0)
-            text.Append(duration.Seconds).Append('s');
-        if (duration.Milliseconds > 0)
-            text.Append(duration.Milliseconds).Append("ms");
-        return text.Length > 0 ? text.ToString() : $"{duration.TotalMilliseconds:0.###}ms";
-    }
+    public static string Format(TimeSpan duration) => Meep2.SDK.Modules.DurationText.Write(duration);
 }
