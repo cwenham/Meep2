@@ -3,11 +3,8 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Meep2.Meeplang.Syntax;
-using NuGet.Common;
 using NuGet.Frameworks;
 using NuGet.Packaging;
-using NuGet.Protocol;
-using NuGet.Protocol.Core.Types;
 using NuGet.Versioning;
 
 namespace Meep2.Plugins;

@@ -25,9 +25,10 @@ internal sealed class DraftEditRun
     private List<Tracked> _tracked = []; // modules the edits wrote, in _followed's lines
     private readonly List<Pending> _pending = []; // and the lines of those written where the text didn't load
 
-    /// <summary>Starts from a draft whose shape is of <paramref name="syntax"/>.</summary>
-    public DraftEditRun(PipelineDraft draft, PipelineShape start, PipelineSyntax syntax, IReadOnlyList<SourceEdit> edits, Func<string, PipelineSyntax> parse, RegistryLookup registryFor)
+    /// <summary>Starts from a draft whose last text that loaded is <paramref name="syntax"/>.</summary>
+    public DraftEditRun(PipelineDraft draft, PipelineSyntax syntax, IReadOnlyList<SourceEdit> edits, Func<string, PipelineSyntax> parse, RegistryLookup registryFor)
     {
+        var start = draft.Shape ?? throw new ArgumentException("The draft's text doesn't load.", nameof(draft));
         _draft = draft;
         _edits = edits;
         _parse = parse;

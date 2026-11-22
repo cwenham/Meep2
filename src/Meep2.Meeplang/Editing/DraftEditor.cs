@@ -60,7 +60,7 @@ public static class DraftEditor
         ArgumentNullException.ThrowIfNull(registryFor);
         if (draft.Shape is not { } start || start.Syntax.Source.Text != syntax.Source.Text)
             throw new DraftEditException(-1, "The text doesn't load as it is, so its modules can't be found. Edits can be made once it loads.", []);
-        return await new DraftEditRun(draft, start, syntax, edits, parse, registryFor).RunAsync(cancellationToken).ConfigureAwait(false);
+        return await new DraftEditRun(draft, syntax, edits, parse, registryFor).RunAsync(cancellationToken).ConfigureAwait(false);
     }
 
     // +N: the module edit N (counting from 0) added, as added names it (Q198).
