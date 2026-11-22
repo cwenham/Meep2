@@ -99,190 +99,91 @@ public static class MeepCommand
         ArgumentNullException.ThrowIfNull(output);
         ArgumentNullException.ThrowIfNull(error);
         ArgumentNullException.ThrowIfNull(plugins);
-        PluginOptions Options(bool developerMode = false) => plugins with { DeveloperMode = plugins.DeveloperMode || developerMode };
-
-        switch (args)
+        var context = new CommandContext(plugins, output, error, cancellationToken);
+        return args switch
         {
-            case ["--help"] or ["-h"] or ["help"]:
-                await output.WriteLineAsync(Usage).ConfigureAwait(false);
-                return 0;
-            case ["--version"] or ["version"]:
-                await output.WriteLineAsync($"meep {Version} on .NET {Environment.Version}").ConfigureAwait(false);
-                return 0;
-            case ["run", .. var rest]:
-            {
-                if (HostSettings.Parse(rest, error) is not { Files: [_], Config: null } run)
-                {
-                    await error.WriteLineAsync("meep run takes one pipeline file, with --dev, --watch, --otlp <url>, --sample <share>, --meep-host-public, --meep-hosts <hosts> or --detach.").ConfigureAwait(false);
-                    return 2;
-                }
-                if (run.Detach)
-                    return await Detaching.StartAsync(run, plugins.Home, output, error, cancellationToken).ConfigureAwait(false);
-                // A run is a Meep host of its own, with an ID for this run: other Meep hosts count what it sends by
-                // it, and its spans and metrics carry it as service.instance.id.
-                var instance = Guid.NewGuid().ToString();
-                using var telemetry = Telemetry.Start(run.Otlp, run.Sample, instance);
-                if (run.MeepHostPublic)
-                    MeepHosts.AnswerAnyone = true;
-                MeepHosts.Configure(run.MeepHosts);
-                return await RunFileAsync(run.Files[0], Options(run.DeveloperMode), run.Watch, output, error, cancellationToken, instance).ConfigureAwait(false);
-            }
-            case ["daemon", "token", var name, .. var capabilities] when capabilities.Length > 0:
-                return await DaemonCommands.TokenAsync(name, string.Join(',', capabilities), Options(), output, error).ConfigureAwait(false);
-            case ["daemon", "install", .. var rest]:
-                return HostSettings.Parse(rest, error) is { Detach: false } install
-                    ? await DaemonCommands.InstallAsync(install, Options(), output, error, cancellationToken).ConfigureAwait(false)
-                    : 2;
-            case ["daemon", "socket"]:
-                return await DaemonCommands.SocketAsync(Options(), output, error, cancellationToken).ConfigureAwait(false);
-            case ["daemon", "uninstall"]:
-                return await DaemonCommands.UninstallAsync(Options(), output, error, cancellationToken).ConfigureAwait(false);
-            case ["daemon", .. var rest] when rest is not ["stop"]:
-            {
-                if (HostSettings.Parse(rest, error) is not { Detach: false } daemon)
-                {
-                    await error.WriteLineAsync("meep daemon takes pipeline files to start, with --dev, --otlp <url>, --sample <share>, --meep-host-public, --meep-hosts <hosts> or --config <file>. To run it in the background, use meep daemon install.").ConfigureAwait(false);
-                    return 2;
-                }
-                return await DaemonCommands.RunAsync(daemon, Options(daemon.DeveloperMode), output, error, cancellationToken).ConfigureAwait(false);
-            }
-            case ["daemon", "stop"] or ["start", ..] or ["list"] or ["stop", _] or ["stats", ..] or ["tap", ..] or ["inject", ..] or ["reload", ..] or ["source", _] or ["edit", ..]:
-            {
-                var code = await DaemonCommands.ClientAsync(args, Options(), output, error, cancellationToken).ConfigureAwait(false);
-                if (code >= 0)
-                    return code;
-                await error.WriteLineAsync($"meep doesn't understand: {string.Join(' ', args)}").ConfigureAwait(false);
-                await error.WriteLineAsync(Usage).ConfigureAwait(false);
-                return 2;
-            }
-            case ["keys", "trust", .. var key] when key.Length > 0:
-                return await KeysCommands.TrustAsync(key, Options(), output, error, cancellationToken).ConfigureAwait(false);
-            case ["keys", "trust"]:
-                await error.WriteLineAsync(KeysCommands.TrustUsage).ConfigureAwait(false);
-                return 2;
-            case ["keys", "list"]:
-                return await KeysCommands.ListAsync(Options(), output, error).ConfigureAwait(false);
-            case ["sign", .. var rest] when rest is [.., "--key", _] && rest.Length > 2:
-                return await KeysCommands.SignAsync(rest[..^2], rest[^1], Options(), output, error, cancellationToken).ConfigureAwait(false);
-            case ["sign", .. var rest] when rest.Length > 0 && !rest.Contains("--key"):
-                return await KeysCommands.SignAsync(rest, keyPath: null, Options(), output, error, cancellationToken).ConfigureAwait(false);
-            case ["pin", .. var rest] when rest.Length > 0:
-                return await Pinning.PinAsync(rest, output, error).ConfigureAwait(false);
-            case ["lsp"]:
-            {
-                // The language server for editors: LSP over standard input and output.
-                await using var input = Console.OpenStandardInput();
-                await using var stdout = Console.OpenStandardOutput();
-                return await new LanguageServer(input, stdout, Options() with { Offline = true }).RunAsync(cancellationToken).ConfigureAwait(false);
-            }
-            case []:
-                await error.WriteLineAsync(Usage).ConfigureAwait(false);
-                return 2;
-            default:
-                await error.WriteLineAsync($"meep doesn't understand: {string.Join(' ', args)}").ConfigureAwait(false);
-                await error.WriteLineAsync(Usage).ConfigureAwait(false);
-                return 2;
-        }
+            ["--help"] or ["-h"] or ["help"] => await WriteAsync(output, Usage, 0).ConfigureAwait(false),
+            ["--version"] or ["version"] => await WriteAsync(output, $"meep {Version} on .NET {Environment.Version}", 0).ConfigureAwait(false),
+            ["run", .. var rest] => await RunAsync(context, rest).ConfigureAwait(false),
+            ["daemon", "token", var name, .. var capabilities] when capabilities.Length > 0 =>
+                await DaemonCommands.TokenAsync(name, string.Join(',', capabilities), context.Options(), output, error).ConfigureAwait(false),
+            ["daemon", "install", .. var rest] => HostSettings.Parse(rest, error) is { Detach: false } install
+                ? await DaemonCommands.InstallAsync(install, context.Options(), output, error, cancellationToken).ConfigureAwait(false)
+                : 2,
+            ["daemon", "socket"] => await DaemonCommands.SocketAsync(context.Options(), output, error, cancellationToken).ConfigureAwait(false),
+            ["daemon", "uninstall"] => await DaemonCommands.UninstallAsync(context.Options(), output, error, cancellationToken).ConfigureAwait(false),
+            ["daemon", .. var rest] when rest is not ["stop"] => await DaemonAsync(context, rest).ConfigureAwait(false),
+            ["daemon", "stop"] or ["start", ..] or ["list"] or ["stop", _] or ["stats", ..] or ["tap", ..] or ["inject", ..] or ["reload", ..] or ["source", _] or ["edit", ..] =>
+                await ClientAsync(context, args).ConfigureAwait(false),
+            ["keys", "trust", .. var key] when key.Length > 0 => await KeysCommands.TrustAsync(key, context.Options(), output, error, cancellationToken).ConfigureAwait(false),
+            ["keys", "trust"] => await WriteAsync(error, KeysCommands.TrustUsage, 2).ConfigureAwait(false),
+            ["keys", "list"] => await KeysCommands.ListAsync(context.Options(), output, error).ConfigureAwait(false),
+            ["sign", .. var rest] when rest is [.., "--key", _] && rest.Length > 2 =>
+                await KeysCommands.SignAsync(rest[..^2], rest[^1], context.Options(), output, error, cancellationToken).ConfigureAwait(false),
+            ["sign", .. var rest] when rest.Length > 0 && !rest.Contains("--key") =>
+                await KeysCommands.SignAsync(rest, keyPath: null, context.Options(), output, error, cancellationToken).ConfigureAwait(false),
+            ["pin", .. var rest] when rest.Length > 0 => await Pinning.PinAsync(rest, output, error).ConfigureAwait(false),
+            ["lsp"] => await LspAsync(context).ConfigureAwait(false),
+            [] => await WriteAsync(error, Usage, 2).ConfigureAwait(false),
+            _ => await NotUnderstoodAsync(error, args).ConfigureAwait(false),
+        };
+    }
+
+    private static async Task<int> WriteAsync(TextWriter writer, string text, int code)
+    {
+        await writer.WriteLineAsync(text).ConfigureAwait(false);
+        return code;
+    }
+
+    private static async Task<int> NotUnderstoodAsync(TextWriter error, string[] args)
+    {
+        await error.WriteLineAsync($"meep doesn't understand: {string.Join(' ', args)}").ConfigureAwait(false);
+        await error.WriteLineAsync(Usage).ConfigureAwait(false);
+        return 2;
+    }
+
+    // meep run: runs one pipeline here, or in the background with --detach.
+    private static async Task<int> RunAsync(CommandContext context, string[] rest)
+    {
+        if (HostSettings.Parse(rest, context.Error) is not { Files: [_], Config: null } run)
+            return await WriteAsync(context.Error, "meep run takes one pipeline file, with --dev, --watch, --otlp <url>, --sample <share>, --meep-host-public, --meep-hosts <hosts> or --detach.", 2).ConfigureAwait(false);
+        if (run.Detach)
+            return await Detaching.StartAsync(run, context.Plugins.Home, context.Output, context.Error, context.Cancellation).ConfigureAwait(false);
+        // A run is a Meep host of its own, with an ID for this run: other Meep hosts count what it sends by
+        // it, and its spans and metrics carry it as service.instance.id.
+        var instance = Guid.NewGuid().ToString();
+        using var telemetry = Telemetry.Start(run.Otlp, run.Sample, instance);
+        if (run.MeepHostPublic)
+            MeepHosts.AnswerAnyone = true;
+        MeepHosts.Configure(run.MeepHosts);
+        return await new FileRun(context with { Plugins = context.Options(run.DeveloperMode) }, run.Files[0], run.Watch, instance).RunAsync().ConfigureAwait(false);
+    }
+
+    // meep daemon: runs the daemon in the foreground.
+    private static async Task<int> DaemonAsync(CommandContext context, string[] rest)
+    {
+        if (HostSettings.Parse(rest, context.Error) is not { Detach: false } daemon)
+            return await WriteAsync(context.Error, "meep daemon takes pipeline files to start, with --dev, --otlp <url>, --sample <share>, --meep-host-public, --meep-hosts <hosts> or --config <file>. To run it in the background, use meep daemon install.", 2).ConfigureAwait(false);
+        return await DaemonCommands.RunAsync(daemon, context.Options(daemon.DeveloperMode), context.Output, context.Error, context.Cancellation).ConfigureAwait(false);
+    }
+
+    // The commands that ask the daemon for something.
+    private static async Task<int> ClientAsync(CommandContext context, string[] args)
+    {
+        var code = await DaemonCommands.ClientAsync(args, context.Options(), context.Output, context.Error, context.Cancellation).ConfigureAwait(false);
+        return code >= 0 ? code : await NotUnderstoodAsync(context.Error, args).ConfigureAwait(false);
+    }
+
+    // The language server for editors: LSP over standard input and output.
+    private static async Task<int> LspAsync(CommandContext context)
+    {
+        await using var input = Console.OpenStandardInput();
+        await using var stdout = Console.OpenStandardOutput();
+        return await new LanguageServer(input, stdout, context.Options() with { Offline = true }).RunAsync(context.Cancellation).ConfigureAwait(false);
     }
 
     private static string Version =>
         typeof(MeepCommand).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion.Split('+')[0]
         ?? typeof(MeepCommand).Assembly.GetName().Version?.ToString()
         ?? "?";
-
-    // Runs the fixed bootstrap pipeline: Read the file, Parse it, Install its plugins, Build the pipeline, Host it.
-    private static async Task<int> RunFileAsync(string file, PluginOptions plugins, bool watch, TextWriter output, TextWriter error, CancellationToken cancellationToken, string? hostId = null)
-    {
-        PipelineWatcher? watcher = null;
-        var exitCode = 0;
-        void Log(string text)
-        {
-            lock (error)
-                error.WriteLine(text);
-        }
-        void Fail(int code, string? text)
-        {
-            Interlocked.CompareExchange(ref exitCode, code, 0);
-            if (text is not null)
-                Log(text);
-        }
-
-        var registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly);
-        registry.Add<WriteLine, WriteLineParameters>("WriteLine", parameters => new WriteLine(parameters, output));
-
-        var hosted = new PipelineOptions
-        {
-            HostId = hostId,
-            UnhandledError = e => Log(e.AnsweredBy is { } answerer
-                ? $"error from {e.EmittedBy?.ToString() ?? "the pipeline"}, answered by {answerer}: {e.Error}"
-                : $"error from {e.EmittedBy?.ToString() ?? "the pipeline"}: {e.Error}"),
-            Notice = Log,
-        };
-        var bootstrap = new PipelineOptions
-        {
-            UnhandledError = e =>
-            {
-                switch (e)
-                {
-                    case PipelineStoppedMessage:
-                        Fail(3, text: null); // the pipeline's notice already said why
-                        break;
-                    case MeeplangErrorMessage meeplang:
-                        Fail(1, string.Join(Environment.NewLine, meeplang.Diagnostics));
-                        break;
-                    default:
-                        Fail(1, $"error: {e.Error}");
-                        break;
-                }
-            },
-            Notice = Log,
-        };
-
-        // A file on this machine is read as it is; anything else, from its address, checked as it must be (goal 7).
-        PipelineAddress address;
-        try
-        {
-            address = PipelineAddress.Parse(file);
-        }
-        catch (FormatException exception)
-        {
-            Log(exception.Message);
-            return 2;
-        }
-        if (watch && !address.IsFile)
-        {
-            Log($"Only a file on this machine can be watched, and {file} isn't one.");
-            return 2;
-        }
-        var builder = new PipelineBuilder("bootstrap", bootstrap);
-        builder.Chain(
-            address.IsFile
-                ? builder.AddSource(() => new Read(new ReadParameters { Path = file }))
-                : builder.AddSource(() => new ReadPipeline(address, plugins, Console.In)),
-            builder.Add(() => new Parse()),
-            builder.Add(() => new Install(registry, new PluginInstaller(plugins))),
-            builder.Add(() => new Build(registry, hosted)),
-            builder.Add(() => new Host(error, running: built =>
-            {
-                Detaching.Running();
-                if (watch && watcher is null && built.Live is { } live)
-                {
-                    // --watch: the running pipeline follows its file (goal 4).
-                    var path = Path.GetFullPath(file);
-                    watcher = new PipelineWatcher(path, built.Pipeline.Name, token => Reloading.ReloadAsync(live, path, registry, plugins, token), Log, () => live.Syntax.Included.Select(i => i.Source.Path));
-                    Log($"Watching {path} for changes.");
-                }
-            })));
-
-        try
-        {
-            await using var pipeline = builder.Build();
-            await pipeline.RunAsync(cancellationToken).ConfigureAwait(false);
-            return exitCode;
-        }
-        finally
-        {
-            watcher?.Dispose();
-        }
-    }
 }
