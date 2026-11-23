@@ -4,10 +4,10 @@ Written 23 November 2026. Phase 5 of the plan in `refactoring.md`, the last: P1�
 
 ## Results
 
-- 9 commits: 8 for items kept (P1, P2, P3, E1, E3, E4, E6, E7), and this document, which also carries the benchmarks written for the items I dropped.
+- 9 commits: 8 for items kept (P1, P2, P3, E1, E3, E4, E6, E7), and this document, which also carries the benchmarks written for the items I dropped. After your answers, a tenth for Q250's `meep daemon revoke`.
 - Dropped, with their numbers below: P4 (both parts), E2 and E8.
 - The build has no warnings, with warnings as errors.
-- The whole suite passes: 701 of 701 (694 before, and 7 new tests).
+- The whole suite passes: 701 of 701 (694 before, and 7 new tests); 703 with Q250's two.
 - Every commit was built and tested on its own, in a scratch worktree, in order: all 9 build with no warnings, and all pass, from 696 tests at P1 to 701 at the last. None of the known flaky tests failed in those runs, nor in the dozen full runs I made while working.
 - Every verb's inflections come in the same order as on `main`, checked against the built `Meep2.Modules.dll` after each commit that touched Modules (P1 and E7). No inflection type or file moved or was added.
 
@@ -231,10 +231,22 @@ The graph's version is found by serialising the graph and comparing the text wit
 
 **Answer:** Okay, leave it for goal 9.
 
+Done: nothing to change now; it's for goal 9.
+
 **Q249.** The graph's version is found by serialising the graph and comparing it with the last (E1's other half), only when the graph is asked for or may have changed. Leave it as it is, or count a version up at each change, which would also count one for a restart that leaves the graph as it was? I'd leave it.
 
 **Answer:** Leave it.
 
+Done: nothing to change.
+
 **Q250.** With P3, a token taken out of the tokens file can still be used for up to a second. Is that all right, or should taking one out (there's no command for it yet) tell the daemon at once?
 
-**Answer:** 
+**Answer:** Add a `meep daemon revoke <name>` command.
+
+Done (012e9a0): `meep daemon revoke <name>` takes the token out of the tokens file, then asks a running daemon to read it at once (`POST /tokens/reload`, which needs control). Without a daemon running it says nothing was using the token; for a name it doesn't know it says there's no such token.
+
+Revoking also ends what the token opened. Before, a connection's capabilities were worked out once, when it connected, so a WebSocket, subscription, stats stream or tap opened with a token kept its rights for as long as it stayed open, which could be days after the token was taken out of the file; that was on `main` before this phase too. Now each request gets an `AccessGrant`, its capabilities and a cancellation token that fires when its token is revoked: a stream ends then, and a socket closes saying "Its token was revoked." A file edited by hand is noticed within a second of the next request that shows a token, and ends what the tokens taken out of it opened.
+
+Looking at the file again for a token it doesn't know is held to once every 100 ms, so a client showing bad tokens can't make it look on every request. In passing: P3 started its "last looked" times at `long.MinValue`, so the first subtraction from now overflowed; it did no harm there (the first token was found on the second look), but it would have stopped the first look here, and they now start far enough back not to overflow.
+
+Checking a token takes 3.38 ± 0.06 µs, as before, and allocates 312 B rather than 248 (the grant). Tests: revoking a token ends its stats stream and its WebSocket, refuses its next request, and leaves another token's socket working; and `meep daemon revoke` takes one token out of the file, leaves the other, and says when there was none. The suite passed 703 of 703, three times.
