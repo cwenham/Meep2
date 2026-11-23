@@ -37,6 +37,7 @@ internal sealed class DaemonApi(MeepDaemon daemon)
             ("GET", []) => Allowed(request, Capabilities.None, () => About(request.Capabilities)),
             ("POST", ["subscribe"]) => Allowed(request, Capabilities.Observe, () => Subscribe(request)),
             ("POST", ["stop"]) => Allowed(request, Capabilities.Control, Stop),
+            ("POST", ["tokens", "reload"]) => Allowed(request, Capabilities.Control, ReloadTokens),
             ("GET", ["pipelines"]) => Allowed(request, Capabilities.Observe, List),
             ("POST", ["pipelines"]) => await AllowedAsync(request, Capabilities.Control, () => StartAsync(request)).ConfigureAwait(false),
             ("GET", ["pipelines", var name]) => Allowed(request, Capabilities.Observe, () => Answer.Json(200, daemon.Find(name).Detail(), DaemonJson.Default.PipelineDetail)),
@@ -133,6 +134,14 @@ internal sealed class DaemonApi(MeepDaemon daemon)
     }
 
     private SubscribeReply Subscribe(ApiRequest request) => new(new Subscription(SubscriptionPlan.Parse(request.Json), daemon));
+
+    // Reads the tokens file now, as meep daemon revoke asks, ending what revoked tokens opened (Q250).
+    private Answer ReloadTokens()
+    {
+        foreach (var name in daemon.Access.Reload())
+            daemon.Log($"the token {name} was revoked");
+        return new Answer(204, null);
+    }
 
     private Answer Stop()
     {

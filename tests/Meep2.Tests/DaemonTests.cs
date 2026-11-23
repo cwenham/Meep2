@@ -281,17 +281,82 @@ public class DaemonTests
         var file = Path.Combine(folder.Path, "tokens");
         var first = DaemonTokens.Create(file, "first", Capabilities.Observe);
         var access = new DaemonAccess(file);
-        var before = access.CapabilitiesOf("Bearer " + first, null);
+        var before = access.GrantOf("Bearer " + first, null).Capabilities;
 
         var second = DaemonTokens.Create(file, "second", Capabilities.Control);
-        var made = access.CapabilitiesOf("Bearer " + second, null); // the file is read again for a token it doesn't know
+        var made = access.GrantOf("Bearer " + second, null).Capabilities; // the file is read again for a token it doesn't know
         File.WriteAllLines(file, File.ReadAllLines(file).Where(line => !line.StartsWith("first ", StringComparison.Ordinal)));
         await Task.Delay(TimeSpan.FromSeconds(1.2));
-        var gone = await Assert.That(() => access.CapabilitiesOf("Bearer " + first, null)).Throws<DaemonException>();
+        var gone = await Assert.That(() => access.GrantOf("Bearer " + first, null)).Throws<DaemonException>();
 
         await Assert.That(before).IsEqualTo(Capabilities.Observe);
         await Assert.That(made).IsEqualTo(Capabilities.Control);
         await Assert.That(gone!.Status).IsEqualTo(401);
+    }
+
+    [Test]
+    public async Task Revoking_a_token_ends_what_was_opened_with_it_at_once()
+    {
+        await using var lab = await DaemonLab.StartAsync();
+        await lab.Client.StartAsync(lab.Write("ticker.meep", Ticker));
+        var revoked = DaemonTokens.Create(lab.Options.TokensFile, "dashboard", Capabilities.Observe);
+        var kept = DaemonTokens.Create(lab.Options.TokensFile, "monitor", Capabilities.Observe);
+        using var dashboard = new DaemonClient(lab.Options.Socket, revoked);
+        using var monitor = new DaemonClient(lab.Options.Socket, kept);
+        await using var socket = await dashboard.OpenSocketAsync();
+        await using var other = await monitor.OpenSocketAsync();
+        using var limit = new CancellationTokenSource(Wait.Limit);
+        var open = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var watching = Task.Run(async () =>
+        {
+            try
+            {
+                await foreach (var _ in dashboard.WatchAsync("ticker", TimeSpan.FromMilliseconds(100), limit.Token))
+                    open.TrySetResult();
+            }
+            catch (Exception exception) when (exception is IOException or HttpRequestException)
+            {
+                // The stream was cut off.
+            }
+        });
+        await Wait.For(open.Task);
+
+        var taken = DaemonTokens.Revoke(lab.Options.TokensFile, "dashboard");
+        await lab.Client.ReloadTokensAsync();
+        await Wait.For(watching); // the stats stream ends, though it was asked for until the limit
+        JsonElement? frame;
+        while ((frame = await socket.ReceiveAsync(limit.Token)) is not null)
+        {
+        }
+        var refused = await Assert.That(async () => { await dashboard.ListAsync(); }).Throws<DaemonException>();
+        await other.SendAsync("1", "GET", "/");
+        var answered = await other.ReceiveAsync(limit.Token);
+
+        await Assert.That(taken).IsEqualTo(1);
+        await Assert.That(limit.IsCancellationRequested).IsFalse();
+        await Assert.That(refused!.Status).IsEqualTo(401);
+        await Assert.That(answered).IsNotNull(); // another token's socket carries on
+        await Assert.That(lab.Log.ToString()).Contains("the token dashboard was revoked");
+    }
+
+    [Test]
+    public async Task Meep_daemon_revoke_takes_a_token_out_and_says_when_there_was_none()
+    {
+        using var home = DaemonLab.ShortFolder();
+        var options = new PluginOptions { Home = home.Path };
+        var tokens = new DaemonOptions { Plugins = options }.TokensFile;
+        DaemonTokens.Create(tokens, "dashboard", Capabilities.Observe);
+        DaemonTokens.Create(tokens, "monitor", Capabilities.Observe);
+
+        var revoke = await Cli(options, "daemon", "revoke", "dashboard");
+        var again = await Cli(options, "daemon", "revoke", "dashboard");
+
+        await Assert.That(revoke.Code).IsEqualTo(0);
+        await Assert.That(revoke.Output).Contains("Revoked the token dashboard. No daemon is running, so nothing was using it.");
+        await Assert.That(File.ReadAllText(tokens)).DoesNotContain("dashboard");
+        await Assert.That(File.ReadAllText(tokens)).Contains("monitor");
+        await Assert.That(again.Code).IsEqualTo(1);
+        await Assert.That(again.Error).Contains("There's no token called dashboard.");
     }
 
     [Test]

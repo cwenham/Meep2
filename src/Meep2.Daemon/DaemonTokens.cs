@@ -46,6 +46,33 @@ public sealed class DaemonTokens
         return token;
     }
 
+    /// <summary>
+    /// Takes every token called <paramref name="name"/> out of the tokens file (Q250). Returns how many there were. A
+    /// running daemon notices within a second, or at once when told (<c>POST /tokens/reload</c>).
+    /// </summary>
+    public static int Revoke(string path, string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (!File.Exists(path))
+            return 0;
+        var lines = File.ReadAllLines(path);
+        var kept = lines.Where(line => NameOf(line) != name).ToList();
+        if (kept.Count == lines.Length)
+            return 0;
+        using (var file = new FileStream(path, Meep2.Shared.PrivateFolders.NewFile(FileMode.Create)))
+            file.Write(Encoding.UTF8.GetBytes(string.Concat(kept.Select(line => line + Environment.NewLine))));
+        return lines.Length - kept.Count;
+    }
+
+    /// <summary>The names of tokens here that <paramref name="next"/> doesn't have, or has with other capabilities.</summary>
+    internal IEnumerable<string> GoneFrom(DaemonTokens next) =>
+        _tokens
+            .Where(token => !next._tokens.Any(other => other.Name == token.Name && other.Capabilities == token.Capabilities && other.Hash.AsSpan().SequenceEqual(token.Hash)))
+            .Select(token => token.Name)
+            .Distinct(StringComparer.Ordinal);
+
+    private static string? NameOf(string line) => line.Split(' ', StringSplitOptions.RemoveEmptyEntries) is [var name, ..] ? name : null;
+
     /// <summary>The name and capabilities a token gives, or null if it isn't one.</summary>
     public (string Name, Capabilities Capabilities)? Find(string token)
     {

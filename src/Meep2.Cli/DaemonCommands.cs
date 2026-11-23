@@ -128,6 +128,34 @@ internal static class DaemonCommands
         }
     }
 
+    // meep daemon revoke <name>: takes the token out of the tokens file, then tells a running daemon, which closes what
+    // was opened with it (Q250).
+    public static async Task<int> RevokeAsync(string name, PluginOptions plugins, TextWriter output, TextWriter error, CancellationToken cancellationToken)
+    {
+        var options = new DaemonOptions { Plugins = plugins };
+        if (DaemonTokens.Revoke(options.TokensFile, name) is var revoked && revoked == 0)
+        {
+            await error.WriteLineAsync($"There's no token called {name}.").ConfigureAwait(false);
+            return 1;
+        }
+        var what = revoked == 1 ? $"the token {name}" : $"{revoked} tokens called {name}";
+        using var client = new DaemonClient(options.Socket, Environment.GetEnvironmentVariable("MEEP_TOKEN") is { Length: > 0 } token ? token : null);
+        try
+        {
+            await client.ReloadTokensAsync(cancellationToken).ConfigureAwait(false);
+            await output.WriteLineAsync($"Revoked {what}. The daemon has closed anything that was using it.").ConfigureAwait(false);
+        }
+        catch (DaemonException exception) when (exception.Status == 0)
+        {
+            await output.WriteLineAsync($"Revoked {what}. No daemon is running, so nothing was using it.").ConfigureAwait(false);
+        }
+        catch (DaemonException exception)
+        {
+            await output.WriteLineAsync($"Revoked {what}, but couldn't tell the daemon ({exception.Message}). It stops working within a second, and what it has open closes when the daemon next reads its tokens.").ConfigureAwait(false);
+        }
+        return 0;
+    }
+
     // meep daemon socket: where the daemon's control socket is, in full, then its ID, a line each, so that
     // ssh host meep daemon socket can come before forwarding it with ssh -L (Q209). The ID is the running daemon's,
     // or the one it will take when it starts; whether it's running goes to standard error.

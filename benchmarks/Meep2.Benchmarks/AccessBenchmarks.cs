@@ -24,5 +24,5 @@ public class AccessBenchmarks
     public void Cleanup() => Directory.Delete(_folder, recursive: true);
 
     [Benchmark]
-    public Capabilities CheckToken() => _access.CapabilitiesOf(_authorization, null);
+    public Capabilities CheckToken() => _access.GrantOf(_authorization, null).Capabilities;
 }

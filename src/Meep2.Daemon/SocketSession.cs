@@ -50,7 +50,8 @@ internal sealed class SocketSession(
     private readonly Lock _subscribing = new();
     private readonly ConcurrentDictionary<Task, bool> _working = new();
 
-    public async Task RunAsync(CancellationToken cancellationToken)
+    /// <summary>Serves the socket until the client goes or <paramref name="cancellationToken"/> is cancelled, then closes it saying <paramref name="why"/>.</summary>
+    public async Task RunAsync(Func<string> why, CancellationToken cancellationToken)
     {
         var sending = SendAllAsync(cancellationToken);
         try
@@ -68,7 +69,7 @@ internal sealed class SocketSession(
             await Task.WhenAll(_working.Keys).ConfigureAwait(false);
             _outgoing.Writer.TryComplete();
             await sending.ConfigureAwait(false);
-            await CloseAsync(cancellationToken.IsCancellationRequested ? "The daemon is stopping." : "Goodbye.").ConfigureAwait(false);
+            await CloseAsync(why()).ConfigureAwait(false);
         }
     }
 

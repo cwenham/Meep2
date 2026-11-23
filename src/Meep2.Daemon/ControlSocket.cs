@@ -106,14 +106,31 @@ internal sealed class ControlSocket(DaemonAccess access, Func<ApiRequest, Task<A
     {
         try
         {
-            var capabilities = access.CapabilitiesOf(context.Request.Headers.Authorization.ToString(), PeerOf(context));
-            if (context.Request.Path == "/ws")
+            var grant = access.GrantOf(context.Request.Headers.Authorization.ToString(), PeerOf(context));
+            var capabilities = grant.Capabilities;
+            // A stream or socket opened with a token ends when the token is revoked, as when the client goes (Q250).
+            var aborted = context.RequestAborted;
+            using var ending = grant.Revoked.CanBeCanceled ? CancellationTokenSource.CreateLinkedTokenSource(aborted, grant.Revoked) : null;
+            if (ending is not null)
+                context.RequestAborted = ending.Token;
+            try
             {
-                await SocketAsync(context, capabilities).ConfigureAwait(false);
-                return;
+                if (context.Request.Path == "/ws")
+                {
+                    await SocketAsync(context, grant).ConfigureAwait(false);
+                    return;
+                }
+                var request = await ReadRequestAsync(context, capabilities).ConfigureAwait(false);
+                await ReplyAsync(context, await route(request).ConfigureAwait(false)).ConfigureAwait(false);
             }
-            var request = await ReadRequestAsync(context, capabilities).ConfigureAwait(false);
-            await ReplyAsync(context, await route(request).ConfigureAwait(false)).ConfigureAwait(false);
+            catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+            {
+                // The client went away, or its token was revoked.
+            }
+            finally
+            {
+                context.RequestAborted = aborted;
+            }
         }
         catch (DaemonException exception)
         {
@@ -211,13 +228,14 @@ internal sealed class ControlSocket(DaemonAccess access, Func<ApiRequest, Task<A
     }
 
     // A WebSocket that carries the API both ways (Q108).
-    private async Task SocketAsync(HttpContext context, Capabilities capabilities)
+    private async Task SocketAsync(HttpContext context, AccessGrant grant)
     {
         if (!context.WebSockets.IsWebSocketRequest)
             throw new DaemonException(400, "/ws is a WebSocket. Connect to it with a WebSocket client, or use the HTTP API.");
         using var socket = await context.WebSockets.AcceptWebSocketAsync().ConfigureAwait(false);
         using var ending = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted, stopping);
-        await new SocketSession(socket, capabilities, route, ProblemOf).RunAsync(ending.Token).ConfigureAwait(false);
+        var why = () => grant.Revoked.IsCancellationRequested ? "Its token was revoked." : stopping.IsCancellationRequested ? "The daemon is stopping." : "Goodbye.";
+        await new SocketSession(socket, grant.Capabilities, route, ProblemOf).RunAsync(why, ending.Token).ConfigureAwait(false);
     }
 
     private static async Task WriteAsync(HttpContext context, Action<Utf8JsonWriter> body)

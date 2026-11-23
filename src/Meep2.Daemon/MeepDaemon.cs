@@ -65,11 +65,15 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     private ControlSocket? _control;
     private int _stopped;
 
+    /// <summary>Who may do what through the API, from the tokens file.</summary>
+    internal DaemonAccess Access { get; }
+
     /// <summary>Makes a daemon. Start it with <see cref="StartAsync"/> or <see cref="RunAsync"/>.</summary>
     public MeepDaemon(DaemonOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         _options = options;
+        Access = new DaemonAccess(options.TokensFile);
     }
 
     /// <summary>The control socket's path.</summary>
@@ -146,7 +150,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
             Meep2.Modules.MeepHosts.AnswerAnyone = true;
         _meepHosts = Meep2.Modules.MeepHosts.Keep(_options.MeepHostsFile);
 
-        _control = new ControlSocket(new DaemonAccess(_options.TokensFile), new DaemonApi(this).RouteAsync, _stopping.Token);
+        _control = new ControlSocket(Access, new DaemonApi(this).RouteAsync, _stopping.Token);
         await _control.StartAsync(socket, cancellationToken).ConfigureAwait(false);
         Log($"meep daemon {Version} is listening on {socket}");
         _pruning = PruneEveryAsync(_stopping.Token);
