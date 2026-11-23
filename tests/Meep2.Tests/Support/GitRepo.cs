@@ -36,6 +36,11 @@ public static class GitRepo
         Check(Run(folder, "config", "gpg.format", "ssh"));
         Check(Run(folder, "config", "user.signingkey", key));
         Check(Run(folder, "config", "gpg.ssh.allowedSignersFile", Path.Combine(folder, ".git", "allowed_signers")));
+        // Where the folder is Meep's home too, as in the write-back tests, a running daemon writes its own files in
+        // daemon/ (meep-hosts by way of meep-hosts.new, renamed), which git add could list and then not find. They
+        // aren't the test's to commit, so git leaves them out.
+        Directory.CreateDirectory(Path.Combine(folder, ".git", "info"));
+        File.AppendAllText(Path.Combine(folder, ".git", "info", "exclude"), "/daemon/\n");
         Check(Run(folder, "add", "-A"));
         Check(Run(folder, "commit", "-q", "-m", "First"));
     }
