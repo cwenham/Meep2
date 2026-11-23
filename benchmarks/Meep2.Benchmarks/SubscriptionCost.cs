@@ -46,6 +46,8 @@ internal static class SubscriptionCost
 
         await Task.Delay(TimeSpan.FromSeconds(7)); // so tiered compilation has settled
         PerUpdate(daemon);
+        if (args.Contains("--ticks-only"))
+            return 0;
 
         var names = Enumerable.Range(0, pipelines).Select(i => $"p{i:00}").ToList();
         var phases = new (string Name, Func<ClientWebSocket, Task> Start)[]
@@ -181,6 +183,7 @@ internal static class SubscriptionCost
             ("CBOR, links only", """{"encoding": "cbor", "pipelines": {"*": {"links": {"*": "100ms"}}}}"""),
             ("CBOR, totals only", """{"encoding": "cbor", "pipelines": {"*": {"totals": "100ms"}}}"""),
             ("CBOR, timing only", """{"encoding": "cbor", "pipelines": {"*": {"timing": {"*": "100ms"}}}}"""),
+            ("CBOR, list and host only", """{"encoding": "cbor", "list": "100ms", "host": "100ms"}"""),
             ("CBOR, nothing", """{"encoding": "cbor", "list": "1h"}"""),
         })
         {

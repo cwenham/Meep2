@@ -10,12 +10,16 @@ using Meep2.Runtime;
 namespace Meep2.Benchmarks;
 
 /// <summary>
-/// What changing a running pipeline costs (goal 4): applying new text to a running pipeline of 20 modules, matching
-/// its modules, and editing its text.
+/// What changing a running pipeline costs (goal 4): applying new text to a running pipeline of 20 modules, or 503
+/// (P4), matching its modules, and editing its text.
 /// </summary>
 [MemoryDiagnoser]
 public class LiveBenchmarks
 {
+    /// <summary>Branches of four modules under the source: 4 makes 20 modules, 125 makes 503.</summary>
+    [Params(4, 125)]
+    public int Branches { get; set; } = 4;
+
     private LivePipeline _live = null!;
     private Task _running = null!;
     private PipelineSyntax _a = null!;
@@ -29,8 +33,8 @@ public class LiveBenchmarks
         var registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly);
         registry.Add<WriteLine, WriteLineParameters>("WriteLine", p => new WriteLine(p, TextWriter.Null));
         _registry = registry;
-        _a = Parse(Text(limit: 2));
-        _b = Parse(Text(limit: 3));
+        _a = Parse(Text(limit: 2, Branches));
+        _b = Parse(Text(limit: 3, Branches));
         _live = LivePipeline.Load(_a, registry).Value!;
         _running = _live.Pipeline.RunAsync();
     }
@@ -67,11 +71,12 @@ public class LiveBenchmarks
 
     private static PipelineSyntax Parse(string text) => MeeplangParser.Parse(new SourceFile("live.meep", text));
 
-    // A source with four branches of a Where and three modules each: 20 modules, one of whose parameters changes.
-    private static string Text(int limit)
+    // A source with branches of a Where and three modules each, and three more modules: with four branches, 20
+    // modules, one of whose parameters changes.
+    private static string Text(int limit, int branches)
     {
         var text = new StringBuilder("// A pipeline to change while it runs.\nInterval 1h\n");
-        for (var branch = 0; branch < 4; branch++)
+        for (var branch = 0; branch < branches; branch++)
         {
             text.Append($"    Where msg.Count > {(branch == 0 ? limit : branch)}   // branch {branch}\n");
             text.Append("        Where msg.Count < 1000\n");

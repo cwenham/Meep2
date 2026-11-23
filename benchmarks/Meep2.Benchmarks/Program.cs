@@ -1,7 +1,7 @@
 using BenchmarkDotNet.Running;
 
 // What a subscription costs against the stats streams, measured over a running daemon rather than by BenchmarkDotNet:
-// dotnet run -c Release -- subscriptions [--pipelines 50] [--modules 20] [--seconds 10] [--tick-ms 10]
+// dotnet run -c Release -- subscriptions [--pipelines 50] [--modules 20] [--seconds 10] [--tick-ms 10] [--ticks-only]
 if (args is ["subscriptions", ..])
     return await Meep2.Benchmarks.SubscriptionCost.RunAsync(args);
 
