@@ -3,7 +3,9 @@ using System.Text;
 using Meep2.Git;
 using Meep2.Meeplang.Hosting;
 using Meep2.Meeplang.Parsing;
+using Meep2.Meeplang.Syntax;
 using Meep2.Plugins;
+using Meep2.Shared;
 
 namespace Meep2.Daemon;
 
@@ -27,7 +29,11 @@ public static class PipelineSources
     /// <param name="plugins">Meep's folder, for its cache and the keys you trust.</param>
     /// <param name="stdin">Standard input, for <c>-</c>.</param>
     /// <exception cref="PipelineSourceException">It couldn't be read, or isn't signed or pinned as it must be.</exception>
-    public static async Task<PipelineText> ReadAsync(PipelineAddress address, PluginOptions plugins, TextReader? stdin, CancellationToken cancellationToken)
+    public static Task<PipelineText> ReadAsync(PipelineAddress address, PluginOptions plugins, TextReader? stdin, CancellationToken cancellationToken) =>
+        ReadAsync(address, plugins, stdin, s_downloadLimit, cancellationToken);
+
+    /// <summary>Reads a pipeline, giving a file from a URL <paramref name="downloadLimit"/> to arrive, rather than 30 seconds.</summary>
+    internal static async Task<PipelineText> ReadAsync(PipelineAddress address, PluginOptions plugins, TextReader? stdin, TimeSpan downloadLimit, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(address);
         ArgumentNullException.ThrowIfNull(plugins);
@@ -42,7 +48,7 @@ public static class PipelineSources
             case PipelineOrigin.Url:
             {
                 Fetchable(address.Location);
-                var bytes = await GetAsync(address.Location, cancellationToken).ConfigureAwait(false)
+                var bytes = await GetAsync(address.Location, downloadLimit, cancellationToken).ConfigureAwait(false)
                     ?? throw new PipelineSourceException($"There's no pipeline at {address.Location}.");
                 string because;
                 if (address.Sha256 is { } pin)
@@ -53,9 +59,11 @@ public static class PipelineSources
                 }
                 else
                 {
-                    because = UrlTrust(bytes, address.Location, await GetTextAsync(PipelineSignature.FileFor(address.Location), cancellationToken).ConfigureAwait(false), plugins);
+                    because = UrlTrust(bytes, address.Location, await GetTextAsync(PipelineSignature.FileFor(address.Location), downloadLimit, cancellationToken).ConfigureAwait(false), plugins);
                 }
-                return new PipelineText(address.Location, Encoding.UTF8.GetString(bytes)) { Includes = new UrlIncludes(plugins), TrustedBecause = because };
+                var text = Encoding.UTF8.GetString(bytes);
+                var includes = await FetchedIncludes.FetchAsync(new SourceFile(address.Location, text), new UrlIncludes(plugins, downloadLimit), cancellationToken).ConfigureAwait(false);
+                return new PipelineText(address.Location, text) { Includes = includes, TrustedBecause = because };
             }
             case PipelineOrigin.Git:
             {
@@ -141,11 +149,12 @@ public static class PipelineSources
     /// <summary>The largest pipeline, include or signature fetched from a URL (S5): 4 MiB.</summary>
     internal const int MaxDownload = 4 * 1024 * 1024;
 
-    // Reads a file from a URL, up to the limit, or null if it isn't there.
-    private static async Task<byte[]?> GetAsync(string url, CancellationToken cancelled)
+    // Reads a file from a URL, up to the limit, or null if it isn't there. One that takes longer than the time it has
+    // fails saying so, rather than with a bare cancellation (Q243).
+    private static async Task<byte[]?> GetAsync(string url, TimeSpan downloadLimit, CancellationToken cancelled)
     {
         using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancelled);
-        limit.CancelAfter(s_downloadLimit);
+        limit.CancelAfter(downloadLimit);
         var cancellationToken = limit.Token;
         try
         {
@@ -171,27 +180,32 @@ public static class PipelineSources
         {
             throw new PipelineSourceException($"Couldn't fetch {url}: {exception.Message}", exception);
         }
+        catch (OperationCanceledException exception) when (!cancelled.IsCancellationRequested)
+        {
+            throw new PipelineSourceException($"{url} didn't arrive within {DurationText.Write(downloadLimit)}.", exception);
+        }
     }
 
     private static PipelineSourceException TooLarge(string url) =>
         new($"{url} is larger than {MaxDownload / (1024 * 1024)} MiB, the most Meep reads for a pipeline, an include or a signature, so it isn't read.");
 
-    private static async Task<string?> GetTextAsync(string url, CancellationToken cancellationToken) =>
-        await GetAsync(url, cancellationToken).ConfigureAwait(false) is { } bytes ? Encoding.UTF8.GetString(bytes) : null;
+    private static async Task<string?> GetTextAsync(string url, TimeSpan downloadLimit, CancellationToken cancellationToken) =>
+        await GetAsync(url, downloadLimit, cancellationToken).ConfigureAwait(false) is { } bytes ? Encoding.UTF8.GetString(bytes) : null;
 
-    // Includes beside a pipeline from a URL, each signed by a key you trust, unless its #include line pins it.
-    private sealed class UrlIncludes(PluginOptions plugins) : IIncludeReader
+    // Includes beside a pipeline from a URL, each signed by a key you trust, unless its #include line pins it. They're
+    // fetched before the pipeline is parsed (P1), so nothing waits on the network while holding a thread.
+    private sealed class UrlIncludes(PluginOptions plugins, TimeSpan downloadLimit) : IIncludeFetcher
     {
         public string Resolve(string included, string from) => included == from ? from : new Uri(new Uri(from), included).ToString();
 
-        public byte[]? Read(string address, bool pinned)
+        public async Task<byte[]?> FetchAsync(string address, bool pinned, CancellationToken cancellationToken)
         {
             try
             {
                 Fetchable(address);
-                var bytes = GetAsync(address, CancellationToken.None).GetAwaiter().GetResult();
+                var bytes = await GetAsync(address, downloadLimit, cancellationToken).ConfigureAwait(false);
                 if (bytes is not null && !pinned)
-                    UrlTrust(bytes, address, GetTextAsync(PipelineSignature.FileFor(address), CancellationToken.None).GetAwaiter().GetResult(), plugins);
+                    UrlTrust(bytes, address, await GetTextAsync(PipelineSignature.FileFor(address), downloadLimit, cancellationToken).ConfigureAwait(false), plugins);
                 return bytes;
             }
             catch (PipelineSourceException exception)

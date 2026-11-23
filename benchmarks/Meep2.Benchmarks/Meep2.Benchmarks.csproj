@@ -17,4 +17,8 @@
     <!-- Referenced as well as loaded as a plugin, to compare the same module both ways. -->
     <ProjectReference Include="..\..\tests\Meep2.TestPlugin\Meep2.TestPlugin.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- meep lsp's framing, compiled in here, since the CLI is a program of its own (E6). -->
+    <Compile Include="..\..\src\Meep2.Cli\Lsp\JsonRpcChannel.cs" Link="Linked\JsonRpcChannel.cs" />
+  </ItemGroup>
 </Project>

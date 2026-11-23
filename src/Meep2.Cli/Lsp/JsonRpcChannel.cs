@@ -12,6 +12,9 @@ namespace Meep2.Cli;
 /// <param name="output">Where replies go.</param>
 internal sealed class JsonRpcChannel(Stream input, Stream output)
 {
+    // Read through a buffer, so a header's bytes come from memory rather than a read of the pipe each (E6).
+    private readonly BufferedStream _input = new(input, 16 * 1024);
+
     /// <summary>The largest message it reads: 32 MiB, far more than any file's text.</summary>
     internal const int MaxMessage = 32 * 1024 * 1024;
 
@@ -56,7 +59,7 @@ internal sealed class JsonRpcChannel(Stream input, Stream output)
                 continue;
             }
             var body = new byte[length.Value];
-            await input.ReadExactlyAsync(body, cancellationToken).ConfigureAwait(false);
+            await _input.ReadExactlyAsync(body, cancellationToken).ConfigureAwait(false);
             try
             {
                 return JsonNode.Parse(body) ?? new JsonObject();
@@ -101,7 +104,7 @@ internal sealed class JsonRpcChannel(Stream input, Stream output)
         var buffer = new byte[81920];
         while (length > 0)
         {
-            var read = await input.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, length)), cancellationToken).ConfigureAwait(false);
+            var read = await _input.ReadAsync(buffer.AsMemory(0, (int)Math.Min(buffer.Length, length)), cancellationToken).ConfigureAwait(false);
             if (read == 0)
                 return;
             length -= read;
@@ -114,7 +117,7 @@ internal sealed class JsonRpcChannel(Stream input, Stream output)
         var one = new byte[1];
         while (true)
         {
-            if (await input.ReadAsync(one, cancellationToken).ConfigureAwait(false) == 0)
+            if (await _input.ReadAsync(one, cancellationToken).ConfigureAwait(false) == 0)
                 return line.Length == 0 ? null : line.ToString();
             if (one[0] == '\n')
                 return line.ToString().TrimEnd('\r');

@@ -35,6 +35,7 @@ public static class MeepCommand
                                                 as for ssh host meep daemon socket before ssh -L
           meep daemon token <name> <capabilities>
                                                 Make a token for a client that may only observe, inject or control
+          meep daemon revoke <name>             Take a token away, closing what was opened with it
           meep start [--dev] [--watch] <pipeline>
                                                 Start a pipeline in the daemon, from any address meep run takes;
                                                 - sends standard input, named with --name <name>
@@ -102,6 +103,7 @@ public static class MeepCommand
             ["run", .. var rest] => await RunAsync(context, rest).ConfigureAwait(false),
             ["daemon", "token", var name, .. var capabilities] when capabilities.Length > 0 =>
                 await DaemonCommands.TokenAsync(name, string.Join(',', capabilities), context.Options(), output, error).ConfigureAwait(false),
+            ["daemon", "revoke", var name] => await DaemonCommands.RevokeAsync(name, context.Options(), output, error, cancellationToken).ConfigureAwait(false),
             ["daemon", "install", .. var rest] => HostSettings.Parse(rest, error) is { Detach: false } install
                 ? await DaemonCommands.InstallAsync(install, context.Options(), output, error, cancellationToken).ConfigureAwait(false)
                 : 2,

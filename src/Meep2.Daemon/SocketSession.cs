@@ -50,7 +50,8 @@ internal sealed class SocketSession(
     private readonly Lock _subscribing = new();
     private readonly ConcurrentDictionary<Task, bool> _working = new();
 
-    public async Task RunAsync(CancellationToken cancellationToken)
+    /// <summary>Serves the socket until the client goes or <paramref name="cancellationToken"/> is cancelled, then closes it saying <paramref name="why"/>.</summary>
+    public async Task RunAsync(Func<string> why, CancellationToken cancellationToken)
     {
         var sending = SendAllAsync(cancellationToken);
         try
@@ -68,7 +69,7 @@ internal sealed class SocketSession(
             await Task.WhenAll(_working.Keys).ConfigureAwait(false);
             _outgoing.Writer.TryComplete();
             await sending.ConfigureAwait(false);
-            await CloseAsync(cancellationToken.IsCancellationRequested ? "The daemon is stopping." : "Goodbye.").ConfigureAwait(false);
+            await CloseAsync(why()).ConfigureAwait(false);
         }
     }
 
@@ -319,19 +320,26 @@ internal sealed class SocketSession(
 
     private static byte[] Frame(string? id, Action<Utf8JsonWriter> rest)
     {
-        var buffer = new ArrayBufferWriter<byte>();
-        using (var writer = new Utf8JsonWriter(buffer))
+        var buffer = ScratchBuffer.Rent();
+        try
         {
-            writer.WriteStartObject();
-            writer.WritePropertyName("id");
-            if (id is null)
-                writer.WriteNullValue();
-            else
-                writer.WriteRawValue(id, skipInputValidation: true);
-            rest(writer);
-            writer.WriteEndObject();
+            using (var writer = new Utf8JsonWriter(buffer))
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("id");
+                if (id is null)
+                    writer.WriteNullValue();
+                else
+                    writer.WriteRawValue(id, skipInputValidation: true);
+                rest(writer);
+                writer.WriteEndObject();
+            }
+            return buffer.WrittenSpan.ToArray();
         }
-        return buffer.WrittenSpan.ToArray();
+        finally
+        {
+            ScratchBuffer.Return(buffer);
+        }
     }
 
     // One sender, so frames never interleave. Once the socket fails, what's queued is let go, so nothing waits on it.

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics.Metrics;
 using System.Net.Sockets;
@@ -21,6 +22,22 @@ namespace Meep2.Tests;
 /// </summary>
 public class SubscriptionTests
 {
+    [Test]
+    public async Task A_scratch_buffer_is_used_again_empty_and_never_twice_at_once()
+    {
+        var outer = ScratchBuffer.Rent();
+        outer.Write("outer"u8);
+        var inner = ScratchBuffer.Rent(); // rented while the first is in use, as a write inside a write would
+        ScratchBuffer.Return(inner);
+        ScratchBuffer.Return(outer);
+        var again = ScratchBuffer.Rent();
+        ScratchBuffer.Return(again);
+
+        await Assert.That(ReferenceEquals(inner, outer)).IsFalse();
+        await Assert.That(ReferenceEquals(again, outer)).IsTrue();
+        await Assert.That(again.WrittenCount).IsEqualTo(0);
+    }
+
     [Test]
     public async Task Sections_and_totals_are_named_where_the_code_reaches_them()
     {

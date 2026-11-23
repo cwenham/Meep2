@@ -9,7 +9,11 @@ using NuGet.Versioning;
 namespace Meep2.Plugins;
 
 /// <summary>A package NuGet resolved: the version chosen, and the package as downloaded.</summary>
-internal sealed record ResolvedPackage(NuGetVersion Version, byte[] Package);
+internal sealed record ResolvedPackage(NuGetVersion Version, ArraySegment<byte> Package)
+{
+    /// <summary>The package as a stream to read, over its bytes rather than a copy.</summary>
+    public MemoryStream Open() => new(Package.Array!, Package.Offset, Package.Count, writable: false);
+}
 
 /// <summary>
 /// Finds a NuGet plugin and its dependencies on the feeds the installer's settings name, and downloads them: the lowest
@@ -62,7 +66,7 @@ internal sealed class NuGetResolver : IDisposable
                 continue;
             var package = await DownloadAsync(match, wanted.Id, cancellationToken).ConfigureAwait(false);
             resolved[wanted.Id] = new ResolvedPackage(match.Version, package);
-            foreach (var dependency in DependenciesOf(package))
+            foreach (var dependency in DependenciesOf(resolved[wanted.Id]))
                 queue.Enqueue(dependency);
         }
         return resolved;
@@ -85,18 +89,19 @@ internal sealed class NuGetResolver : IDisposable
         return null;
     }
 
-    private async Task<byte[]> DownloadAsync(FeedMatch match, string id, CancellationToken cancellationToken)
+    // The package, in the download's own buffer rather than a copy of it (E4).
+    private async Task<ArraySegment<byte>> DownloadAsync(FeedMatch match, string id, CancellationToken cancellationToken)
     {
-        using var download = new PluginInstaller.LimitedStream(_installer.Options.MaxDownload, () => _installer.TooLarge($"{id} {match.Version}"));
+        var download = new PluginInstaller.LimitedStream(_installer.Options.MaxDownload, () => _installer.TooLarge($"{id} {match.Version}"));
         if (!await match.Feed.CopyNupkgToStreamAsync(id, match.Version, download, _cache, NullLogger.Instance, cancellationToken).ConfigureAwait(false))
             throw new PluginException($"Couldn't download {id} {match.Version}.");
-        return download.ToArray();
+        return download.TryGetBuffer(out var bytes) ? bytes : download.ToArray();
     }
 
     // The packages a package needs for .NET 11.
-    private static IEnumerable<PackageDependency> DependenciesOf(byte[] package)
+    private static IEnumerable<PackageDependency> DependenciesOf(ResolvedPackage package)
     {
-        using var reader = new PackageArchiveReader(new MemoryStream(package));
+        using var reader = new PackageArchiveReader(package.Open());
         var dependencies = NuGetFrameworkUtility.GetNearest(reader.NuspecReader.GetDependencyGroups(), PluginInstaller.s_target, group => group.TargetFramework);
         return [.. dependencies?.Packages ?? []];
     }

@@ -37,6 +37,7 @@ internal sealed class DaemonApi(MeepDaemon daemon)
             ("GET", []) => Allowed(request, Capabilities.None, () => About(request.Capabilities)),
             ("POST", ["subscribe"]) => Allowed(request, Capabilities.Observe, () => Subscribe(request)),
             ("POST", ["stop"]) => Allowed(request, Capabilities.Control, Stop),
+            ("POST", ["tokens", "reload"]) => Allowed(request, Capabilities.Control, ReloadTokens),
             ("GET", ["pipelines"]) => Allowed(request, Capabilities.Observe, List),
             ("POST", ["pipelines"]) => await AllowedAsync(request, Capabilities.Control, () => StartAsync(request)).ConfigureAwait(false),
             ("GET", ["pipelines", var name]) => Allowed(request, Capabilities.Observe, () => Answer.Json(200, daemon.Find(name).Detail(), DaemonJson.Default.PipelineDetail)),
@@ -133,6 +134,14 @@ internal sealed class DaemonApi(MeepDaemon daemon)
     }
 
     private SubscribeReply Subscribe(ApiRequest request) => new(new Subscription(SubscriptionPlan.Parse(request.Json), daemon));
+
+    // Reads the tokens file now, as meep daemon revoke asks, ending what revoked tokens opened (Q250).
+    private Answer ReloadTokens()
+    {
+        foreach (var name in daemon.Access.Reload())
+            daemon.Log($"the token {name} was revoked");
+        return new Answer(204, null);
+    }
 
     private Answer Stop()
     {
@@ -272,15 +281,16 @@ internal sealed class DaemonApi(MeepDaemon daemon)
             daemon.Log($"[{hosted.Name}] wrote the edit to {hosted.Path}");
             return result with { WrittenTo = hosted.Path };
         }
-        return Commit(hosted, edit, text, described, result);
+        return await CommitAsync(hosted, edit, text, described, result).ConfigureAwait(false);
     }
 
-    private ChangeResult Commit(HostedPipeline hosted, EditRequest edit, string text, List<string> described, ChangeResult result)
+    // Not cancelled when the client goes: the running pipeline has the edit by now, so its commit is made whatever.
+    private async Task<ChangeResult> CommitAsync(HostedPipeline hosted, EditRequest edit, string text, List<string> described, ChangeResult result)
     {
         var message = edit.Message ?? $"Edit {hosted.Name} while it runs\n\n{string.Join("\n", described.Select(e => "- " + char.ToUpperInvariant(e[0]) + e[1..]))}";
         try
         {
-            var commit = Meep2.Git.PendingBranch.Commit(hosted.Path, text, message, edit.Branch ?? Meep2.Git.PendingBranch.Default);
+            var commit = await Meep2.Git.PendingBranch.CommitAsync(hosted.Path, text, message, edit.Branch ?? Meep2.Git.PendingBranch.Default).ConfigureAwait(false);
             hosted.EditedApart(described, commit.Sha);
             daemon.Log($"[{hosted.Name}] committed to {commit.Branch} as {commit.Sha[..7]}{(commit.Unsigned is null ? ", signed" : $", unsigned: {commit.Unsigned}")}");
             return result with { Saved = new SavedCommit(commit.Branch, commit.Sha, commit.Repository, commit.Path) { Unsigned = commit.Unsigned } };

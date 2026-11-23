@@ -111,6 +111,10 @@ public sealed class DaemonClient : IDisposable
     public Task StopAsync(string name, CancellationToken cancellationToken = default) =>
         SendAsync(HttpMethod.Delete, $"pipelines/{Uri.EscapeDataString(name)}", null, cancellationToken);
 
+    /// <summary>Asks the daemon to read its tokens file now, ending what tokens taken out of it opened.</summary>
+    public Task ReloadTokensAsync(CancellationToken cancellationToken = default) =>
+        SendAsync(HttpMethod.Post, "tokens/reload", null, cancellationToken);
+
     /// <summary>Asks the daemon to stop its pipelines and then itself.</summary>
     public Task StopDaemonAsync(CancellationToken cancellationToken = default) =>
         SendAsync(HttpMethod.Post, "stop", null, cancellationToken);

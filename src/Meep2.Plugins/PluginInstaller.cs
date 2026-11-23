@@ -247,10 +247,10 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
         Directory.CreateDirectory(unpacked);
         var pluginFiles = new List<string>();
         var packages = new List<string>();
-        foreach (var (id, (packageVersion, bytes)) in resolved)
+        foreach (var (id, package) in resolved)
         {
             var own = id.Equals(directive.Name, StringComparison.OrdinalIgnoreCase);
-            using var reader = new PackageArchiveReader(new MemoryStream(bytes));
+            using var reader = new PackageArchiveReader(package.Open());
             var lib = NuGetFrameworkUtility.GetNearest(reader.GetLibItems(), s_target, group => group.TargetFramework);
             if (lib is null && own)
                 throw new PluginException($"nuget:{directive.Name} {version} has nothing for .NET 11 in its lib folder.");
@@ -263,7 +263,7 @@ public sealed partial class PluginInstaller(PluginOptions options, HttpClient? h
                 if (own)
                     pluginFiles.Add(name);
             }
-            packages.Add($"{id} {packageVersion.ToNormalizedString()} sha256:{Convert.ToHexStringLower(SHA256.HashData(bytes))}");
+            packages.Add($"{id} {package.Version.ToNormalizedString()} sha256:{Convert.ToHexStringLower(SHA256.HashData(package.Package))}");
         }
         return new UnpackedPackages(pluginFiles, packages);
     }
