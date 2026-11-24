@@ -14,6 +14,7 @@ Written 7 November 2026 after reading your answers to Q47–67 in [design-round-
 
 **Runtime**
 - A JIT host loads plugins into unloadable contexts. The SDK and core modules stay AOT-compatible, using a generated module registry and generated parameter records, so a sealed AOT build remains possible later.
+  - *Changed 24 November 2026:* AOT-compatibility is no longer required anywhere in Meep2. Meep runs on the JIT, and no planned use needs a NativeAOT build. Generated code is still welcome where it's faster, but not needed for AOT's sake. `IsAotCompatible` is gone from the projects.
 - Live connections are wrapped in leases, counted by messages in flight. Caches don't hold leases.
 - If all of a request's messages finish without a response, the runtime sends a default reply (HTTP 500 unless configured otherwise).
 - Request and response bodies are read into memory by default, up to a limit. Streaming is opt-in, and then only one branch may read the stream.

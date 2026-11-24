@@ -1,5 +1,5 @@
-using Meep2.Plugins;
 using Meep2.SDK.Security;
+using Meep2.Security;
 using Meep2.Tests.Support;
 
 namespace Meep2.Tests;
@@ -145,6 +145,15 @@ internal sealed class CredentialLab : IDisposable
     public string AuthorityPublicKey => File.ReadAllText(_authority + ".pub");
 
     public string SubjectPublicKey => File.ReadAllText(_subject + ".pub");
+
+    /// <summary>The folder the keys are in.</summary>
+    public string Folder => _folder.Path;
+
+    /// <summary>The authority's public key file.</summary>
+    public string AuthorityPublicKeyFile => _authority + ".pub";
+
+    /// <summary>The subject's public key file.</summary>
+    public string SubjectPublicKeyFile => _subject + ".pub";
 
     /// <summary>Makes the keys: an Ed25519 authority, and a subject of <paramref name="type"/>.</summary>
     public static async Task<CredentialLab> CreateAsync(string type = "ed25519", int? bits = null)

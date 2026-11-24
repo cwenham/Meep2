@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.IO.Compression;
 using System.Runtime.CompilerServices;
 using Meep2.Meeplang.Hosting;
@@ -6,7 +7,7 @@ using Meep2.Meeplang.Loading;
 using Meep2.Modules;
 using Meep2.Plugins;
 using Meep2.Runtime;
-using System.Diagnostics;
+using Meep2.Security;
 
 namespace Meep2.Tests.Support;
 

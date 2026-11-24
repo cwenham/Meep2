@@ -1,6 +1,6 @@
 using Meep2.Daemon;
 using Meep2.Modules;
-using Meep2.Plugins;
+using Meep2.Security;
 using Meep2.Shared;
 using Meep2.Tests.Support;
 
@@ -35,7 +35,7 @@ public class PrivacyTests
         await Assert.That(TrustedKeys.Load(signers).Keys.Count).IsEqualTo(1);
 
         File.SetUnixFileMode(signers, PrivateFolders.File | UnixFileMode.GroupWrite);
-        var refused = await Assert.That(() => TrustedKeys.Load(signers)).Throws<PluginException>();
+        var refused = await Assert.That(() => TrustedKeys.Load(signers)).Throws<TrustStoreException>();
 
         await Assert.That(refused!.Message).StartsWith($"{signers} can be changed by other users, so Meep doesn't trust the keys in it.");
     }

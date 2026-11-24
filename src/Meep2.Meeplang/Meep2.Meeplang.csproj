@@ -1,8 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!--
     The Meeplang parser, expression compiler and loader, plus the Parse, Build and Host modules (goal 8).
-    Not AOT-compatible: expressions are compiled with System.Linq.Expressions and members are found by reflection.
-    A sealed AOT build would need generated accessors instead.
+    Expressions are compiled with System.Linq.Expressions and members are found by reflection; Meep runs on the JIT.
   -->
   <ItemGroup>
     <ProjectReference Include="..\Meep2.SDK\Meep2.SDK.csproj" />

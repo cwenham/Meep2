@@ -4,6 +4,7 @@ using System.Text;
 using Meep2.Cli;
 using Meep2.Daemon;
 using Meep2.Plugins;
+using Meep2.Security;
 using Meep2.Tests.Support;
 
 namespace Meep2.Tests;

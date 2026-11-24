@@ -3,9 +3,6 @@
     What module and plugin authors compile against: messages, module base types and attributes.
     Plugins run on the host's copy of this assembly, so its public surface stays small and is versioned with care.
   -->
-  <PropertyGroup>
-    <IsAotCompatible>true</IsAotCompatible>
-  </PropertyGroup>
   <ItemGroup>
     <!-- The runtime stamps and tracks messages through internal members. -->
     <InternalsVisibleTo Include="Meep2.Runtime" />

@@ -5,6 +5,8 @@ using System.Text;
 using Meep2.Cli;
 using Meep2.Meeplang.Syntax;
 using Meep2.Plugins;
+using Meep2.SDK.Security;
+using Meep2.Security;
 using Meep2.Tests.Support;
 
 namespace Meep2.Tests;
@@ -619,10 +621,7 @@ public class PluginTests
     {
         using var lab = new PluginLab();
         using var friend = SshKeyPair.CreateEd25519("friend");
-        var securityKey = new SshWriter();
-        securityKey.WriteText("sk-ssh-ed25519@openssh.com");
-        securityKey.WriteBytes(new byte[32]);
-        securityKey.WriteText("ssh:");
+        var securityKey = new SshWireWriter().Text("sk-ssh-ed25519@openssh.com").String(new byte[32]).Text("ssh:");
         var keys = $"{friend.Public.Text}\nsk-ssh-ed25519@openssh.com {Convert.ToBase64String(securityKey.ToArray())}\n";
         await using var github = new TestServer(context => context.Request.Url!.AbsolutePath == "/octocat.keys"
             ? TestServer.Reply(context, 200, keys, "text/plain")

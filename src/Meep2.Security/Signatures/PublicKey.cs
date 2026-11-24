@@ -1,8 +1,9 @@
 using System.Security.Cryptography;
+using Meep2.SDK.Security;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Crypto.Signers;
 
-namespace Meep2.Plugins;
+namespace Meep2.Security;
 
 /// <summary>
 /// An SSH public key, for checking plugin signatures (Q101): <c>ssh-ed25519</c>, <c>ecdsa-sha2-nistp256</c>, 384 or
@@ -24,12 +25,12 @@ public sealed class PublicKey
         Blob = blob;
         Fingerprint = "SHA256:" + Convert.ToBase64String(SHA256.HashData(blob)).TrimEnd('=');
 
-        var reader = new SshReader(blob);
+        var reader = new SshWireReader(blob);
         Type = reader.ReadText();
         switch (Type)
         {
             case Ed25519:
-                _ed25519 = reader.ReadBytes();
+                _ed25519 = reader.ReadString().ToArray();
                 if (_ed25519.Length != 32)
                     throw new FormatException("its Ed25519 key isn't 32 bytes");
                 break;
@@ -48,12 +49,12 @@ public sealed class PublicKey
     }
 
     // An ECDSA key's curve and point, checked against its type and its curve.
-    private static ECParameters ReadEcdsa(ref SshReader reader, string type)
+    private static ECParameters ReadEcdsa(ref SshWireReader reader, string type)
     {
         var curve = reader.ReadText();
         if (curve != type["ecdsa-sha2-".Length..])
             throw new FormatException($"its curve, {curve}, doesn't match its type, {type}");
-        var point = reader.ReadBytes();
+        var point = reader.ReadString().ToArray();
         var size = FieldSize(type);
         if (point.Length != 1 + 2 * size || point[0] != 4)
             throw new FormatException("its point isn't an uncompressed point on its curve");
@@ -67,7 +68,7 @@ public sealed class PublicKey
     }
 
     // An RSA key's exponent and modulus, of at least 2048 bits.
-    private static RSAParameters ReadRsa(ref SshReader reader)
+    private static RSAParameters ReadRsa(ref SshWireReader reader)
     {
         var exponent = reader.ReadMpint();
         var modulus = reader.ReadMpint();
@@ -156,9 +157,9 @@ public sealed class PublicKey
         ArgumentNullException.ThrowIfNull(signature);
         try
         {
-            var reader = new SshReader(signature);
+            var reader = new SshWireReader(signature);
             var algorithm = reader.ReadText();
-            var signed = reader.ReadBytes();
+            var signed = reader.ReadString().ToArray();
             reader.End();
             return Type switch
             {
@@ -193,7 +194,7 @@ public sealed class PublicKey
     private bool VerifyEcdsa(byte[] data, byte[] signed)
     {
         var size = FieldSize(Type);
-        var numbers = new SshReader(signed);
+        var numbers = new SshWireReader(signed);
         var r = numbers.ReadMpint();
         var s = numbers.ReadMpint();
         numbers.End();

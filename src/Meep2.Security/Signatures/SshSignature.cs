@@ -1,7 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
+using Meep2.SDK.Security;
 
-namespace Meep2.Plugins;
+namespace Meep2.Security;
 
 /// <summary>
 /// An SSH signature, in the armored form <c>ssh-keygen -Y sign</c> writes (OpenSSH's PROTOCOL.sshsig).
@@ -20,14 +21,14 @@ public sealed record SshSignature(PublicKey Key, string Namespace, string HashAl
         var text = armored.Trim();
         if (!text.StartsWith(Begin, StringComparison.Ordinal) || !text.EndsWith(End, StringComparison.Ordinal))
             throw new FormatException($"it doesn't start with {Begin} and end with {End}");
-        var reader = new SshReader(Convert.FromBase64String(text[Begin.Length..^End.Length]));
+        var reader = new SshWireReader(Convert.FromBase64String(text[Begin.Length..^End.Length]));
         if (!reader.ReadRaw(6).SequenceEqual(s_magic) || reader.ReadUInt32() != 1)
             throw new FormatException("it isn't version 1 of SSH's signature format");
-        var key = PublicKey.FromBlob("signer", reader.ReadBytes());
+        var key = PublicKey.FromBlob("signer", reader.ReadString().ToArray());
         var ns = reader.ReadText();
-        reader.ReadBytes(); // reserved
+        reader.ReadString().ToArray(); // reserved
         var hash = reader.ReadText();
-        var signature = reader.ReadBytes();
+        var signature = reader.ReadString().ToArray();
         reader.End();
         if (hash is not ("sha256" or "sha512"))
             throw new FormatException($"it hashes with {hash}, and SSH signatures use sha256 or sha512");
@@ -40,15 +41,8 @@ public sealed record SshSignature(PublicKey Key, string Namespace, string HashAl
     /// <summary>The armored form.</summary>
     public string ToArmored()
     {
-        var writer = new SshWriter();
-        writer.WriteRaw(s_magic);
-        writer.WriteUInt32(1);
-        writer.WriteBytes(Key.Blob);
-        writer.WriteText(Namespace);
-        writer.WriteBytes([]);
-        writer.WriteText(HashAlgorithm);
-        writer.WriteBytes(Signature);
-        var base64 = Convert.ToBase64String(writer.ToArray());
+        var binary = new SshWireWriter().Raw(s_magic).UInt32(1).String(Key.Blob).Text(Namespace).String([]).Text(HashAlgorithm).String(Signature);
+        var base64 = Convert.ToBase64String(binary.ToArray());
         var text = new StringBuilder(Begin).Append('\n');
         for (var i = 0; i < base64.Length; i += 70)
             text.Append(base64.AsSpan(i, Math.Min(70, base64.Length - i))).Append('\n');
@@ -58,12 +52,12 @@ public sealed record SshSignature(PublicKey Key, string Namespace, string HashAl
     // What the key actually signs: the namespace, the hash algorithm and the message's hash.
     internal static byte[] SignedData(string ns, string hashAlgorithm, byte[] message)
     {
-        var writer = new SshWriter();
-        writer.WriteRaw(s_magic);
-        writer.WriteText(ns);
-        writer.WriteBytes([]);
-        writer.WriteText(hashAlgorithm);
-        writer.WriteBytes(hashAlgorithm == "sha256" ? SHA256.HashData(message) : SHA512.HashData(message));
-        return writer.ToArray();
+        return new SshWireWriter()
+            .Raw(s_magic)
+            .Text(ns)
+            .String([])
+            .Text(hashAlgorithm)
+            .String(hashAlgorithm == "sha256" ? SHA256.HashData(message) : SHA512.HashData(message))
+            .ToArray();
     }
 }

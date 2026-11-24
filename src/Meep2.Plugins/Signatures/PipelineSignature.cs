@@ -1,3 +1,4 @@
+using Meep2.Security;
 namespace Meep2.Plugins;
 
 /// <summary>
