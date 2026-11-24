@@ -21,7 +21,16 @@ public sealed record SshSignature(PublicKey Key, string Namespace, string HashAl
         var text = armored.Trim();
         if (!text.StartsWith(Begin, StringComparison.Ordinal) || !text.EndsWith(End, StringComparison.Ordinal))
             throw new FormatException($"it doesn't start with {Begin} and end with {End}");
-        var reader = new SshWireReader(Convert.FromBase64String(text[Begin.Length..^End.Length]));
+        return FromBinary(Convert.FromBase64String(text[Begin.Length..^End.Length]));
+    }
+
+    /// <summary>
+    /// Reads a signature in its binary form, the bytes inside the armor, as grants and request signatures carry it.
+    /// </summary>
+    /// <exception cref="FormatException">It isn't one.</exception>
+    public static SshSignature FromBinary(ReadOnlySpan<byte> binary)
+    {
+        var reader = new SshWireReader(binary);
         if (!reader.ReadRaw(6).SequenceEqual(s_magic) || reader.ReadUInt32() != 1)
             throw new FormatException("it isn't version 1 of SSH's signature format");
         var key = PublicKey.FromBlob("signer", reader.ReadString().ToArray());
@@ -38,11 +47,14 @@ public sealed record SshSignature(PublicKey Key, string Namespace, string HashAl
     /// <summary>Whether it's a signature of this message by its key.</summary>
     public bool Verifies(byte[] message) => Key.Verify(SignedData(Namespace, HashAlgorithm, message), Signature);
 
+    /// <summary>The binary form, the bytes inside the armor.</summary>
+    public byte[] ToBinary() =>
+        new SshWireWriter().Raw(s_magic).UInt32(1).String(Key.Blob).Text(Namespace).String([]).Text(HashAlgorithm).String(Signature).ToArray();
+
     /// <summary>The armored form.</summary>
     public string ToArmored()
     {
-        var binary = new SshWireWriter().Raw(s_magic).UInt32(1).String(Key.Blob).Text(Namespace).String([]).Text(HashAlgorithm).String(Signature);
-        var base64 = Convert.ToBase64String(binary.ToArray());
+        var base64 = Convert.ToBase64String(ToBinary());
         var text = new StringBuilder(Begin).Append('\n');
         for (var i = 0; i < base64.Length; i += 70)
             text.Append(base64.AsSpan(i, Math.Min(70, base64.Length - i))).Append('\n');

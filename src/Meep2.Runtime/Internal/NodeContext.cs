@@ -8,9 +8,11 @@ namespace Meep2.Runtime.Internal;
 /// messages.
 /// </summary>
 /// <typeparam name="TNode">The kind of place the module has, so each context reaches its own node's members.</typeparam>
-internal abstract class NodeContext<TNode>(TNode node) : ModuleContext
+internal abstract class NodeContext<TNode>(TNode node) : ModuleContext, IPipelineContext
     where TNode : Node
 {
+    public PipelineOptions Options => node.Pipeline.Options;
+
     /// <summary>The module's place in the pipeline.</summary>
     protected TNode Node => node;
 
@@ -33,4 +35,11 @@ internal abstract class NodeContext<TNode>(TNode node) : ModuleContext
     public override Tally Arrival(string from) => node.PeerCounts.ArrivalFrom(from);
 
     public override Tally Destination(string endpoint) => node.PeerCounts.DestinationAt(endpoint);
+}
+
+/// <summary>A module's context that reaches its pipeline's options, for the runtime's own verbs, such as <c>Verify</c>.</summary>
+internal interface IPipelineContext
+{
+    /// <summary>The pipeline's options.</summary>
+    PipelineOptions Options { get; }
 }

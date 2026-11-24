@@ -270,6 +270,7 @@ Implement the content interfaces where they fit, so other verbs can take your me
 |---|---|---|
 | `IHasText` | The content reads as text. `ToText()` and `{msg}` use it. | `Extract`, `WriteLine`, `Save`, `Classify` |
 | `IHasBody` | It has a body of bytes, possibly streamed. | `Send` |
+| `IHttpRequest` | It's an HTTP request: its method, address and headers, as well as its body. | `Verify`, to check a signature over the request |
 | `IHasPath` | It's about a file. | |
 | `IHasDynamicMembers` | Its members are only known when it arrives, as JSON's are. Expressions read them by name for each message instead of checking them at load. | `JsonMessage` |
 
@@ -366,6 +367,8 @@ public static string? WhyNot(FetchParameters parameters, Message message)
 Return null to accept, or a short reason to refuse. When the parameters are the same for every message, `WhyNot` is asked once at load: refusing inflections are left out, and if none are left the pipeline fails to load with each reason. When a parameter is worked out for each message, it's asked for each message, and the message goes to the first inflection that takes it. Look at the parameters, not the message itself: at load time the message is a stand-in.
 
 A verb with one inflection can use `WhyNot` too, just to check its parameters together.
+
+An inflection whose choice depends on the message itself, not only on its parameters, marks its class `[ChosenForEachMessage]`. Its `WhyNot` is then asked for every message, never once at load, so it can look at the message. `Verify` does this: whether it's given a credential, a certificate or a permission depends on what the message is, or on what `from=` reads from it, so each of its inflections takes `Message`, and their `WhyNot`s divide every message between them, so one always takes it.
 
 3. **By name.** A pipeline can name one directly as `Fetch.HTTP`, or as `HTTP` alone if no other verb has an inflection of that name.
 

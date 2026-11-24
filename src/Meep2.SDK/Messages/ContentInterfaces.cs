@@ -27,6 +27,22 @@ public interface IHasBody
     Stream OpenBody();
 }
 
+/// <summary>
+/// A message that is an HTTP request, as Listen's HTTP inflection emits: what <c>Verify</c> needs to check a signature
+/// over the request (HTTP Message Signatures, RFC 9421), since the request's own type is in the core modules.
+/// </summary>
+public interface IHttpRequest : IHasBody
+{
+    /// <summary>The method, such as GET or POST.</summary>
+    string Method { get; }
+
+    /// <summary>The whole address that was requested, as the client gave it.</summary>
+    string Url { get; }
+
+    /// <summary>The request headers. Names are case-insensitive; repeated headers are joined with commas.</summary>
+    IReadOnlyDictionary<string, string> Headers { get; }
+}
+
 /// <summary>A message about a file, such as a file's contents.</summary>
 public interface IHasPath
 {

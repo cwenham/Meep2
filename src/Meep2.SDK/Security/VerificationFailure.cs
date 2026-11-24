@@ -30,6 +30,12 @@ public enum VerificationFailureCode
     /// <summary>It, or a grant it relies on, has been revoked.</summary>
     Revoked,
 
+    /// <summary>
+    /// Whether it's revoked can't be known: the revocation list from its issuer is out of date (Q274), so it fails
+    /// until the list is replaced.
+    /// </summary>
+    RevocationUnknown,
+
     /// <summary>A certificate's chain couldn't be built to a root: an intermediate is missing.</summary>
     ChainIncomplete,
 

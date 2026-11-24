@@ -80,6 +80,7 @@ A `VerifiedMessage` expires when the earliest thing it relied on does.
 - `@permission` on a source means the pipeline must hold it to start (Q252). Combined messages are covered by Q261.
 - An SDK attribute, `[RequiresPermission("Name")]`, lets a verb (built-in or plugin) declare a permission that can't be removed, and `context.Demand("Name", message)` checks one in code for finer gates, such as Fetch.File only outside its `root`.
 - The loader shows gates in `meep lsp` hovers and in the graph, so a drawing can put a lock on gated modules.
+- `Listen.HTTP proof=required` refuses, with 401, a request that has no `Signature-Input`, `Signature` and `Meep-Credential`, before it reaches the pipeline; `Verify` does the real check (Q280, answered in phase 3's doc). The TCP and WebSocket challenge waits for phase 7.
 
 ### Phase 5. `Authorise`
 
@@ -109,6 +110,7 @@ Turning these on everywhere would break every existing pipeline, since a source'
 - Injected messages get the injecting client's verification as an ancestor, so a dashboard can inject only what its credential allows.
 - Mutual TLS for remote clients (Q63's later step), with client certificates checked by `Verify.Certificate`.
 - Synesthesia presents a credential when it connects and signs its commands.
+- A `meep-names` setting in the daemon's settings lists the names this host answers to, such as a public DNS name or a proxy's, and `Verify`'s `audience=` adds to it (Q282).
 
 ## Ideas while planning
 

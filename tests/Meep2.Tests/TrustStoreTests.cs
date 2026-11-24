@@ -51,7 +51,7 @@ public class TrustStoreTests
         var folder = TrustFolder.In(home.Path);
         folder.Create();
 
-        File.SetUnixFileMode(folder.Authorities, PrivateFolders.File | UnixFileMode.GroupWrite);
+        File.SetUnixFileMode(folder.Authorities, PrivateFolders.File | UnixFileMode.OtherWrite);
         await Assert.That(() => TrustStore.Load(folder)).Throws<TrustStoreException>().WithMessageContaining("can be changed by other users");
         File.SetUnixFileMode(folder.Authorities, PrivateFolders.File);
 

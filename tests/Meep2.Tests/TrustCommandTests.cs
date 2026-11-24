@@ -41,6 +41,25 @@ public class TrustCommandTests
     }
 
     [Test]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public async Task Init_narrows_a_meep_folder_others_can_reach_into_and_says_so()
+    {
+        Skip.Unless(SshKeygen.Available, "This needs OpenSSH's ssh-keygen.");
+        Skip.When(OperatingSystem.IsWindows(), "Windows has no Unix file modes.");
+        using var outer = new TemporaryFolder();
+        // As a umask of 002 makes it, with others able to write to it too, so no group rule lets it through (Q284).
+        var home = Directory.CreateDirectory(Path.Combine(outer.Path, ".meep"), (UnixFileMode)Convert.ToInt32("777", 8)).FullName;
+        File.SetUnixFileMode(home, (UnixFileMode)Convert.ToInt32("777", 8));
+
+        var made = await Cli(home, "trust", "init", "--name", "studio");
+
+        await Assert.That(made.Code).IsEqualTo(0).Because(made.Error);
+        await Assert.That(made.Output).Contains($"Made {home} yours alone (700)");
+        await Assert.That(File.GetUnixFileMode(home)).IsEqualTo(PrivateFolders.Folder);
+        await Assert.That(TrustStore.Load(TrustFolder.In(home)).IsSetUp).IsTrue();
+    }
+
+    [Test]
     public async Task Issue_makes_a_credential_signed_by_this_machines_authority_with_the_next_serial()
     {
         Skip.Unless(SshKeygen.Available, "This needs OpenSSH's ssh-keygen.");

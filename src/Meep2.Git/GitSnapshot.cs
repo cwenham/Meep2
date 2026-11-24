@@ -76,7 +76,7 @@ public sealed class GitSnapshot
         {
             if (!Repository.IsValid(folder))
             {
-                Directory.CreateDirectory(folder);
+                Meep2.Shared.PrivateFolders.Create(folder); // and ~/.meep, if it isn't there yet, kept to the user
                 Repository.Init(folder, isBare: true);
                 using var created = new Repository(folder);
                 created.Network.Remotes.Add("origin", url);

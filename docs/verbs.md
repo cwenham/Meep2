@@ -1,6 +1,6 @@
 # Verbs and inflections
 
-The verbs Meeplang has so far, as of 15 November 2026, from the `[Verb]` attributes in `src/Meep2.Modules`. A verb with more than one inflection has a class for each. The runtime picks one by the message's type or by the parameters (usually the address's scheme), and `Verb.Inflection` names one directly, as in `Fetch.HTTP`.
+The verbs Meeplang has so far, as of 24 November 2026, from the `[Verb]` attributes in `src/Meep2.Modules`, and `Verify`, which the runtime provides itself (`src/Meep2.Runtime/Verifying`), since only the runtime may make a verification. A verb with more than one inflection has a class for each. The runtime picks one by the message's type or by the parameters (usually the address's scheme), and `Verb.Inflection` names one directly, as in `Fetch.HTTP`.
 
 Parameters are written in kebab case (`max-size`, `save-every`). The positional parameter, written straight after the verb without a name, is shown in the Positional column.
 
@@ -22,11 +22,12 @@ Parameters are written in kebab case (`max-size`, `save-every`). The positional 
 | Learn | — | Emits its input | step |
 | Classify | — | Inflection | step |
 | Forget | — | Emits its input | step |
+| Verify | Credential, Certificate, Permission | Inflection | step |
 | WriteLine | — | Passthrough | outlet (declared) |
 | Save | — | Passthrough | outlet (declared) |
 | Send | Reply, Broadcast, HTTP, TCP, WebSocket | Passthrough | outlet (declared) |
 
-17 verbs, 25 inflections in all.
+18 verbs, 28 inflections in all.
 
 The role says what a verb does with messages, so tools can show it without knowing its name: a source makes messages itself, an inlet receives them from outside, a filter passes on some of what it receives, an outlet sends messages out of the pipeline, a tap receives another module's messages without being indented under it, a router spreads messages over copies of a branch, and a step is anything else. Sources, routers and steps are worked out from the class, and the rest declared with `[Role]`. See [Roles](writing-verbs.md#roles) in the guide to writing verbs.
 
@@ -144,6 +145,26 @@ Makes a named tree forget everything, or one class, then passes the message on.
 - Positional: `tree`
 - Parameters: `class`, `file`
 - Example: `Forget "topics" class="Science"`
+
+## Security
+
+### Verify
+Checks a credential, a certificate or a permission against this machine's trust store (`~/.meep/trust`, kept by `meep trust`) and emits a `VerifiedMessage` saying whether it passed, every reason it didn't, and the permissions it established. A failed check is a result, not an error, so a pipeline can answer it, such as with a 401. Only Verify can make a `VerifiedMessage`, and a gate (`@permission`, from phase 4 of the permissions plan) counts only one Verify made.
+
+The inflection is chosen for each message by what it's given: the message itself if it's a `Credential`, `Certificate` or `Permission`; otherwise the text `from=` reads from it, or the message's own text. PEM, or DER in base64, is a certificate; a permission's name or a `#permission` line is a permission; anything else is read as a credential, and fails as `Malformed` if it isn't one.
+
+| Inflection | Checks | Proof of possession |
+|---|---|---|
+| Credential | An OpenSSH user certificate: issued and signed by an authority in `authorities`, in date, no unknown critical options, not revoked (the `revoked` file and KRLs). Its permissions are its `name@meep` extensions, and the grants that apply to it, recorded or carried among the message's ancestors. | A request signed with the credential's key (HTTP Message Signatures, below), or with `bearer=true`, a credential whose issuer allows it with `permit-bearer@meep`. |
+| Certificate | An X.509 chain to a certificate in `roots/` (any of them is an anchor, an intermediate too), every certificate in date and allowed to do what it does (`usage=`), none revoked by the `revoked` file or CRLs, and every issuer's CRL in date. | A TLS handshake (mutual TLS, phase 7), or `bearer=true`. |
+| Permission | That it's well defined by `permissions.meep`, and, when the message has verified credentials among its ancestors or `against=credentials`, that they meet it: every line of the message's family passes through a verified credential holding it, conferred by an authority it allows, with everything it requires. A name written as text narrows the definition, as a pipeline's `#permission` does. | None needed. |
+
+- Parameters: `from`, `bearer`, `window`, `audience`, `usage` (`client`, `server` or `any`), `against` (`auto`, `definition` or `credentials`)
+- Examples: `Verify from=msg.Headers["Meep-Credential"]`, `Verify bearer=true` under `Read "~/me.credential"`, `Verify from="ReadNotes"`
+- A passing verification expires when the earliest thing it relied on does: the credential, a grant, a certificate on the chain, or a CRL that's due. It records the trust store's version and revocation version.
+- A signed request carries `Meep-Credential` (the certificate's base64), `Content-Digest` (RFC 9530, needed when there's a body), and `Signature-Input` and `Signature` (RFC 9421) labelled `meep`, covering at least `@method`, `@authority`, and `@target-uri` or `@path` and `@query` (for behind a proxy that ends TLS, where the scheme changes), with `created`, `nonce` and optionally `keyid`. The signature is an SSH signature of the signature base in the `meep-request` namespace, as `ssh-keygen -Y sign -n meep-request` makes, by the credential's key; a security key's (`sk-`) needs a touch. It must be made within `window` of now (60 s by default), its nonce unseen in that time, and addressed to one of this machine's names, or one in `audience=`. A streamed body (`stream=true` on Listen) can't be checked, and fails.
+- A result also has `Notes`: what was found that isn't a failure but might explain a missing permission, such as a grant left out and why.
+- When a check fails and the reason isn't clear, see [troubleshooting.md](troubleshooting.md).
 
 ## Output
 

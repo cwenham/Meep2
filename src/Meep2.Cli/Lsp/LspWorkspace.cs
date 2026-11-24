@@ -3,6 +3,7 @@ using Meep2.Meeplang.Loading;
 using Meep2.Meeplang.Parsing;
 using Meep2.Meeplang.Syntax;
 using Meep2.Modules;
+using Meep2.Runtime;
 using Meep2.Plugins;
 
 namespace Meep2.Cli;
@@ -21,7 +22,7 @@ internal sealed class LspWorkspace(PluginOptions? plugins) : IDisposable
     public const string EditsSuffix = "#edits";
 
     private readonly Dictionary<string, LspDocument> _documents = new(StringComparer.Ordinal);
-    private readonly ModuleRegistry _registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly);
+    private readonly ModuleRegistry _registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly).AddAssembly(RuntimeModules.Assembly);
 
     // Each open file's plugins, kept loaded while its #plugin lines stay the same.
     private readonly PluginRegistries? _plugins = plugins is null ? null : new PluginRegistries(new PluginInstaller(plugins with { Offline = true, DeveloperMode = false }), new PluginCatalog());

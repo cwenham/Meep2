@@ -57,7 +57,7 @@ public sealed record HttpResponse : Message, IHasText, IHasBody
 /// </summary>
 /// <remarks>With <c>stream=true</c> on Listen, the body is left unread: <see cref="Body"/> and <see cref="Text"/> are
 /// empty, and one module can read it with <see cref="OpenBody"/> (Q51).</remarks>
-public sealed record HttpRequest : Message, IHasText, IHasBody
+public sealed record HttpRequest : Message, IHasText, IHttpRequest
 {
     /// <summary>The method, such as GET or POST.</summary>
     public required string Method { get; init; }

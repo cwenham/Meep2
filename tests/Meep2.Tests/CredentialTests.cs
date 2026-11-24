@@ -179,5 +179,19 @@ internal sealed class CredentialLab : IDisposable
             : throw new InvalidOperationException($"ssh-keygen couldn't issue a certificate: {output}");
     }
 
+    /// <summary>Issues a certificate for another public key, given as a <c>.pub</c> file has it, and reads it.</summary>
+    public async Task<Credential> IssueForAsync(string publicKey, params string[] options)
+    {
+        var key = Path.Combine(_folder.Path, $"issued{++_issued}");
+        File.WriteAllText(key + ".pub", publicKey.Trim() + " someone\n");
+        var (code, output) = await SshKeygen.Run(["-q", "-s", _authority, .. options, key + ".pub"]);
+        return code == 0
+            ? Credential.Parse(File.ReadAllText(key + "-cert.pub"))
+            : throw new InvalidOperationException($"ssh-keygen couldn't issue a certificate: {output}");
+    }
+
+    /// <summary>The subject's private key file, for signing with <c>ssh-keygen -Y sign</c>.</summary>
+    public string SubjectPrivateKeyFile => _subject;
+
     public void Dispose() => _folder.Dispose();
 }

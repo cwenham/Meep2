@@ -1,4 +1,5 @@
 using Meep2.SDK.Messages;
+using Meep2.Security;
 
 namespace Meep2.Runtime;
 
@@ -58,4 +59,10 @@ public sealed record PipelineOptions
     /// hosts as part of their origin (<see cref="Meep2.SDK.Modules.ModuleContext.Origin"/>). Null for none.
     /// </summary>
     public string? HostId { get; init; }
+
+    /// <summary>
+    /// Where <c>Verify</c> gets the trust store it checks against: this machine's, kept current, in the daemon and
+    /// <c>meep run</c>. Null for none, and then nothing verifies, saying why.
+    /// </summary>
+    public TrustStoreSource? Trust { get; init; }
 }

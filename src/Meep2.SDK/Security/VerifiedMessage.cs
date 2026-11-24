@@ -38,6 +38,8 @@ public sealed record VerifiedMessage : Message
         Kind = original.Kind;
         Failures = original.Failures;
         Permissions = original.Permissions;
+        Grants = original.Grants;
+        Notes = original.Notes;
         CheckedAt = original.CheckedAt;
         TrustStoreVersion = original.TrustStoreVersion;
         RevocationVersion = original.RevocationVersion;
@@ -61,6 +63,19 @@ public sealed record VerifiedMessage : Message
     /// if it didn't pass.
     /// </summary>
     public IReadOnlyList<PermissionName> Permissions { get; internal init; } = [];
+
+    /// <summary>
+    /// The grants that gave a credential some of its <see cref="Permissions"/>: recorded in the trust store or carried
+    /// among the message's ancestors, each checked. Empty for a certificate or a permission, and if it didn't pass.
+    /// </summary>
+    public IReadOnlyList<Grant> Grants { get; internal init; } = [];
+
+    /// <summary>
+    /// What was found that isn't a failure but might explain a permission missing, such as a grant that applies to the
+    /// credential but was left out, and why: its signer isn't trusted, its signature is bad, or it's out of date or
+    /// revoked (Q283). Kept whether it passed or not.
+    /// </summary>
+    public IReadOnlyList<string> Notes { get; internal init; } = [];
 
     /// <summary>When it was checked, in UTC.</summary>
     public DateTime CheckedAt { get; internal init; } = DateTime.UtcNow;

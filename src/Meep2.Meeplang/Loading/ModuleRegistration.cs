@@ -23,6 +23,7 @@ public sealed class ModuleRegistration
         _emitsWhen = [.. emits.Select(a => (a.MessageType, a.When is null ? null : SwitchFor(moduleType, parametersType, a)))];
         EmitsInput = moduleType.IsDefined(typeof(EmitsInputAttribute), inherit: false);
         WhyNot = FindWhyNot(moduleType, parametersType);
+        ChosenForEachMessage = WhyNot is not null && moduleType.IsDefined(typeof(ChosenForEachMessageAttribute), inherit: false);
         MostAtOnce = FindMostAtOnce(moduleType, parametersType);
         Reconfigure = FindReconfigure(moduleType, parametersType);
         var declared = moduleType.GetCustomAttribute<RoleAttribute>()?.Role;
@@ -101,6 +102,12 @@ public sealed class ModuleRegistration
 
     /// <summary>Whether its parameters can rule it out (<see cref="IChosenByParameters{TParameters}"/>).</summary>
     public bool IsChosenByParameters => WhyNot is not null;
+
+    /// <summary>
+    /// Whether its <see cref="IChosenByParameters{TParameters}.WhyNot"/> is asked for every message, even when the
+    /// parameters are the same for each (<see cref="ChosenForEachMessageAttribute"/>).
+    /// </summary>
+    public bool ChosenForEachMessage { get; }
 
     internal Func<object?, AModule> Create { get; }
 

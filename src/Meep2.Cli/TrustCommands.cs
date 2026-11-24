@@ -34,6 +34,10 @@ internal static class TrustCommands
         name ??= MachineName();
         if (!Permission.IsAuthorityName(name))
             return await FailAsync(error, $"{name} can't be an authority's name: it has no spaces, quotes, = or # in it.", 2).ConfigureAwait(false);
+        // Meep's folder may have been made by something else, or under a umask of 002, so others could reach in and
+        // the store wouldn't load (Q284). Narrowed first, so the load below can succeed.
+        foreach (var narrowed in new[] { options.Home, folder.Path }.Where(PrivateFolders.Narrow))
+            await output.WriteLineAsync($"Made {narrowed} yours alone (700), since others could reach into it.").ConfigureAwait(false);
         if (await LoadAsync(folder, error).ConfigureAwait(false) is not { } store)
             return 1;
         if (store.IsSetUp)

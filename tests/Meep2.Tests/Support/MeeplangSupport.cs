@@ -147,10 +147,10 @@ public sealed class TestRun
 
     public IReadOnlyList<Message> At(string module) => [.. Received.Where(r => r.Module == module).Select(r => r.Message)];
 
-    /// <summary>Loads the text and, if it loads, runs it until it halts.</summary>
-    public static async Task<TestRun> Start(string text, bool run = true)
+    /// <summary>Loads the text and, if it loads, runs it until it halts, with this trust store for Verify if one's given.</summary>
+    public static async Task<TestRun> Start(string text, bool run = true, Meep2.Security.TrustStoreSource? trust = null)
     {
-        var testRun = Load(text);
+        var testRun = Load(text, trust);
         if (run && testRun.Result.Pipeline is { } pipeline)
         {
             await using (pipeline)
@@ -163,17 +163,17 @@ public sealed class TestRun
     /// Loads the text and starts running it, for pipelines that don't halt on their own, such as ones that listen.
     /// Dispose the result to stop the pipeline and wait for it to finish.
     /// </summary>
-    public static Running Begin(string text)
+    public static Running Begin(string text, Meep2.Security.TrustStoreSource? trust = null)
     {
-        var testRun = Load(text);
+        var testRun = Load(text, trust);
         var pipeline = testRun.Result.Pipeline ?? throw new InvalidOperationException($"The pipeline didn't load:\n{testRun.Diagnostics}");
         return new Running(testRun, pipeline, pipeline.RunAsync());
     }
 
-    private static TestRun Load(string text)
+    private static TestRun Load(string text, Meep2.Security.TrustStoreSource? trust = null)
     {
         var testRun = new TestRun(new LoadResult(null, []), new(), new(), new(), new SharedText());
-        var result = new PipelineLoader(testRun.Registry()).Load(Script.Parse(text), testRun.Options);
+        var result = new PipelineLoader(testRun.Registry()).Load(Script.Parse(text), testRun.Options with { Trust = trust });
         return new TestRun(result, testRun.Received, testRun.Unhandled, testRun.Notices, testRun.Output);
     }
 
@@ -197,6 +197,7 @@ public sealed class TestRun
         var output = TextWriter.Synchronized(Output);
         return new ModuleRegistry()
             .AddAssembly(CoreModules.Assembly)
+            .AddAssembly(RuntimeModules.Assembly)
             .Add("Sink", () => new TestSink(Received))
             .Add("Boom", () => new Boom())
             .Add(typeof(NumberSource))

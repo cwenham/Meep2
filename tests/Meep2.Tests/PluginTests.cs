@@ -621,8 +621,8 @@ public class PluginTests
     {
         using var lab = new PluginLab();
         using var friend = SshKeyPair.CreateEd25519("friend");
-        var securityKey = new SshWireWriter().Text("sk-ssh-ed25519@openssh.com").String(new byte[32]).Text("ssh:");
-        var keys = $"{friend.Public.Text}\nsk-ssh-ed25519@openssh.com {Convert.ToBase64String(securityKey.ToArray())}\n";
+        var dsa = new SshWireWriter().Text("ssh-dss").String(new byte[32]);
+        var keys = $"{friend.Public.Text}\nssh-dss {Convert.ToBase64String(dsa.ToArray())}\n";
         await using var github = new TestServer(context => context.Request.Url!.AbsolutePath == "/octocat.keys"
             ? TestServer.Reply(context, 200, keys, "text/plain")
             : TestServer.Reply(context, 404, "Not Found", "text/plain"));
@@ -632,7 +632,7 @@ public class PluginTests
         var nobody = await Cli(options, "keys", "trust", "github:nobody");
 
         await Assert.That(trusted.Code).IsEqualTo(0);
-        await Assert.That(trusted.Output).Contains("Skipped one of octocat's keys: github:octocat's key can't be used: it's a security key (sk-ssh-ed25519@openssh.com), which can't sign plugins yet.");
+        await Assert.That(trusted.Output).Contains("Skipped one of octocat's keys: github:octocat's key can't be used: ssh-dss isn't a key type Meep knows.");
         await Assert.That(trusted.Output).Contains($"Plugins signed by github:octocat's ssh-ed25519 key {friend.Public.Fingerprint} can load now.");
         await Assert.That(nobody.Error).Contains("GitHub has no user called nobody.");
         await Assert.That(TrustedKeys.Load(options.TrustedKeysFile).Keys.Single().Name).IsEqualTo("github:octocat");

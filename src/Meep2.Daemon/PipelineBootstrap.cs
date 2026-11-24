@@ -3,6 +3,7 @@ using Meep2.Meeplang.Hosting;
 using Meep2.Modules;
 using Meep2.Plugins;
 using Meep2.Runtime;
+using Meep2.Security;
 
 namespace Meep2.Daemon;
 
@@ -13,7 +14,8 @@ namespace Meep2.Daemon;
 /// </summary>
 /// <param name="hosted">The pipeline it loads, which also says where from, with which verbs and plugins.</param>
 /// <param name="log">Writes a line to the daemon's log.</param>
-internal sealed class PipelineBootstrap(HostedPipeline hosted, Action<string> log)
+/// <param name="trust">The daemon's trust store, which the pipeline's Verify modules check against.</param>
+internal sealed class PipelineBootstrap(HostedPipeline hosted, Action<string> log, TrustStoreSource trust)
 {
     private readonly ConcurrentQueue<string> _problems = new();
     private readonly TaskCompletionSource<bool> _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -65,6 +67,7 @@ internal sealed class PipelineBootstrap(HostedPipeline hosted, Action<string> lo
         return new PipelineOptions
         {
             HostId = hostId,
+            Trust = trust,
             UnhandledError = e => log(e.AnsweredBy is { } answerer
                 ? $"[{name}] error from {e.EmittedBy?.ToString() ?? "the pipeline"}, answered by {answerer}: {e.Error}"
                 : $"[{name}] error from {e.EmittedBy?.ToString() ?? "the pipeline"}: {e.Error}"),
