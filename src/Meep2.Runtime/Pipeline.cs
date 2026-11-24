@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Meep2.Runtime.Internal;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 
 namespace Meep2.Runtime;
 
@@ -354,7 +355,10 @@ public sealed class Pipeline : IAsyncDisposable
     /// or, for a source, on downstream as if the source had emitted it. It's recorded as emitted by <see cref="Injector"/>.
     /// </summary>
     /// <exception cref="InvalidOperationException">The pipeline isn't running.</exception>
-    /// <exception cref="ArgumentException">The message has been emitted before.</exception>
+    /// <exception cref="ArgumentException">
+    /// The message has been emitted before, or it or an ancestor is a <see cref="VerifiedMessage"/> or a certificate
+    /// proven by TLS, which only the pipeline's own modules may make.
+    /// </exception>
     public void Inject(ModuleInfo module, Message message)
     {
         ArgumentNullException.ThrowIfNull(message);
@@ -363,6 +367,8 @@ public sealed class Pipeline : IAsyncDisposable
             throw new InvalidOperationException($"{Name} isn't running, so it can't take a message.");
         if (message.IsStamped)
             throw new ArgumentException("Only a new message can be injected, not one that has been emitted before.", nameof(message));
+        if (RuntimeOnly.IsIn(message))
+            throw new ArgumentException("A message carrying a verification, or a certificate proven by TLS, can't be injected: only a pipeline's own Verify and Listens make them.", nameof(message));
 
         List<TrackingScope>? created = null;
         Stamper.StampInjected(message, this, ref created);
