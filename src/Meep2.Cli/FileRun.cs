@@ -4,6 +4,7 @@ using Meep2.Meeplang.Loading;
 using Meep2.Modules;
 using Meep2.Plugins;
 using Meep2.Runtime;
+using Meep2.Security;
 
 namespace Meep2.Cli;
 
@@ -18,8 +19,9 @@ namespace Meep2.Cli;
 /// <param name="hostId">The ID of this run as a Meep host, if it has one.</param>
 internal sealed class FileRun(CommandContext context, string file, bool watch, string? hostId)
 {
-    private readonly ModuleRegistry _registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly);
+    private readonly ModuleRegistry _registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly).AddAssembly(RuntimeModules.Assembly);
     private PipelineWatcher? _watcher;
+    private TrustStoreSource? _trust;
     private int _exitCode;
 
     /// <summary>Runs the pipeline until it ends or Ctrl+C. Returns 0, or 1 if it didn't load, 2 for a bad address, 3 if it stopped on an error.</summary>
@@ -52,6 +54,7 @@ internal sealed class FileRun(CommandContext context, string file, bool watch, s
         finally
         {
             _watcher?.Dispose();
+            _trust?.Dispose();
         }
     }
 
@@ -83,10 +86,12 @@ internal sealed class FileRun(CommandContext context, string file, bool watch, s
         }
     }
 
-    // The pipeline's own options: its errors and notices go to standard error.
+    // The pipeline's own options: its errors and notices go to standard error. The trust store is only read and
+    // watched once a Verify asks for it.
     private PipelineOptions HostedOptions() => new()
     {
         HostId = hostId,
+        Trust = _trust ??= TrustStoreSource.Watching(TrustFolder.In(context.Plugins.Home), Log),
         UnhandledError = e => Log(e.AnsweredBy is { } answerer
             ? $"error from {e.EmittedBy?.ToString() ?? "the pipeline"}, answered by {answerer}: {e.Error}"
             : $"error from {e.EmittedBy?.ToString() ?? "the pipeline"}: {e.Error}"),

@@ -1,5 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- The push core, in-flight tracking, buffers and hosting. -->
+  <!-- The push core, in-flight tracking, buffers and hosting, and the runtime's own verb, Verify. -->
+  <PropertyGroup>
+    <!-- Shipped beside the assembly, so meep lsp's verb catalogue can describe Verify and its parameters. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- Older comments that document some of a method's parameters but not all (CS1573), and one cref the docs can't
+         resolve (CS1574), which only show now the file is made. Left for a tidy-up of their own. -->
+    <NoWarn>$(NoWarn);CS1573;CS1574</NoWarn>
+  </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\Meep2.SDK\Meep2.SDK.csproj" />
     <!-- Keys and the trust store, for Verify (permissions, phase 3). -->

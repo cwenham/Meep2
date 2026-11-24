@@ -4,6 +4,7 @@ using Meep2.Daemon.Subscriptions;
 using Meep2.Meeplang.Loading;
 using Meep2.Modules;
 using Meep2.Runtime;
+using Meep2.Security;
 
 namespace Meep2.Daemon;
 
@@ -58,6 +59,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     private Task _pruning = Task.CompletedTask;
 
     private readonly DaemonOptions _options;
+    private readonly TrustStoreSource _trust;
     private readonly ConcurrentDictionary<string, HostedPipeline> _pipelines = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _stopping = new();
     private readonly TaskCompletionSource _stopRequested = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -74,6 +76,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         ArgumentNullException.ThrowIfNull(options);
         _options = options;
         Access = new DaemonAccess(options.TokensFile);
+        _trust = TrustStoreSource.Watching(TrustFolder.In(options.Plugins.Home), Log);
     }
 
     /// <summary>The control socket's path.</summary>
@@ -153,6 +156,8 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         _control = new ControlSocket(Access, new DaemonApi(this).RouteAsync, _stopping.Token);
         await _control.StartAsync(socket, cancellationToken).ConfigureAwait(false);
         Log($"meep daemon {Version} is listening on {socket}");
+        // The trust store is read and watched from now, so one that can't be read is reported as the daemon starts.
+        _ = _trust.Current;
         _pruning = PruneEveryAsync(_stopping.Token);
         await StartConfiguredAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -214,6 +219,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     {
         await StopAsync().ConfigureAwait(false);
         _meepHosts?.Dispose();
+        _trust.Dispose();
         _stopping.Dispose();
     }
 
@@ -260,7 +266,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
         if (watch && !address.IsFile)
             throw new DaemonException(400, $"Only a file on this machine can be watched, and {address} isn't one.");
         var hosted = Reserve(name ?? address.Name, address, developerMode);
-        var bootstrap = new PipelineBootstrap(hosted, Log);
+        var bootstrap = new PipelineBootstrap(hosted, Log, _trust);
         var pipeline = bootstrap.Build(text, _options.Catalog, ((ISubscriptionHost)this).Identity.Id);
         hosted.Bootstrap = pipeline;
         hosted.Finished = Task.Run(() => RunBootstrapAsync(hosted, bootstrap, pipeline), CancellationToken.None);
@@ -281,7 +287,7 @@ public sealed class MeepDaemon : IAsyncDisposable, ISubscriptionHost
     // Lists a new pipeline under name, with the core verbs, replacing one of that name that has ended.
     private HostedPipeline Reserve(string name, PipelineAddress address, bool developerMode)
     {
-        var registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly);
+        var registry = new ModuleRegistry().AddAssembly(CoreModules.Assembly).AddAssembly(RuntimeModules.Assembly);
         registry.Add<WriteLine, WriteLineParameters>("WriteLine", parameters => new WriteLine(parameters, _options.Output));
         var plugins = _options.Plugins with { DeveloperMode = _options.Plugins.DeveloperMode || developerMode };
         var hosted = new HostedPipeline(name, address, registry, plugins, Signal);

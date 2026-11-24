@@ -37,8 +37,7 @@ public static class PrivateFolders
         }
         if (missing.Count == 0)
         {
-            if ((System.IO.File.GetUnixFileMode(full) & ~Folder) != 0)
-                System.IO.File.SetUnixFileMode(full, Folder);
+            Narrow(full);
             return full;
         }
         while (missing.TryPop(out var make))
@@ -46,10 +45,33 @@ public static class PrivateFolders
         return full;
     }
 
-    /// <summary>Whether anyone but the user can change a file or folder, as OpenSSH asks of what it trusts.</summary>
-    public static bool OthersCanWrite(string path) =>
-        !OperatingSystem.IsWindows()
-        && (System.IO.File.GetUnixFileMode(path) & (UnixFileMode.GroupWrite | UnixFileMode.OtherWrite)) != 0;
+    /// <summary>
+    /// Narrows a folder that's there already to the user alone (700) if others can reach into it. Returns whether it
+    /// did. Does nothing on Windows, or if the folder isn't there.
+    /// </summary>
+    public static bool Narrow(string folder)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(folder);
+        if (OperatingSystem.IsWindows() || !Directory.Exists(folder) || (System.IO.File.GetUnixFileMode(folder) & ~Folder) == 0)
+            return false;
+        System.IO.File.SetUnixFileMode(folder, Folder);
+        return true;
+    }
+
+    /// <summary>
+    /// Whether anyone but the user can change a file or folder, as OpenSSH asks of what it trusts. One its group can
+    /// write to is still the user's alone if it's theirs and the group is their own, with no other members, as
+    /// Debian's OpenSSH allows, since Debian gives each user a group of their own and a umask of 002 (Q284).
+    /// </summary>
+    public static bool OthersCanWrite(string path)
+    {
+        if (OperatingSystem.IsWindows())
+            return false;
+        var mode = System.IO.File.GetUnixFileMode(path);
+        if ((mode & UnixFileMode.OtherWrite) != 0)
+            return true;
+        return (mode & UnixFileMode.GroupWrite) != 0 && !UserPrivateGroups.IsOwnersAlone(path);
+    }
 
     /// <summary>Options for a new file that only the user can read and write, appended to or created.</summary>
     public static FileStreamOptions NewFile(FileMode mode) => OperatingSystem.IsWindows()

@@ -187,7 +187,7 @@ internal sealed class VerbResolver(ModuleRegistry registry, PipelineSyntax synta
 
     // Asks inflections that parameters choose between whether they take this line's parameters. Parameters that are
     // the same for every message are checked now, so a mistake is reported when the pipeline loads. Ones worked out
-    // per message are checked for each message.
+    // per message are checked for each message, as are inflections that look at the message itself to choose.
     private void ChooseByParameters(LoadNode node)
     {
         var refusals = new List<string>();
@@ -195,7 +195,7 @@ internal sealed class VerbResolver(ModuleRegistry registry, PipelineSyntax synta
         {
             if (candidate.Registration.WhyNot is not { } whyNot || candidate.Parameters.Value is not { } parameters)
                 continue;
-            if (candidate.Parameters.Computed.Count > 0)
+            if (candidate.Parameters.Computed.Count > 0 || candidate.Registration.ChosenForEachMessage)
             {
                 candidate.WhyNot = message => whyNot(parameters, message);
                 continue;

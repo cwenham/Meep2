@@ -121,6 +121,19 @@ public sealed class ForErrorsAttribute : Attribute;
 public sealed class EmitsInputAttribute : Attribute;
 
 /// <summary>
+/// Declares that an inflection's <see cref="IChosenByParameters{TParameters}.WhyNot"/> looks at each message, not only
+/// at the parameters, so it's asked for every message rather than once when the pipeline loads. Verify uses it: its
+/// inflections take a credential, a certificate or a permission, whether the message is one or <c>from=</c> reads one
+/// from it, so neither the message's type nor the parameters alone can choose.
+/// </summary>
+/// <remarks>
+/// The inflections of such a verb usually all take <see cref="Messages.Message"/>, and between them take every
+/// message, so that one of them always accepts it.
+/// </remarks>
+[AttributeUsage(AttributeTargets.Class, Inherited = false)]
+public sealed class ChosenForEachMessageAttribute : Attribute;
+
+/// <summary>
 /// A parameter that names another module in the pipeline, as <c>Tap Schedule</c> does. The loader connects the
 /// named module to this one, so everything it emits arrives here.
 /// </summary>

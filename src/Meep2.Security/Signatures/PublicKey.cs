@@ -6,18 +6,30 @@ using Org.BouncyCastle.Crypto.Signers;
 namespace Meep2.Security;
 
 /// <summary>
-/// An SSH public key, for checking plugin signatures (Q101): <c>ssh-ed25519</c>, <c>ecdsa-sha2-nistp256</c>, 384 or
-/// 521, or <c>ssh-rsa</c> of at least 2048 bits. Written as <c>name type base64</c>, a line of the allowed-signers file
-/// <c>ssh-keygen -Y verify</c> reads.
+/// An SSH public key, for checking signatures: <c>ssh-ed25519</c>, <c>ecdsa-sha2-nistp256</c>, 384 or 521,
+/// <c>ssh-rsa</c> of at least 2048 bits, and the security-key kinds <c>sk-ssh-ed25519@openssh.com</c> and
+/// <c>sk-ecdsa-sha2-nistp256@openssh.com</c> that <c>ssh-keygen -t ed25519-sk</c> makes on a YubiKey (Q271). Written as
+/// <c>name type base64</c>, a line of the allowed-signers file <c>ssh-keygen -Y verify</c> reads.
 /// </summary>
+/// <remarks>
+/// A security key signs a hash of its application (usually <c>ssh:</c>), some flags and a counter along with the
+/// message. A signature is only good if the flags say a person touched the key (user presence), as OpenSSH insists
+/// unless told otherwise.
+/// </remarks>
 public sealed class PublicKey
 {
     private const string Ed25519 = "ssh-ed25519";
     private const string Rsa = "ssh-rsa";
+    private const string SkEd25519 = "sk-ssh-ed25519@openssh.com";
+    private const string SkEcdsa = "sk-ecdsa-sha2-nistp256@openssh.com";
+
+    // The flag a security key sets when a person touched it to sign.
+    private const byte UserPresent = 0x01;
 
     private readonly byte[]? _ed25519;
     private readonly ECParameters _ecdsa;
     private readonly RSAParameters _rsa;
+    private readonly string? _application;
 
     private PublicKey(string name, byte[] blob)
     {
@@ -40,10 +52,18 @@ public sealed class PublicKey
             case Rsa:
                 _rsa = ReadRsa(ref reader);
                 break;
+            case SkEd25519:
+                _ed25519 = reader.ReadString().ToArray();
+                if (_ed25519.Length != 32)
+                    throw new FormatException("its Ed25519 key isn't 32 bytes");
+                _application = reader.ReadText();
+                break;
+            case SkEcdsa:
+                _ecdsa = ReadEcdsa(ref reader, "ecdsa-sha2-nistp256");
+                _application = reader.ReadText();
+                break;
             default:
-                throw new FormatException(Type.StartsWith("sk-", StringComparison.Ordinal)
-                    ? $"it's a security key ({Type}), which can't sign plugins yet"
-                    : $"{Type} isn't a key type Meep knows. It knows ssh-ed25519, ecdsa-sha2-nistp256, 384 and 521, and ssh-rsa");
+                throw new FormatException($"{Type} isn't a key type Meep knows. It knows ssh-ed25519, ecdsa-sha2-nistp256, 384 and 521, ssh-rsa, and the security keys {SkEd25519} and {SkEcdsa}");
         }
         reader.End();
     }
@@ -82,6 +102,9 @@ public sealed class PublicKey
 
     /// <summary>The key's type, such as <c>ssh-ed25519</c>.</summary>
     public string Type { get; }
+
+    /// <summary>Whether it's on a security key, such as a YubiKey, which signs only when touched.</summary>
+    public bool IsSecurityKey => _application is not null;
 
     /// <summary>The key in SSH's wire format, as the base64 in a <c>.pub</c> file holds it.</summary>
     public byte[] Blob { get; }
@@ -160,12 +183,14 @@ public sealed class PublicKey
             var reader = new SshWireReader(signature);
             var algorithm = reader.ReadText();
             var signed = reader.ReadString().ToArray();
+            if (IsSecurityKey)
+                return algorithm == Type && VerifySecurityKey(data, signed, ref reader);
             reader.End();
             return Type switch
             {
                 Ed25519 when algorithm == Ed25519 => VerifyEd25519(data, signed),
                 Rsa when algorithm is "rsa-sha2-256" or "rsa-sha2-512" => VerifyRsa(data, signed, algorithm),
-                not (Ed25519 or Rsa) when algorithm == Type => VerifyEcdsa(data, signed),
+                not (Ed25519 or Rsa) when algorithm == Type => VerifyEcdsa(data, signed, Type),
                 _ => false,
             };
         }
@@ -173,6 +198,24 @@ public sealed class PublicKey
         {
             return false;
         }
+    }
+
+    // A security key's signature is followed by its flags and counter, and covers a hash of its application, the
+    // flags, the counter and a hash of the data, rather than the data itself (OpenSSH's PROTOCOL.u2f).
+    private bool VerifySecurityKey(byte[] data, byte[] signed, ref SshWireReader reader)
+    {
+        var flags = reader.ReadByte();
+        var counter = reader.ReadUInt32();
+        reader.End();
+        if ((flags & UserPresent) == 0)
+            return false;
+        var covered = new SshWireWriter()
+            .Raw(SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(_application!)))
+            .Raw([flags])
+            .UInt32(counter)
+            .Raw(SHA256.HashData(data))
+            .ToArray();
+        return Type == SkEd25519 ? VerifyEd25519(covered, signed) : VerifyEcdsa(covered, signed, "ecdsa-sha2-nistp256");
     }
 
     private bool VerifyEd25519(byte[] data, byte[] signed)
@@ -191,9 +234,9 @@ public sealed class PublicKey
     }
 
     // An ECDSA signature is two numbers, r and s, which .NET takes as one fixed-size field each.
-    private bool VerifyEcdsa(byte[] data, byte[] signed)
+    private bool VerifyEcdsa(byte[] data, byte[] signed, string curveType)
     {
-        var size = FieldSize(Type);
+        var size = FieldSize(curveType);
         var numbers = new SshWireReader(signed);
         var r = numbers.ReadMpint();
         var s = numbers.ReadMpint();
@@ -204,7 +247,7 @@ public sealed class PublicKey
         r.CopyTo(fixedSize, size - r.Length);
         s.CopyTo(fixedSize, 2 * size - s.Length);
         using var ecdsa = ECDsa.Create(_ecdsa);
-        return ecdsa.VerifyData(data, fixedSize, Hash(Type), DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+        return ecdsa.VerifyData(data, fixedSize, Hash(curveType), DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
     }
 
     /// <summary>The key's line in an allowed-signers file: <c>name type base64</c>.</summary>

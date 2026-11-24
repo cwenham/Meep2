@@ -3,7 +3,14 @@ namespace Meep2.Tests.Support;
 /// <summary>A folder of its own for a test's files, deleted with them when disposed.</summary>
 public sealed class TemporaryFolder : IDisposable
 {
-    public TemporaryFolder() => Directory.CreateDirectory(Path);
+    // Kept to the user whatever the umask, as Meep's own folders are, so the trust store's checks pass in it (Q284).
+    public TemporaryFolder()
+    {
+        if (OperatingSystem.IsWindows())
+            Directory.CreateDirectory(Path);
+        else
+            Directory.CreateDirectory(Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+    }
 
     public string Path { get; } = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"meep-test-{Guid.NewGuid():N}");
 
