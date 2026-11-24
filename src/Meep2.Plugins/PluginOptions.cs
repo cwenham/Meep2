@@ -1,3 +1,4 @@
+using Meep2.Security;
 namespace Meep2.Plugins;
 
 /// <summary>Where plugins come from and go, and which ones Meep accepts.</summary>
@@ -58,6 +59,21 @@ public sealed record PluginOptions
         DeveloperMode = developerMode,
     };
 
-    /// <summary>The keys you trust: <see cref="Trusted"/>, or those in <see cref="TrustedKeysFile"/>.</summary>
-    public TrustedKeys TrustedKeys() => Trusted ?? Plugins.TrustedKeys.Load(TrustedKeysFile);
+    /// <summary>
+    /// The keys you trust: <see cref="Trusted"/>, or those in <see cref="TrustedKeysFile"/>. Throws
+    /// <see cref="PluginException"/> if the file can't be used.
+    /// </summary>
+    public TrustedKeys TrustedKeys()
+    {
+        if (Trusted is not null)
+            return Trusted;
+        try
+        {
+            return Security.TrustedKeys.Load(TrustedKeysFile);
+        }
+        catch (TrustStoreException exception)
+        {
+            throw new PluginException(exception.Message, exception);
+        }
+    }
 }

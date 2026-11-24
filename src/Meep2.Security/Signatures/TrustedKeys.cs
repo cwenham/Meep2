@@ -1,8 +1,12 @@
-namespace Meep2.Plugins;
+using Meep2.Shared;
+
+namespace Meep2.Security;
 
 /// <summary>
-/// The keys whose plugins you trust: Meep's allowed-signers file, <c>~/.meep/allowed_signers</c>, in the form
-/// <c>ssh-keygen -Y verify</c> reads. Lines starting with <c>#</c> are comments.
+/// Keys you trust, each for some signature namespaces: an allowed-signers file, in the form <c>ssh-keygen -Y verify</c>
+/// reads, such as <c>~/.meep/allowed_signers</c> for plugins and pipelines, or the trust store's <c>authorities</c>.
+/// Lines starting with <c>#</c> are comments. A file others could change is refused with a
+/// <see cref="TrustStoreException"/>.
 /// </summary>
 public sealed class TrustedKeys
 {
@@ -22,14 +26,20 @@ public sealed class TrustedKeys
             return None;
         // As OpenSSH does, a list that someone else could have added a key to isn't trusted (S7).
         var folder = Path.GetDirectoryName(Path.GetFullPath(path))!;
-        if (Meep2.Shared.PrivateFolders.OthersCanWrite(path) || Meep2.Shared.PrivateFolders.OthersCanWrite(folder))
+        if (PrivateFolders.OthersCanWrite(path) || PrivateFolders.OthersCanWrite(folder))
         {
-            throw new PluginException(
+            throw new TrustStoreException(
                 $"{path} can be changed by other users, so Meep doesn't trust the keys in it. Make it yours alone with chmod go-w \"{path}\" \"{folder}\".");
         }
+        return Parse(path, File.ReadLines(path));
+    }
+
+    /// <summary>Reads the lines of an allowed-signers file at <paramref name="path"/>, which is named in what's thrown.</summary>
+    internal static TrustedKeys Parse(string path, IEnumerable<string> lines)
+    {
         var keys = new List<PublicKey>();
         var number = 0;
-        foreach (var line in File.ReadLines(path))
+        foreach (var line in lines)
         {
             number++;
             if (line.Trim() is { Length: 0 } or ['#', ..])
@@ -40,14 +50,11 @@ public sealed class TrustedKeys
             }
             catch (FormatException exception)
             {
-                throw new PluginException($"Line {number} of {path}: {exception.Message}", exception);
+                throw new TrustStoreException($"Line {number} of {path}: {exception.Message}", exception);
             }
         }
         return new TrustedKeys(keys);
     }
-
-    /// <summary>The trusted key that's the same as this one and may sign plugins, if there is one.</summary>
-    public PublicKey? Find(PublicKey key) => Find(key, PluginSignature.Namespace);
 
     /// <summary>The trusted key that matches, if it may sign for <paramref name="ns"/>, or null.</summary>
     public PublicKey? Find(PublicKey key, string ns) => Keys.FirstOrDefault(trusted => trusted.SameKeyAs(key) && trusted.MaySignFor(ns));

@@ -1,9 +1,10 @@
 using System.Security.Cryptography;
+using Meep2.SDK.Security;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Crypto.Signers;
 using Org.BouncyCastle.Security;
 
-namespace Meep2.Plugins;
+namespace Meep2.Security;
 
 /// <summary>
 /// A key pair Meep holds itself, for signing without <c>ssh-keygen</c>: tests and benchmarks use it. People sign with
@@ -17,21 +18,14 @@ internal sealed class SshKeyPair : IDisposable
     private SshKeyPair(string name, Ed25519PrivateKeyParameters key)
     {
         _ed25519 = key;
-        var writer = new SshWriter();
-        writer.WriteText("ssh-ed25519");
-        writer.WriteBytes(key.GeneratePublicKey().GetEncoded());
-        Public = PublicKey.FromBlob(name, writer.ToArray());
+        Public = PublicKey.FromBlob(name, new SshWireWriter().Text("ssh-ed25519").String(key.GeneratePublicKey().GetEncoded()).ToArray());
     }
 
     private SshKeyPair(string name, ECDsa key)
     {
         _ecdsa = key;
         var parameters = key.ExportParameters(includePrivateParameters: false);
-        var writer = new SshWriter();
-        writer.WriteText("ecdsa-sha2-nistp256");
-        writer.WriteText("nistp256");
-        writer.WriteBytes([4, .. parameters.Q.X!, .. parameters.Q.Y!]);
-        Public = PublicKey.FromBlob(name, writer.ToArray());
+        Public = PublicKey.FromBlob(name, new SshWireWriter().Text("ecdsa-sha2-nistp256").Text("nistp256").String([4, .. parameters.Q.X!, .. parameters.Q.Y!]).ToArray());
     }
 
     public PublicKey Public { get; }
@@ -44,23 +38,19 @@ internal sealed class SshKeyPair : IDisposable
     public SshSignature Sign(byte[] message, string ns)
     {
         var data = SshSignature.SignedData(ns, "sha512", message);
-        var writer = new SshWriter();
+        var writer = new SshWireWriter();
         if (_ed25519 is not null)
         {
             var signer = new Ed25519Signer();
             signer.Init(true, _ed25519);
             signer.BlockUpdate(data, 0, data.Length);
-            writer.WriteText("ssh-ed25519");
-            writer.WriteBytes(signer.GenerateSignature());
+            writer.Text("ssh-ed25519").String(signer.GenerateSignature());
         }
         else
         {
             var fixedSize = _ecdsa!.SignData(data, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
-            var numbers = new SshWriter();
-            numbers.WriteMpint(fixedSize[..32]);
-            numbers.WriteMpint(fixedSize[32..]);
-            writer.WriteText("ecdsa-sha2-nistp256");
-            writer.WriteBytes(numbers.ToArray());
+            var numbers = new SshWireWriter().Mpint(fixedSize[..32]).Mpint(fixedSize[32..]).ToArray();
+            writer.Text("ecdsa-sha2-nistp256").String(numbers);
         }
         return new SshSignature(Public, ns, "sha512", writer.ToArray());
     }

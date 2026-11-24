@@ -4,6 +4,7 @@ using Meep2.Plugins;
 using Meep2.Runtime;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.Security;
 
 namespace Meep2.Benchmarks;
 

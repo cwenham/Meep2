@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Keys, signatures and the trust store (Q272): SSH public keys and signatures, allowed-signers files, the keys Meep
+    signs with itself, and ~/.meep/trust with its authorities, roots, revocations, grants and permission definitions.
+    The runtime's Verify checks against it, and plugins' and pipelines' signatures are checked with it. BouncyCastle
+    checks Ed25519, which .NET doesn't have.
+  -->
+  <ItemGroup>
+    <PackageReference Include="BouncyCastle.Cryptography" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Meep2.SDK\Meep2.SDK.csproj" />
+    <ProjectReference Include="..\Meep2.Shared\Meep2.Shared.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- PluginSignature.Sign, for tests, takes an SshKeyPair. -->
+    <InternalsVisibleTo Include="Meep2.Plugins" />
+    <InternalsVisibleTo Include="Meep2.Tests" />
+    <InternalsVisibleTo Include="Meep2.Benchmarks" />
+  </ItemGroup>
+</Project>

@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Meep2.Security;
 
 namespace Meep2.Plugins;
 
@@ -90,7 +91,7 @@ public static class PluginSignature
         }
         if (signature.Namespace != Namespace)
             throw new PluginException($"{plugin} is signed for {signature.Namespace}, not for Meep plugins. Sign it with -n {Namespace}.");
-        var signer = trusted.Find(signature.Key)
+        var signer = trusted.Find(signature.Key, Namespace)
             ?? throw new UntrustedSignatureException(
                 $"{plugin} is signed with the key {signature.Key.Fingerprint}, which isn't one you trust. If you trust its author, add their key with meep keys trust.");
         var list = File.ReadAllBytes(listPath);

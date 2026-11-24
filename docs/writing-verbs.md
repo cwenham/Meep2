@@ -452,7 +452,7 @@ A verb can take a book as a parameter by giving it a property of type `Book`.
 
 Put the class in `src/Meep2.Modules`, in the namespace `Meep2.Modules`. Every public class there with a `[Verb]` attribute is registered automatically, since the CLI, daemon and language server all call `AddAssembly(CoreModules.Assembly)`. Put message types in `Messages.cs` or beside the verb, as `Combining.cs` does with `Batched` and `Zipped`.
 
-The project is AOT-compatible and treats warnings as errors. It writes its XML documentation beside the assembly, so a public member without a doc comment fails the build, and `meep lsp`'s verb catalogue (`meep/verbs`) shows each class's and parameter's summary from it.
+The project treats warnings as errors. It writes its XML documentation beside the assembly, so a public member without a doc comment fails the build, and `meep lsp`'s verb catalogue (`meep/verbs`) shows each class's and parameter's summary from it.
 
 ### In a plugin
 

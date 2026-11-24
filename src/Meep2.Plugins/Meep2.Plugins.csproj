@@ -1,15 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!--
     Plugins: installing them from GitHub releases, NuGet or this machine, checking their SHAs and SSH signatures, and
-    loading them into load contexts that can unload. Not AOT-compatible: a NativeAOT program can't load assemblies.
+    loading them into load contexts that can unload.
   -->
   <ItemGroup>
-    <PackageReference Include="BouncyCastle.Cryptography" />
     <PackageReference Include="NuGet.Protocol" />
     <PackageReference Include="System.Security.Cryptography.Pkcs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Meep2.SDK\Meep2.SDK.csproj" />
+    <ProjectReference Include="..\Meep2.Security\Meep2.Security.csproj" />
     <ProjectReference Include="..\Meep2.Shared\Meep2.Shared.csproj" />
     <ProjectReference Include="..\Meep2.Meeplang\Meep2.Meeplang.csproj" />
   </ItemGroup>

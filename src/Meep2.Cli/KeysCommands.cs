@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Net;
 using Meep2.Daemon;
 using Meep2.Plugins;
+using Meep2.Security;
 using Meep2.Shared;
 
 namespace Meep2.Cli;
@@ -42,7 +43,7 @@ internal static class KeysCommands
         {
             trusted = TrustedKeys.Load(options.TrustedKeysFile);
         }
-        catch (PluginException exception)
+        catch (TrustStoreException exception)
         {
             await error.WriteLineAsync(exception.Message).ConfigureAwait(false);
             return 1;
@@ -68,7 +69,7 @@ internal static class KeysCommands
         {
             trusted = TrustedKeys.Load(options.TrustedKeysFile);
         }
-        catch (PluginException exception)
+        catch (TrustStoreException exception)
         {
             await error.WriteLineAsync(exception.Message).ConfigureAwait(false);
             return 1;
@@ -169,7 +170,7 @@ internal static class KeysCommands
         var key = signed.Signature.Key;
         await output.WriteLineAsync($"Signed {count} file{(count == 1 ? "" : "s")} with the {key.Type} key {key.Fingerprint}, in {Path.Combine(folder, PluginSignature.FileName)}.").ConfigureAwait(false);
         var trust = $"meep keys trust {Environment.UserName} {key.Text}";
-        if (TrustedKeys.Load(options.TrustedKeysFile).Find(key) is null)
+        if (TrustedKeys.Load(options.TrustedKeysFile).Find(key, PluginSignature.Namespace) is null)
             await output.WriteLineAsync($"You don't trust this key yet, so meep won't load the plugin here until you do: {trust}").ConfigureAwait(false);
         await output.WriteLineAsync($"People using the plugin can trust your key with {trust}, or with meep keys trust github:<you> if it's on your GitHub account.").ConfigureAwait(false);
     }

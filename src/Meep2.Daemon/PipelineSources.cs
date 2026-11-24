@@ -5,6 +5,7 @@ using Meep2.Meeplang.Hosting;
 using Meep2.Meeplang.Parsing;
 using Meep2.Meeplang.Syntax;
 using Meep2.Plugins;
+using Meep2.Security;
 using Meep2.Shared;
 
 namespace Meep2.Daemon;

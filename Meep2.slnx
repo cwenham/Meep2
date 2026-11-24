@@ -11,6 +11,7 @@
     <Project Path="src/Meep2.Plugins/Meep2.Plugins.csproj" />
     <Project Path="src/Meep2.Runtime/Meep2.Runtime.csproj" />
     <Project Path="src/Meep2.SDK/Meep2.SDK.csproj" />
+    <Project Path="src/Meep2.Security/Meep2.Security.csproj" />
     <Project Path="src/Meep2.Shared/Meep2.Shared.csproj" />
   </Folder>
   <Folder Name="/tests/">

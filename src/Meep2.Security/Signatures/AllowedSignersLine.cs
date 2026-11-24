@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Meep2.Plugins;
+namespace Meep2.Security;
 
 /// <summary>
 /// One line of an allowed-signers file, as <c>ssh-keygen -Y verify</c> reads it: <c>name [options] type base64

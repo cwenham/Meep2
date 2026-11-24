@@ -3,6 +3,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Meep2.Meeplang.Syntax;
+using Meep2.Security;
 using NuGet.Frameworks;
 using NuGet.Packaging;
 using NuGet.Versioning;

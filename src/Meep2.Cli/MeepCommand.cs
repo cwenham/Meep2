@@ -62,6 +62,20 @@ public static class MeepCommand
           meep keys trust <name> <file.pub>       as their .pub file has it,
           meep keys trust github:<user>           or as their GitHub account has it
           meep keys list                        Show the keys you trust
+          meep trust init [--name <name>]        Set up the trust store, ~/.meep/trust, with this machine's own
+                                                authority key, which issues credentials and signs grants
+          meep trust add-authority <name> <type> <key> [--grants]
+          meep trust add-authority <name> <ca.pub> [--grants]
+                                                Trust credentials issued by an SSH certificate authority's key,
+                                                and with --grants, the grants it signs
+          meep trust add-root <file.pem> [<name>]
+                                                Trust X.509 certificates that chain to this root or CA
+          meep trust revoke <thing> [--key]     Revoke a credential, key, grant ID or certificate, or add a .krl
+                                                or .crl list. --key revokes a credential's key, not its serial.
+          meep trust issue <key.pub> [--id <name>] [--principals <a,b>] [--valid <+52w>] [--permission <p>]... [--bearer] [--out <file>]
+                                                Issue a credential for a key with this machine's authority,
+                                                using ssh-keygen. It's valid for 52 weeks unless --valid says.
+          meep trust list                       Show what the trust store holds
           meep sign <folder or files> [--key <private key>]
                                                 Sign a plugin's files, or .meep pipeline files, with your SSH key,
                                                 using ssh-keygen
@@ -115,6 +129,17 @@ public static class MeepCommand
             ["keys", "trust", .. var key] when key.Length > 0 => await KeysCommands.TrustAsync(key, context.Options(), output, error, cancellationToken).ConfigureAwait(false),
             ["keys", "trust"] => await WriteAsync(error, KeysCommands.TrustUsage, 2).ConfigureAwait(false),
             ["keys", "list"] => await KeysCommands.ListAsync(context.Options(), output, error).ConfigureAwait(false),
+            ["trust", "init"] => await TrustCommands.InitAsync(null, context.Options(), output, error, cancellationToken).ConfigureAwait(false),
+            ["trust", "init", "--name", var name] => await TrustCommands.InitAsync(name, context.Options(), output, error, cancellationToken).ConfigureAwait(false),
+            ["trust", "add-authority", .. var rest] when rest.Length > 0 =>
+                await TrustCommands.AddAuthorityAsync(rest, context.Options(), output, error, cancellationToken).ConfigureAwait(false),
+            ["trust", "add-authority"] => await WriteAsync(error, TrustCommands.AddAuthorityUsage, 2).ConfigureAwait(false),
+            ["trust", "add-root", var file] => await TrustCommands.AddRootAsync(file, null, context.Options(), output, error).ConfigureAwait(false),
+            ["trust", "add-root", var file, var name] => await TrustCommands.AddRootAsync(file, name, context.Options(), output, error).ConfigureAwait(false),
+            ["trust", "add-root", ..] => await WriteAsync(error, TrustCommands.AddRootUsage, 2).ConfigureAwait(false),
+            ["trust", "revoke", .. var rest] => await TrustCommands.RevokeAsync(rest, context.Options(), output, error, cancellationToken).ConfigureAwait(false),
+            ["trust", "issue", .. var rest] => await TrustCommands.IssueAsync(rest, context.Options(), output, error, cancellationToken).ConfigureAwait(false),
+            ["trust", "list"] => await TrustCommands.ListAsync(context.Options(), output, error).ConfigureAwait(false),
             ["sign", .. var rest] when rest is [.., "--key", _] && rest.Length > 2 =>
                 await KeysCommands.SignAsync(rest[..^2], rest[^1], context.Options(), output, error, cancellationToken).ConfigureAwait(false),
             ["sign", .. var rest] when rest.Length > 0 && !rest.Contains("--key") =>
