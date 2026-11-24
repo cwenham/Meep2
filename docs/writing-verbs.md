@@ -497,6 +497,8 @@ meep sign publish --key ~/.ssh/id_ed25519
 
 This writes `meep-files.txt` and its signature into the folder. Share it as a GitHub release (users pin it with `#plugin github.com/owner/repo 1.2.0 sha256:…`), a NuGet package (`#plugin nuget:Package.Id 1.2.0`), or a folder. See `docs/Design/Chat/step-6.md` for how trust works.
 
+A plugin runs in Meep's own process, so it's trusted code: that's why it has to be signed or pinned by its SHA. The types in `Meep2.SDK.Security` keep pipelines and the outside world from forging a verification (only the runtime can make a `VerifiedMessage` or mark a `Certificate` as proven by TLS), but a plugin could get round that with reflection. Don't; a plugin may read credentials, certificates and verifications, and make `Credential`s, `Certificate`s, `Grant`s and `Permission`s for `Verify` to check, but its own verbs can't vouch for anything. See `docs/Design/Chat/permissions.md`.
+
 ## Testing
 
 The tests use TUnit. `TestRun.Start` in `tests/Meep2.Tests/Support/MeeplangSupport.cs` loads Meeplang text with the core modules and some test modules, runs it until it halts, and records what reached each `Sink`:
