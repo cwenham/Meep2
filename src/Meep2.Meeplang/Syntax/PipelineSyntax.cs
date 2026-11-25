@@ -47,6 +47,9 @@ public sealed class PipelineSyntax
     /// <summary>The <c>#include</c> lines, in order.</summary>
     public IReadOnlyList<IncludeDirective> Includes { get; }
 
+    /// <summary>The <c>#permission</c> lines, in order, which narrow the trust store's definitions for this pipeline.</summary>
+    public IReadOnlyList<PermissionDirective> Permissions { get; init; } = [];
+
     /// <summary>The files <c>#include</c> brought in, and those they brought in, parsed, in the order they were met.</summary>
     public IReadOnlyList<PipelineSyntax> Included => _included;
 
@@ -70,7 +73,7 @@ public sealed class PipelineSyntax
     /// </summary>
     internal PipelineSyntax WithModules(IReadOnlyList<ModuleSyntax> modules)
     {
-        var copy = new PipelineSyntax(Source, Defaults, Constants, Plugins, modules, [], Templates, Includes);
+        var copy = new PipelineSyntax(Source, Defaults, Constants, Plugins, modules, [], Templates, Includes) { Permissions = Permissions };
         copy._diagnostics.AddRange(_diagnostics);
         copy._included.AddRange(_included);
         return copy;

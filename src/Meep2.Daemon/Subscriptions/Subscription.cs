@@ -25,7 +25,7 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
 {
     /// <summary>The order of each module's counts in an update.</summary>
     public static readonly string[] ModuleCounts =
-        ["received", "handled", "emitted", "passed", "busy", "queued", "dropped", "filtered", "failed", "restarts", "expired", "refused"];
+        ["received", "handled", "emitted", "passed", "busy", "queued", "dropped", "filtered", "failed", "restarts", "expired", "refused", "denied"];
 
     /// <summary>The order of each link's counts.</summary>
     public static readonly string[] LinkCounts = ["carried", "errors"];
@@ -41,9 +41,9 @@ internal sealed class Subscription(SubscriptionPlan plan, ISubscriptionHost host
 
     // Where some counts are in ModuleCounts and TotalNames.
     internal const int Emitted = 2;
-    internal const int Sourced = 12;
-    internal const int BytesReceived = 13;
-    internal const int BytesSent = 14;
+    internal const int Sourced = 13;
+    internal const int BytesReceived = 14;
+    internal const int BytesSent = 15;
 
     private readonly Lock _planning = new();
     private SubscriptionPlan _plan = plan;

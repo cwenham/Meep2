@@ -1,4 +1,6 @@
+using Meep2.Runtime.Verifying;
 using Meep2.SDK.Messages;
+using Meep2.SDK.Security;
 using Meep2.SDK.Modules;
 
 namespace Meep2.Runtime.Internal;
@@ -35,6 +37,17 @@ internal abstract class NodeContext<TNode>(TNode node) : ModuleContext, IPipelin
     public override Tally Arrival(string from) => node.PeerCounts.ArrivalFrom(from);
 
     public override Tally Destination(string endpoint) => node.PeerCounts.DestinationAt(endpoint);
+
+    public override void CountDenied() => node.Counters.Denied();
+
+    internal override string? WhyNotHeld(string permission, Message message, string? target)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        var name = PermissionName.Parse(permission);
+        var gates = node.Pipeline.Gates;
+        var store = gates.Store;
+        return Gatekeeper.WhyNot(message, gates.Resolve(name, target, store), store);
+    }
 }
 
 /// <summary>A module's context that reaches its pipeline's options, for the runtime's own verbs, such as <c>Verify</c>.</summary>

@@ -1,3 +1,5 @@
+using Meep2.SDK.Security;
+
 namespace Meep2.Meeplang.Syntax;
 
 /// <summary>Where a plugin comes from.</summary>
@@ -48,3 +50,12 @@ public sealed record PluginDirective(PluginOrigin Origin, string Name, string? V
 /// pin then pins what it includes too, so one pin covers a pipeline and everything it includes.
 /// </param>
 public sealed record IncludeDirective(string Path, SourceSpan Span, string? Sha256 = null);
+
+/// <summary>
+/// A <c>#permission</c> line, which narrows a permission the trust store defines for this pipeline's gates (Q257): a
+/// narrower scope, only some of the definition's authorities, or more requirements, as in
+/// <c>#permission WriteNotes:~/notes/** authority=home requires=ReadNotes</c>. It can't widen one.
+/// </summary>
+/// <param name="Permission">The permission as the line writes it.</param>
+/// <param name="Span">Where the line is.</param>
+public sealed record PermissionDirective(Permission Permission, SourceSpan Span);

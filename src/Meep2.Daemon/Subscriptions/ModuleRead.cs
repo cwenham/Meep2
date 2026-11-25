@@ -14,7 +14,7 @@ internal readonly record struct ModuleRead(ModuleInfo Module, long[] Counts, Mod
             module,
             [
                 stats.Received, stats.Handled, stats.Emitted, stats.Passed, (long)busy.TotalMicroseconds, stats.Queued,
-                stats.Dropped, stats.Filtered, stats.Failed, stats.Restarts, stats.Expired, stats.Refused,
+                stats.Dropped, stats.Filtered, stats.Failed, stats.Restarts, stats.Expired, stats.Refused, stats.Denied,
             ],
             traffic,
             busy,

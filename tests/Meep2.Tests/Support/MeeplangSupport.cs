@@ -205,6 +205,11 @@ public sealed class TestRun
             .Add(typeof(QuietEcho))
             .Add(typeof(Tally))
             .Add(typeof(KeepingTally))
+            .Add(typeof(NeedsNotes))
+            .Add(typeof(NotesSource))
+            .Add(typeof(WritesNote))
+            .Add(typeof(Derive))
+            .Add(typeof(Glance))
             .AddMessageType(typeof(Word))
             .AddMessageType(typeof(Number))
             .Add<WriteLine, WriteLineParameters>("WriteLine", p => new WriteLine(p, output));

@@ -102,7 +102,10 @@ internal sealed class Load(ModuleRegistry registry, PipelineSyntax syntax, Diagn
                 node.Options.Errors,
                 [.. node.Upstream.Distinct().Select(u => u.Syntax)],
                 node.Outputs.ToHashSet(),
-                node.Parent?.Syntax))]);
+                node.Parent?.Syntax)
+            {
+                Permissions = [.. node.Options.Permissions.Union(node.Candidates.SelectMany(c => c.Registration.RequiredPermissions))],
+            })]);
     }
 
     // What expressions in the modules' parameters can name: the constants, fam's modules, the message types, and

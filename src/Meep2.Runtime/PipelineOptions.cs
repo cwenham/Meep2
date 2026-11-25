@@ -1,4 +1,5 @@
 using Meep2.SDK.Messages;
+using Meep2.SDK.Security;
 using Meep2.Security;
 
 namespace Meep2.Runtime;
@@ -65,4 +66,11 @@ public sealed record PipelineOptions
     /// <c>meep run</c>. Null for none, and then nothing verifies, saying why.
     /// </summary>
     public TrustStoreSource? Trust { get; init; }
+
+    /// <summary>
+    /// The pipeline's own <c>#permission</c> directives, which narrow the trust store's definitions for its gates and
+    /// its <c>Verify.Permission</c>s (Q257): a narrower scope, only some of the authorities, or more requirements. One
+    /// that would widen a definition makes the gates that need it refuse every message, saying why.
+    /// </summary>
+    public IReadOnlyList<Permission> Permissions { get; init; } = [];
 }

@@ -2,6 +2,7 @@ using System.Linq.Expressions;
 using System.Reflection;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 
 namespace Meep2.Meeplang.Loading;
 
@@ -31,7 +32,21 @@ public sealed class ModuleRegistration
         RoleDeclared = declared is not null;
         if (RoleProblem() is { } problem)
             throw new ArgumentException(problem, nameof(moduleType));
+        try
+        {
+            RequiredPermissions = RequiresPermissionAttribute.Of(moduleType);
+        }
+        catch (FormatException exception)
+        {
+            throw new ArgumentException(exception.Message, nameof(moduleType), exception);
+        }
     }
+
+    /// <summary>
+    /// The permissions the inflection always needs (<see cref="RequiresPermissionAttribute"/>), which a pipeline can't
+    /// remove; <c>@permission</c> adds to them (Q263).
+    /// </summary>
+    public IReadOnlyList<PermissionName> RequiredPermissions { get; }
 
     /// <summary>
     /// What the verb does with messages: declared with <see cref="RoleAttribute"/>, or else worked out from the class.

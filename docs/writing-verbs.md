@@ -329,6 +329,22 @@ An error counts as handled once a module takes it and doesn't pass that same err
 
 If your module has nothing sensible to do with errors, take a narrower `TIn` than `Message`, or check `message is ErrorMessage` and decide.
 
+## Permissions
+
+A pipeline gates a module with `@permission=Name` (see [Gates](verbs.md#gates-permission)). A verb can need permissions of its own, in two ways.
+
+**Always:** put `[RequiresPermission("Name")]` on the inflection's class, once for each permission. No pipeline can remove it; `@permission` adds to it, and both are needed. Every message must hold it to reach the inflection, and a source's pipeline must hold it for the source to start. It's on the class, not the verb, so each inflection can need something different, as long as they take different message types: a message that more than one inflection takes by its type needs what each of them needs. Inflections chosen for each message (`[ChosenForEachMessage]`) are chosen after the gate, so they must all require the same permissions; the registry refuses a verb whose don't. A name that isn't a permission's is an error when the verb is registered too.
+
+```csharp
+[Verb("Authorise", Inflection = "Permission")]
+[RequiresPermission("AuthorisePermission")]
+public sealed class AuthorisePermission : AInflection<Message> { … }
+```
+
+**For some messages:** call `context.Demand("meep.files.read", message, target)` in `HandleAsync` before doing the gated thing, such as `Fetch.File` reading a file outside its `root`. `target` is what you're about to touch, such as a file's full path, which a scoped permission the message holds must match; leave it out to need the permission as named. If the message doesn't hold it, `Demand` throws `PermissionDeniedException`. Let it escape: the runtime emits a `PermissionDenied` error in place of the message and counts it as denied, without restarting the module or counting it towards stopping the branch. `context.Holds(…)` asks the same question without refusing.
+
+A `PermissionDenied` is an `ErrorMessage` with `Gate` (the module), `Needed` and `Reasons`. Only the runtime makes one. In a passthrough module, `Demand` can't stop the message going on, since it already has; use `[RequiresPermission]` or `@permission` there.
+
 ## Several inflections
 
 To give a verb several inflections, write a class for each with the same verb name and different inflection names:
@@ -390,6 +406,8 @@ An inflection whose choice depends on the message itself, not only on its parame
 | `Stopping` | Cancelled when the pipeline is asked to stop. Most modules can ignore it. |
 | `PipelineName` | The pipeline's file name without its extension, for modules that keep things per pipeline. |
 | `Module` | The module's `ModuleInfo`: its number, verb, inflection and name. |
+| `Demand(permission, message, target)` / `Holds(…)` | Refuses a message that doesn't hold a permission, or asks whether it does, for a check finer than `@permission`. See [Permissions](#permissions). |
+| `CountDenied()` | Counts something refused before it became a message, as a Listen counts the requests it answers with 401 for lack of proof, in the module's `denied` count. |
 
 ### Keeping messages and flushing
 

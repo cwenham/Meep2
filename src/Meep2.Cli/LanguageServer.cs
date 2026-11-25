@@ -31,6 +31,7 @@ internal sealed class LanguageServer
     private readonly LspGraphs _graphs;
     private readonly LspEdits _edits;
     private readonly LspTokens _tokens;
+    private readonly LspPermissions _permissions;
     private bool _shuttingDown;
 
     /// <summary>Makes a server that reads from <paramref name="input"/> and writes to <paramref name="output"/>.</summary>
@@ -46,6 +47,7 @@ internal sealed class LanguageServer
         _graphs = new LspGraphs(_workspace, _rpc);
         _edits = new LspEdits(_workspace);
         _tokens = new LspTokens(_workspace);
+        _permissions = new LspPermissions(plugins?.Home);
     }
 
     /// <summary>Serves requests until the client says to exit, or closes the stream. Returns the exit code.</summary>
@@ -190,9 +192,10 @@ internal sealed class LanguageServer
         }
         var update = document.Draft.Update(syntax, registry);
         document.Loaded = update.Loaded;
-        if (update.Loaded)
-            document.Record(update.Shape!, update.Renamed, document.Version, document.Text);
-        return [.. problems, .. update.Diagnostics];
+        if (!update.Loaded)
+            return [.. problems, .. update.Diagnostics];
+        document.Record(update.Shape!, update.Renamed, document.Version, document.Text);
+        return [.. problems, .. update.Diagnostics, .. _permissions.Warnings(update.Shape!, document.Path)];
     }
 
     private async Task DidChangeAsync(JsonNode parameters, CancellationToken cancellationToken)

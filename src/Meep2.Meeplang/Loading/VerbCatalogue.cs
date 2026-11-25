@@ -68,6 +68,7 @@ public static class VerbCatalogue
             RoleDeclared = registration.RoleDeclared,
             EmitsInput = registration.EmitsInput || registration.IsPassthrough,
             Reconfigurable = registration.Reconfigure is not null,
+            Requires = [.. registration.RequiredPermissions.Select(p => p.ToString())],
             Description = docs.Summary(type, "T:" + type.FullName),
             Class = type.FullName,
             Source = SourceLocator.Find(type),

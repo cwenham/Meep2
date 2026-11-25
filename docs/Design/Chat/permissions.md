@@ -88,6 +88,10 @@ A `VerifiedMessage` expires when the earliest thing it relied on does.
 - `Authorise.Certificate`: `[RequiresPermission("AuthoriseCertificate")]`; what it does depends on Q255.
 - Whether the grant is also saved, so it's in force after a restart, is Q256.
 - A `Revoke` verb, gated by `RevokePermission`, to match (Q262).
+- Added 25 November, from phase 4's answers:
+  - A `Parse` verb turns text into a `Credential`, `Certificate` or `Permission`, or an error if it's none of them, using one reader in the SDK that `Verify` shares. `Authorise` and `Revoke` take typed messages only, so their inflections are chosen by type, before the gate (Q293).
+  - A refusal at a gate gets a short span of its own, named after the gated module, so every refusal is in the trace, including one straight after a source (Q298).
+  - Gates that need a kind of proof, as in `@permission=meep.files.write proof=signed`, so a bearer credential can't reach them (Q299).
 
 ### Phase 6. Meep's own restricted functions
 

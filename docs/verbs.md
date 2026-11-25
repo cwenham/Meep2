@@ -51,12 +51,13 @@ Receives messages from the network, each carrying a lease so `Send` can reply. C
 
 | Inflection | Addresses | Emits | Parameters |
 |---|---|---|---|
-| HTTP | `http://`, `https://` | `HttpRequest` | `certificate`, `key`, `max-size`, `stream`, `default-status`, `default-reply` |
+| HTTP | `http://`, `https://` | `HttpRequest` | `certificate`, `key`, `max-size`, `stream`, `default-status`, `default-reply`, `proof` |
 | TCP | `tcp://` | `TcpMessage`; `TcpConnected`/`TcpDisconnected` with `connections` | `end`, `length`, `connections`, `max-size` |
 | WebSocket | `ws://`, `wss://` | `WebSocketText`, `WebSocketBinary`; `WebSocketConnected`/`WebSocketDisconnected` with `connections` | `certificate`, `key`, `origins`, `connections`, `max-size`, `ping`, `idle-timeout`, `max-queued` |
 
 - Positional: `url`
 - Example: `Listen "ws://0.0.0.0:8080/chat/" as Room`
+- `proof=required` on an HTTP Listen refuses, with 401, a request that has no `Signature-Input`, `Signature` and `Meep-Credential`, before it reaches the pipeline, and counts it as `denied`. It only keeps anonymous requests out; `Verify` still checks the signature and the credential. `proof=optional`, the default, lets every request in.
 - HTTP and WebSocket Listens tell a client that asks with `Meep-Host: ?` the daemon's ID only if it's on this machine or a private address, unless the daemon's settings have `meep-host-public = true` (or `meep run` or `meep daemon` is given `--meep-host-public`). An origin a client gives is counted as it says; it's a claim, not proof.
 
 ## Getting and reshaping data
@@ -149,7 +150,7 @@ Makes a named tree forget everything, or one class, then passes the message on.
 ## Security
 
 ### Verify
-Checks a credential, a certificate or a permission against this machine's trust store (`~/.meep/trust`, kept by `meep trust`) and emits a `VerifiedMessage` saying whether it passed, every reason it didn't, and the permissions it established. A failed check is a result, not an error, so a pipeline can answer it, such as with a 401. Only Verify can make a `VerifiedMessage`, and a gate (`@permission`, from phase 4 of the permissions plan) counts only one Verify made.
+Checks a credential, a certificate or a permission against this machine's trust store (`~/.meep/trust`, kept by `meep trust`) and emits a `VerifiedMessage` saying whether it passed, every reason it didn't, and the permissions it established. A failed check is a result, not an error, so a pipeline can answer it, such as with a 401. Only Verify can make a `VerifiedMessage`, and a gate (`@permission`, below) counts only one Verify made.
 
 The inflection is chosen for each message by what it's given: the message itself if it's a `Credential`, `Certificate` or `Permission`; otherwise the text `from=` reads from it, or the message's own text. PEM, or DER in base64, is a certificate; a permission's name or a `#permission` line is a permission; anything else is read as a credential, and fails as `Malformed` if it isn't one.
 
@@ -165,6 +166,34 @@ The inflection is chosen for each message by what it's given: the message itself
 - A signed request carries `Meep-Credential` (the certificate's base64), `Content-Digest` (RFC 9530, needed when there's a body), and `Signature-Input` and `Signature` (RFC 9421) labelled `meep`, covering at least `@method`, `@authority`, and `@target-uri` or `@path` and `@query` (for behind a proxy that ends TLS, where the scheme changes), with `created`, `nonce` and optionally `keyid`. The signature is an SSH signature of the signature base in the `meep-request` namespace, as `ssh-keygen -Y sign -n meep-request` makes, by the credential's key; a security key's (`sk-`) needs a touch. It must be made within `window` of now (60 s by default), its nonce unseen in that time, and addressed to one of this machine's names, or one in `audience=`. A streamed body (`stream=true` on Listen) can't be checked, and fails.
 - A result also has `Notes`: what was found that isn't a failure but might explain a missing permission, such as a grant left out and why.
 - When a check fails and the reason isn't clear, see [troubleshooting.md](troubleshooting.md).
+
+### Gates: `@permission`
+Not a verb, but a modifier any module can have: `@permission=Name` makes the module a gate. A message reaches it only if every line of its family, back to where it began, passes through a `Verify` of a credential that passed and holds the permission, conferred by an authority the permission's definition allows, with everything the definition requires. A message made by joining others, as `Zip` and `Batch` do, needs the permission on every line it came from.
+
+```
+Listen "http://0.0.0.0:8080/notes/" proof=required
+    Verify from=msg.Headers["Meep-Credential"]
+        Send text="Welcome." @permission=ReadNotes
+            Send error-status=403 error-reply="{msg.Error}" @errors
+```
+
+- Write it more than once to need several; all are needed. A scope goes in quotes: `@permission="meep.files.write:~/notes/**"`, and the credential must hold a scope at least as wide.
+- A permission defined in the trust store's `permissions.meep` must be held as its definition says. One that isn't defined can still be needed: any trusted authority confers it, and it requires nothing, unless the pipeline's own `#permission` line narrows it. `meep lsp` warns about a name the store doesn't define, in case it's misspelt.
+- A refused message becomes a `PermissionDenied` error from the module, with the message as its parent, saying which permissions it lacked and why (`Needed`, `Reasons`). It follows the error policy as other errors do, so an `@errors` module can answer it. One nothing handles is logged, but refusals never count towards `stop-pipeline`, so unwelcome requests can't stop a pipeline. An error refused at a gate passes the module by instead, still looking for a module that takes errors.
+- A refused message goes no further along that path, even past a passthrough module or `Distribute`.
+- Each module counts what it refused as `denied`, in `meep` and Synesthesia (a Listen with `proof=required` counts its 401s there too), and the OpenTelemetry metric `meep.module.messages` has `meep.event = denied`. A refusal is also an event, `meep.permission.denied`, on the span of the module that emitted the message.
+- A verb can require a permission itself, which no pipeline can remove; `@permission` adds to it. `meep lsp` shows what a module needs when you hover over `@permission`, and the graph lists it as `permissions`, so a drawing can put a lock on it.
+- On a source, `@permission` means the pipeline must hold the permission for the source to start. Pipelines don't carry credentials of their own yet, so for now a gated source stops its pipeline starting.
+- A credential revoked after it was verified is refused at the next gate, which looks again whenever the trust store has changed since.
+- A gate's answer is kept on the message, so later gates needing the same permission, for it or the messages made from it, don't walk its family again.
+
+A pipeline can narrow a definition for its own gates and `Verify`s with a `#permission` line at the top, before its modules, written as in `permissions.meep`: a narrower scope, only some of the authorities, or more requirements. It can't widen one; a gate that needs a permission a pipeline widens refuses every message, saying how.
+
+```
+#permission WriteNotes:~/notes/inbox/** authority=home requires=ReadNotes
+```
+
+When a refusal's reason isn't clear, see [troubleshooting.md](troubleshooting.md#a-message-is-refused-with-permissiondenied).
 
 ## Output
 

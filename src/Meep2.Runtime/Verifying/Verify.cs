@@ -149,8 +149,9 @@ public sealed class VerifyPermission(VerifyParameters parameters) : AInflection<
         // A name or #permission line written as text narrows the definition, as a pipeline's directive does: it keeps
         // the definition's authorities unless it names its own, and adds its requirements to the definition's. A
         // Permission message is checked as it stands, since it claims its own requirements.
+        // The pipeline's own #permission directive narrows the definition first, as it does for the pipeline's gates.
         if (!read.IsMessage && store.Permissions.Find(permission.Name.Name) is { } definition)
-            permission = definition.NarrowedBy(permission);
+            permission = Gatekeeper.Narrowed(definition, Directives.Of(context)).NarrowedBy(permission);
 
         var now = DateTime.UtcNow;
         var verification = new Verification(permission, VerificationKind.Permission, store, now);
@@ -165,6 +166,13 @@ public sealed class VerifyPermission(VerifyParameters parameters) : AInflection<
             verification.Establish(permission.Name);
         return verification.ToMessage();
     }
+}
+
+/// <summary>Where Verify finds its pipeline's own <c>#permission</c> directives.</summary>
+internal static class Directives
+{
+    /// <summary>The directives, or none.</summary>
+    public static IReadOnlyList<Permission> Of(ModuleContext context) => (context as IPipelineContext)?.Options.Permissions ?? [];
 }
 
 /// <summary>Where Verify finds its pipeline's trust store.</summary>

@@ -504,6 +504,10 @@ public class VerifyTests
             RevocationVersion = store.RevocationVersion,
         };
         var permission = new Permission(PermissionName.Parse("ReadNotes"));
+
+        // Only a verification a Verify emitted counts: one the runtime made but never emitted doesn't.
+        await Assert.That(new PermissionLines(store, DateTime.UtcNow).WhyNotMet(new Word("early") { Parents = new Parents(verified) }, permission)).Contains("Nothing on one of the lines");
+        verified.EmittedBy = new ModuleInfo(1, "Verify", null, "Credential");
         var anonymous = new Word("anonymous");
         var both = new Word("zipped") { Parents = new Parents([new Word("a") { Parents = new Parents(verified) }, new Word("b") { Parents = new Parents(verified) }]) };
         var mixed = new Word("zipped") { Parents = new Parents([new Word("a") { Parents = new Parents(verified) }, anonymous]) };

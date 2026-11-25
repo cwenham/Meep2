@@ -1,4 +1,5 @@
 using Meep2.SDK.Messages;
+using Meep2.SDK.Security;
 
 namespace Meep2.SDK.Modules;
 
@@ -125,6 +126,47 @@ public abstract class ModuleContext
         ArgumentNullException.ThrowIfNull(error);
         error.LeftAloneBy = Module;
     }
+
+    /// <summary>
+    /// Refuses <paramref name="message"/> unless it holds <paramref name="permission"/>, for a check finer than
+    /// <c>@permission</c>, such as Fetch.File only for files outside its <c>root</c>: every line of the message's
+    /// family must pass through a verified credential that holds it, as at a gate. If it doesn't, this throws
+    /// <see cref="PermissionDeniedException"/>, which the runtime turns into a <see cref="PermissionDenied"/> error in
+    /// place of the message, without counting it as the module failing.
+    /// </summary>
+    /// <param name="permission">The permission's name, as in <c>meep.files.read</c>, or a name and scope.</param>
+    /// <param name="message">The message whose credentials count, usually the one being handled.</param>
+    /// <param name="target">
+    /// What the module is about to touch, such as a file's full path, which a scoped permission the message holds must
+    /// match (<see cref="PermissionName.Allows"/>). Null needs the permission as named.
+    /// </param>
+    /// <exception cref="PermissionDeniedException">The message doesn't hold it.</exception>
+    /// <exception cref="FormatException"><paramref name="permission"/> isn't a permission's name.</exception>
+    public void Demand(string permission, Message message, string? target = null)
+    {
+        if (WhyNotHeld(permission, message, target) is { } why)
+            throw new PermissionDeniedException(PermissionName.Parse(permission), why);
+    }
+
+    /// <summary>
+    /// Whether <paramref name="message"/> holds <paramref name="permission"/>, as <see cref="Demand"/> checks, without
+    /// refusing it.
+    /// </summary>
+    /// <exception cref="FormatException"><paramref name="permission"/> isn't a permission's name.</exception>
+    public bool Holds(string permission, Message message, string? target = null) => WhyNotHeld(permission, message, target) is null;
+
+    /// <summary>
+    /// Counts something the module refused for lack of a permission or a proof, without a message to refuse, as a
+    /// Listen does when it answers a request with 401 before it reaches the pipeline (Q296). It's added to the module's
+    /// <c>denied</c> count, beside the messages its gate refused.
+    /// </summary>
+    public virtual void CountDenied()
+    {
+    }
+
+    /// <summary>Why <paramref name="message"/> doesn't hold a permission, or null if it does. The runtime provides it.</summary>
+    internal virtual string? WhyNotHeld(string permission, Message message, string? target) =>
+        throw new NotSupportedException("This context isn't part of a pipeline, so there are no credentials to check.");
 
     /// <summary>
     /// Emits at any time, from any thread, for a module that handles messages, such as one passing on what arrives on a

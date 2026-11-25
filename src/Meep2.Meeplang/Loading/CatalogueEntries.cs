@@ -29,6 +29,12 @@ public sealed record VerbEntry(
     /// <summary>Whether it can take new parameters while it runs, rather than being replaced.</summary>
     public bool Reconfigurable { get; init; }
 
+    /// <summary>
+    /// The permissions it always needs (<c>[RequiresPermission]</c>), which a pipeline can't remove, or none: a message
+    /// must hold each to reach it, and a source's pipeline must hold each for it to start.
+    /// </summary>
+    public IReadOnlyList<string> Requires { get; init; } = [];
+
     /// <summary>What it does, from its class's documentation, if that was shipped beside it.</summary>
     public string? Description { get; init; }
 
