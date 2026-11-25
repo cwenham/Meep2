@@ -77,6 +77,12 @@ public sealed class ModuleRegistration
     /// <summary>The verb's name.</summary>
     public string Verb { get; }
 
+    /// <summary>
+    /// The verb's own name when <see cref="Verb"/> is another name for it (<see cref="VerbAttribute.Alias"/>), as
+    /// <c>Authorise</c> for <c>Authorize</c>, or null.
+    /// </summary>
+    public string? AliasOf { get; init; }
+
     /// <summary>The plugin it comes from, by the name the pipeline gave it, or null for one that came with Meep.</summary>
     public string? Plugin { get; init; }
 

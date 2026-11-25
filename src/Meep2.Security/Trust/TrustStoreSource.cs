@@ -1,8 +1,9 @@
 namespace Meep2.Security;
 
 /// <summary>
-/// Where a host's pipelines get the trust store they verify against: one store that never changes, for tests and
-/// embedding, or this machine's, kept current by a <see cref="TrustStoreWatcher"/> started the first time it's asked for.
+/// Where a host's pipelines get the trust store they verify against: one store, read again only when this process
+/// changes it, for tests and embedding, or this machine's, kept current by a <see cref="TrustStoreWatcher"/> started
+/// the first time it's asked for.
 /// </summary>
 /// <remarks>
 /// The daemon asks for the store when it starts, so a store that can't be read is reported then. <c>meep run</c> only
@@ -15,7 +16,14 @@ public abstract class TrustStoreSource : IDisposable
     /// </summary>
     public abstract TrustStore? Current { get; }
 
-    /// <summary>Always the same store.</summary>
+    /// <summary>
+    /// Reads the store again now, after something in this process changed it, such as <c>Authorise</c> recording a
+    /// grant, so what it changed is in force at once rather than once a watcher notices. Returns the store as it is
+    /// then, or null if there's none. A store that can't be read again stays as it was.
+    /// </summary>
+    public virtual TrustStore? Reload() => Current;
+
+    /// <summary>This store, read again only when <see cref="Reload"/> is called.</summary>
     public static TrustStoreSource Of(TrustStore store)
     {
         ArgumentNullException.ThrowIfNull(store);
@@ -48,7 +56,26 @@ public abstract class TrustStoreSource : IDisposable
 
     private sealed class Fixed(TrustStore store) : TrustStoreSource
     {
-        public override TrustStore Current => store;
+        private readonly Lock _reloading = new();
+        private TrustStore _store = store;
+
+        public override TrustStore Current => Volatile.Read(ref _store);
+
+        public override TrustStore Reload()
+        {
+            lock (_reloading)
+            {
+                try
+                {
+                    Volatile.Write(ref _store, _store.Reload());
+                }
+                catch (TrustStoreException)
+                {
+                    // It stays as it was, as a watcher's does.
+                }
+                return _store;
+            }
+        }
     }
 
     private sealed class Watched(TrustFolder folder, Action<string> log) : TrustStoreSource
@@ -92,6 +119,8 @@ public abstract class TrustStoreSource : IDisposable
                 log($"[trust] the trust store in {folder.Path} can't be read, so nothing verifies until it can: {exception.Message}");
             }
         }
+
+        public override TrustStore? Reload() => Volatile.Read(ref _watcher) is { } running ? running.Reload() : Current;
 
         protected override void Dispose(bool disposing)
         {

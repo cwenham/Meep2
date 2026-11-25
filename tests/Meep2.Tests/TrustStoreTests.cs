@@ -214,6 +214,113 @@ public class TrustStoreTests
     }
 
     [Test]
+    public async Task A_key_revocation_list_revokes_a_credential_named_only_by_its_fingerprints_and_serial()
+    {
+        Skip.Unless(SshKeygen.Available, "This needs OpenSSH's ssh-keygen.");
+        using var lab = await CredentialLab.CreateAsync();
+        var subject = PublicKey.Parse("alice", lab.SubjectPublicKey);
+        var nine = CredentialName.Of(await lab.IssueAsync("-I", "alice", "-z", "9"));
+        var ten = CredentialName.Of(await lab.IssueAsync("-I", "alice", "-z", "10"));
+
+        var bySerial = await MakeKrlAsync(lab, "serial: 9\n");
+        await Assert.That(bySerial.WhyRevoked(nine)).IsEqualTo("its serial, 9, is revoked");
+        await Assert.That(bySerial.WhyRevoked(ten)).IsNull();
+        await Assert.That(bySerial.WhyRevoked(nine with { Authority = "SHA256:another" })).IsNull();
+        await Assert.That((await MakeKrlAsync(lab, $"key: {lab.SubjectPublicKey.Trim()}\n")).WhyRevoked(ten)).IsEqualTo("its key is revoked");
+        await Assert.That((await MakeKrlAsync(lab, $"hash: {subject.Fingerprint}\n")).WhyRevoked(ten)).IsEqualTo("its key is revoked");
+        await Assert.That((await MakeKrlAsync(lab, $"key: {lab.AuthorityPublicKey.Trim()}\n")).WhyRevoked(ten)).IsEqualTo("its authority's key is revoked");
+    }
+
+    [Test]
+    public async Task Tidy_takes_out_what_is_no_longer_needed_and_keeps_the_rest()
+    {
+        Skip.Unless(SshKeygen.Available, "This needs OpenSSH's ssh-keygen.");
+        using var lab = await CredentialLab.CreateAsync();
+        using var home = new TemporaryFolder();
+        var folder = TrustFolder.In(home.Path);
+        folder.Create();
+        using var granter = SshKeyPair.CreateEd25519("granter");
+        var now = DateTime.UtcNow;
+        var past = now.AddDays(-1);
+        var future = now.AddDays(30);
+        var bob = await lab.IssueAsync("-I", "bob", "-z", "30");
+        var carol = await lab.IssueAsync("-I", "carol", "-z", "31");
+        var authority = bob.AuthorityFingerprint;
+        var oldAdmin = new CredentialName("SHA256:oldadmin", 40, authority);
+        var goneAdmin = new CredentialName("SHA256:goneadmin", 41, authority);
+        var liveAdmin = new CredentialName("SHA256:liveadmin", 44, authority);
+
+        var expired = Sign(granter, new GrantTerms(bob, PermissionName.Parse("A")) { ValidBefore = past, AuthorisedBy = [goneAdmin] });
+        var live = Sign(granter, new GrantTerms(bob, PermissionName.Parse("B")) { ValidBefore = future, AuthorisedBy = [liveAdmin] });
+        var revoked = Sign(granter, new GrantTerms(bob, PermissionName.Parse("C")) { ValidBefore = future });
+        var toRevoked = Sign(granter, new GrantTerms(carol, PermissionName.Parse("D")));
+        var fallen = Sign(granter, new GrantTerms(bob, PermissionName.Parse("E")) { AuthorisedBy = [oldAdmin] });
+        foreach (var grant in new[] { expired, live, revoked, toRevoked, fallen })
+            folder.RecordGrant(grant);
+
+        folder.Revoke(Revoking.Grant(revoked));
+        folder.Revoke(Revoking.Grant(expired.Terms.Id));
+        folder.Revoke(Revoking.Credential(carol) with { Until = future });
+        folder.Revoke(new Revocation(RevocationKind.Serial, authority, 40), "the old admin", past);
+        folder.Revoke(new Revocation(RevocationKind.Serial, authority, 41), "the gone admin", past);
+        folder.Revoke(new Revocation(RevocationKind.Serial, authority, 42), "someone long gone", past);
+        folder.Revoke(new Revocation(RevocationKind.Serial, authority, 43), "someone whose end isn't known");
+        folder.Revoke(new Revocation(RevocationKind.Key, "SHA256:somekey"), "a key", past);
+        folder.Revoke(new Revocation(RevocationKind.Certificate, new string('A', 64)), "an old certificate", past);
+        await Assert.That(File.ReadAllText(folder.Revoked)).Contains($"the old admin, revoked {now:yyyy-MM-dd}");
+        await Assert.That(File.ReadAllText(folder.Revoked)).Contains($"; {StoreTidying.Until(past)}");
+
+        var tidied = folder.Tidy(now);
+
+        // Grants: the expired one, the revoked one, and the one whose credential is revoked go. The one that fell with
+        // its authoriser stays, so the authoriser's revocation stays too.
+        await Assert.That(tidied.Grants.Count).IsEqualTo(3);
+        await Assert.That(tidied.Grants.Any(g => g.StartsWith("A for ", StringComparison.Ordinal) && g.EndsWith($"it expired at {past:yyyy-MM-dd HH:mm}Z", StringComparison.Ordinal))).IsTrue();
+        await Assert.That(tidied.Grants.Any(g => g.StartsWith("C for ", StringComparison.Ordinal) && g.Contains("it's revoked", StringComparison.Ordinal))).IsTrue();
+        await Assert.That(tidied.Grants.Any(g => g.StartsWith("D for ", StringComparison.Ordinal) && g.Contains("its credential is revoked", StringComparison.Ordinal))).IsTrue();
+        var store = TrustStore.Load(folder);
+        await Assert.That(store.Grants.Select(g => g.Terms.Permission.Name)).IsEquivalentTo(["B", "E"]);
+
+        // Revocations: the expired grant's (from the grants file), the long-gone credential's and the old certificate's
+        // go. The revoked grant's stays until it would have expired, the old admin's while a grant names it, and the
+        // key's, the one whose end isn't known, and carol's, which hasn't expired, stay.
+        await Assert.That(tidied.Revocations.Count).IsEqualTo(4);
+        await Assert.That(store.Revocations.Entries).IsEquivalentTo([
+            new Revocation(RevocationKind.Grant, revoked.Terms.Id.ToString()),
+            Revocation.Of(carol),
+            new Revocation(RevocationKind.Serial, authority, 40),
+            new Revocation(RevocationKind.Serial, authority, 43),
+            new Revocation(RevocationKind.Key, "SHA256:somekey"),
+        ]);
+        await Assert.That(tidied.Revocations.Any(r => r.StartsWith("the gone admin", StringComparison.Ordinal))).IsTrue();
+        await Assert.That(store.Revocations.WhyRevoked(fallen)).Contains("falls with the credential that authorised it");
+
+        // The files' own comments are kept, each entry's goes with it, and a second tidy finds nothing.
+        await Assert.That(File.ReadAllText(folder.Grants)).StartsWith("# Grants recorded by Authorise");
+        await Assert.That(File.ReadAllText(folder.Revoked)).StartsWith("# What's revoked:");
+        await Assert.That(File.ReadAllText(folder.Revoked)).DoesNotContain("someone long gone");
+        var again = folder.Tidy(now);
+        await Assert.That(again.Grants.Count + again.Revocations.Count).IsEqualTo(0);
+    }
+
+    [Test]
+    public async Task Store_lines_keep_what_isnt_an_entry_as_it_was()
+    {
+        var text = "# Header\n# more header\n# first's comment\nfirst\n\n# loose\n\nsecond\n# trailing\n";
+        var lines = StoreLines.Parse(text);
+        await Assert.That(lines.ToString()).IsEqualTo(text);
+        await Assert.That(lines.Entries.Select(l => l.What)).IsEquivalentTo(["first's comment", "second"]);
+
+        var removed = lines.RemoveWhere(line => line.Entry == "first" ? "it had to go" : null);
+        await Assert.That(removed).IsEquivalentTo(["first's comment: it had to go"]);
+        await Assert.That(lines.ToString()).IsEqualTo("# Header\n# more header\n\n# loose\n\nsecond\n# trailing\n");
+        await Assert.That(StoreLines.Parse("no newline").ToString()).IsEqualTo("no newline\n");
+        await Assert.That(StoreTidying.UntilIn(["# x, revoked 2026-11-25 10:00Z; needed until 2027-01-02T03:04:05Z"]))
+            .IsEqualTo(new DateTime(2027, 1, 2, 3, 4, 5, DateTimeKind.Utc));
+        await Assert.That(StoreTidying.Until(new DateTime(2027, 1, 2, 3, 4, 5, 1, DateTimeKind.Utc))).IsEqualTo("needed until 2027-01-02T03:04:06Z");
+    }
+
+    [Test]
     public async Task Revocation_lists_in_the_store_revoke_credentials_and_certificates()
     {
         Skip.Unless(SshKeygen.Available, "This needs OpenSSH's ssh-keygen.");

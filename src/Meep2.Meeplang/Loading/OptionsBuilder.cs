@@ -15,7 +15,7 @@ namespace Meep2.Meeplang.Loading;
 internal sealed class OptionsBuilder(PipelineSyntax syntax, Diagnostics diagnostics)
 {
     private static readonly string[] s_defaults = ["buffer", "expires", "on-error", "keep-finished"];
-    private static readonly string[] s_modifiers = ["buffer", "bypass", "errors", "no-errors", "expires", "accept-expired", "on-error", "permission"];
+    private static readonly string[] s_modifiers = ["buffer", "bypass", "errors", "no-errors", "expires", "accept-expired", "on-error", "permission", "proof"];
 
     /// <summary>The pipeline's constants, included files' first, so the pipeline's own can't be redeclared by them unnoticed.</summary>
     public Dictionary<string, ConstantValue> Constants()
@@ -66,6 +66,11 @@ internal sealed class OptionsBuilder(PipelineSyntax syntax, Diagnostics diagnost
                 diagnostics.Error($"{node.Syntax.Verb} is a source, so @{modifier.Name} doesn't apply to it.", modifier.Span);
             else
                 options = With(options, node, modifier);
+        }
+        if (options.Proofs.Count > 0 && options.Permissions.Count == 0 && node.Registration.RequiredPermissions.Count == 0
+            && node.Syntax.Modifiers.FirstOrDefault(m => m.Name == "proof") is { } proof)
+        {
+            diagnostics.Error($"@proof says how a gate's credentials must be proven, but {node.Syntax.Verb} isn't a gate: give it @permission too.", proof.Span);
         }
         return WithHandlesType(options, node);
     }
@@ -168,6 +173,10 @@ internal sealed class OptionsBuilder(PipelineSyntax syntax, Diagnostics diagnost
                 return Permission(modifier) is { } permission && !options.Permissions.Contains(permission)
                     ? options with { Permissions = [.. options.Permissions, permission] }
                     : options;
+            case "proof":
+                return Proofs(modifier) is { } proofs
+                    ? options with { Proofs = [.. options.Proofs.Union(proofs)] }
+                    : options;
             default:
                 diagnostics.Error($"There's no modifier called @{modifier.Name}." + Suggestions.For(modifier.Name, s_modifiers), modifier.Span);
                 return options;
@@ -193,6 +202,30 @@ internal sealed class OptionsBuilder(PipelineSyntax syntax, Diagnostics diagnost
             return name;
         diagnostics.Error(value is string other ? $"{other} isn't a permission's name. " + Needs : Needs, modifier.Value.Span);
         return null;
+    }
+
+    // @proof's kinds of proof (Q299): signed for any proof of possession, or request, connection or tls for one kind;
+    // or null, having reported why.
+    private Proof[]? Proofs(ModifierSyntax modifier)
+    {
+        const string Needs = "@proof needs the kind of proof a gate's credentials must have been verified with: signed (any proof that whoever presented them holds their key), request, connection or tls, as in @proof=signed; or any, to accept a bearer credential where the verb would need proof.";
+        if (modifier.Value is null)
+        {
+            diagnostics.Error(Needs, modifier.Span);
+            return null;
+        }
+        Proof[]? proofs = syntax.TextOf(modifier.Value.Span).Trim('"') switch
+        {
+            "signed" => [Proof.RequestSignature, Proof.Connection, Proof.Tls],
+            "request" => [Proof.RequestSignature],
+            "connection" => [Proof.Connection],
+            "tls" => [Proof.Tls],
+            "any" => Enum.GetValues<Proof>(),
+            _ => null,
+        };
+        if (proofs is null)
+            diagnostics.Error(Needs, modifier.Value.Span);
+        return proofs;
     }
 
     // @buffer's size, or null, having reported why.

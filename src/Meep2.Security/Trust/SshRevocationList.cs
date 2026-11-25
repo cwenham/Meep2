@@ -99,6 +99,39 @@ public sealed class SshRevocationList
         return null;
     }
 
+    /// <summary>
+    /// Why the list revokes the credential <paramref name="name"/> names, or null if it doesn't: by its authority and
+    /// serial, or because its key or its authority's key is revoked. A grant names who authorised it this way (Q301).
+    /// Only the fingerprints are known, so a key listed whole or by its SHA-256 hash is found, but not one listed by
+    /// its SHA-1 hash, nor a credential revoked by its key ID.
+    /// </summary>
+    public string? WhyRevoked(CredentialName name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        foreach (var section in _certificates.Where(s => s.Authority.Length == 0 || Fingerprint(s.Authority) == name.Authority))
+        {
+            if (name.Serial != 0 && section.RevokesSerial(name.Serial))
+                return $"its serial, {name.Serial}, is revoked";
+        }
+        if (RevokesFingerprint(name.Key))
+            return "its key is revoked";
+        if (RevokesFingerprint(name.Authority))
+            return "its authority's key is revoked";
+        return null;
+    }
+
+    // Whether a key with this SHA-256 fingerprint is listed, whole or by its SHA-256 hash.
+    private bool RevokesFingerprint(string fingerprint)
+    {
+        if (!fingerprint.StartsWith("SHA256:", StringComparison.Ordinal))
+            return false;
+        var hash = fingerprint["SHA256:".Length..];
+        return _sha256.Any(listed => listed.TrimEnd('=') == hash)
+            || _keys.Any(listed => Fingerprint(Convert.FromBase64String(listed)) == fingerprint);
+    }
+
+    private static string Fingerprint(ReadOnlySpan<byte> key) => "SHA256:" + Convert.ToBase64String(SHA256.HashData(key)).TrimEnd('=');
+
     /// <summary>Whether the list revokes this key, given in SSH's wire format.</summary>
     public bool RevokesKey(ReadOnlySpan<byte> key) => WhyKeyRevoked(key) is not null;
 

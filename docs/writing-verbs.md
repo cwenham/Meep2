@@ -130,6 +130,8 @@ A source can emit at any time and from any thread through its context. What it e
 
 `[Verb("Name")]` names the verb. `Inflection = "HTTP"` names the inflection; without it, the inflection takes the class's name. A verb with one inflection doesn't need to name it.
 
+`Alias = "Authorize"` gives the verb another name a pipeline may write, as `Authorise` does for American spelling. The registry lists the verb under both, and tools and errors use the one written. Give it on every inflection, or the alias has only those that have it.
+
 The class needs one of these public constructors:
 
 - one that takes its parameters record as its only argument, or
@@ -336,12 +338,18 @@ A pipeline gates a module with `@permission=Name` (see [Gates](verbs.md#gates-pe
 **Always:** put `[RequiresPermission("Name")]` on the inflection's class, once for each permission. No pipeline can remove it; `@permission` adds to it, and both are needed. Every message must hold it to reach the inflection, and a source's pipeline must hold it for the source to start. It's on the class, not the verb, so each inflection can need something different, as long as they take different message types: a message that more than one inflection takes by its type needs what each of them needs. Inflections chosen for each message (`[ChosenForEachMessage]`) are chosen after the gate, so they must all require the same permissions; the registry refuses a verb whose don't. A name that isn't a permission's is an error when the verb is registered too.
 
 ```csharp
-[Verb("Authorise", Inflection = "Permission")]
+[Verb("Authorise", Inflection = "Permission", Alias = "Authorize")]
 [RequiresPermission("AuthorisePermission")]
-public sealed class AuthorisePermission : AInflection<Message> { … }
+public sealed class AuthorisePermission(AuthorisePermissionParameters parameters) : AInflection<Credential> { … }
 ```
 
-**For some messages:** call `context.Demand("meep.files.read", message, target)` in `HandleAsync` before doing the gated thing, such as `Fetch.File` reading a file outside its `root`. `target` is what you're about to touch, such as a file's full path, which a scoped permission the message holds must match; leave it out to need the permission as named. If the message doesn't hold it, `Demand` throws `PermissionDeniedException`. Let it escape: the runtime emits a `PermissionDenied` error in place of the message and counts it as denied, without restarting the module or counting it towards stopping the branch. `context.Holds(…)` asks the same question without refusing.
+A verb that acts on credentials, certificates, permissions or grants should take them typed, as `Authorise` and `Revoke` do, so each inflection is chosen by type before its gate. Pipelines turn text into them with `Parse`. If your verb reads text itself, read it with `SecurityText.Read` (or `Read<T>`, or `KindOf` to tell what it is without reading it), the one reader `Verify` and `Parse` share, rather than parsing it yourself.
+
+**For some messages:** call `context.Demand("meep.files.read", message, target)` in `HandleAsync` before doing the gated thing, such as `Fetch.File` reading a file outside its `root`. `target` is what you're about to touch, such as a file's full path, which a scoped permission the message holds must match; leave it out to need the permission as named. If the message doesn't hold it, `Demand` throws `PermissionDeniedException`. Let it escape: the runtime emits a `PermissionDenied` error in place of the message and counts it as denied, without restarting the module or counting it towards stopping the branch. `context.Holds(…)` asks the same question without refusing. Both honour the module's `@proof`, as its gate does.
+
+**Proof by default:** `[DefaultProof(Proof.RequestSignature, Proof.Connection, Proof.Tls)]` on an inflection's class says its gate needs credentials proven in one of those ways, not only presented, unless the line says otherwise with `@proof` (`@proof=any` accepts a bearer credential). `Authorise` and `Revoke` have it. Use it for a verb that changes something lasting, such as the trust store.
+
+**Where its input came from:** a verb that acts on what a request named, such as which credential to grant to, should make sure the request's signature covers it. `Authorise` and `Revoke` refuse what was read from a header the signature doesn't list, since it could have been changed on the way.
 
 A `PermissionDenied` is an `ErrorMessage` with `Gate` (the module), `Needed` and `Reasons`. Only the runtime makes one. In a passthrough module, `Demand` can't stop the message going on, since it already has; use `[RequiresPermission]` or `@permission` there.
 

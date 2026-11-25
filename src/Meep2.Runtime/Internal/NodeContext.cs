@@ -46,8 +46,22 @@ internal abstract class NodeContext<TNode>(TNode node) : ModuleContext, IPipelin
         var name = PermissionName.Parse(permission);
         var gates = node.Pipeline.Gates;
         var store = gates.Store;
-        return Gatekeeper.WhyNot(message, gates.Resolve(name, target, store), store);
+        return Gatekeeper.WhyNot(message, gates.Resolve(name, target, store, Proofs), store);
     }
+
+    internal override IReadOnlyList<Credential> HeldBy(string permission, Message message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        var gates = node.Pipeline.Gates;
+        var store = gates.Store;
+        var basis = gates.Resolve(PermissionName.Parse(permission), store, Proofs);
+        if (store is null || basis.Problem is not null)
+            return [];
+        return new PermissionLines(store).Holders(message, new Requirement(basis.Permission) { Name = basis.Name, Proofs = basis.Proofs });
+    }
+
+    // The kinds of proof the module's checks need: its inflection's, or the line's @proof.
+    private ProofSet Proofs => node is InflectionNode inflection ? inflection.Proofs : ProofSet.Of(node.Options.Proofs);
 }
 
 /// <summary>A module's context that reaches its pipeline's options, for the runtime's own verbs, such as <c>Verify</c>.</summary>

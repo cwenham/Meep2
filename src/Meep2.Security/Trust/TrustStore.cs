@@ -290,7 +290,25 @@ public sealed class TrustStore
 /// <summary>A trusted X.509 root or CA, named after its file in <c>roots/</c>.</summary>
 /// <param name="Name">The file's name, without its extension.</param>
 /// <param name="Certificate">The certificate.</param>
-public sealed record TrustedRoot(string Name, X509Certificate2 Certificate);
+public sealed record TrustedRoot(string Name, X509Certificate2 Certificate)
+{
+    /// <summary>Why <paramref name="certificate"/> can't be a root, or null if it can: it must be a CA's.</summary>
+    public static string? WhyNot(X509Certificate2 certificate)
+    {
+        ArgumentNullException.ThrowIfNull(certificate);
+        return certificate.Extensions.OfType<X509BasicConstraintsExtension>().FirstOrDefault() is { CertificateAuthority: true }
+            ? null
+            : $"{certificate.Subject} isn't a CA's certificate, so it can't be a root. Trust the CA that issued it instead.";
+    }
+
+    /// <summary>A name for a root's file made from any text, such as a file's name or a certificate's subject.</summary>
+    public static string NameFrom(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        var name = new string([.. text.Select(c => char.IsAsciiLetterOrDigit(c) || c is '.' or '-' or '_' ? c : '-')]).Trim('.', '-');
+        return name.Length == 0 ? "root" : name;
+    }
+}
 
 /// <summary>
 /// What Meep trusts can't be used: the trust store, or an allowed-signers file, could be changed by others, or a file

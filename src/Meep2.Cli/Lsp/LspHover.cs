@@ -17,9 +17,13 @@ internal sealed class LspHover(LspWorkspace workspace)
         var word = WordAt(document.Text, lineNumber, character, out var at);
         if (word is "permission" && at > 0 && document.Text.Split('\n')[lineNumber][at - 1] == '@')
             return Markdown(Gate(document.Text.Split('\n')[lineNumber], workspace.RegistryFor(parameters)));
+        if (word is "proof" && at > 0 && document.Text.Split('\n')[lineNumber][at - 1] == '@')
+            return Markdown(Proof);
         if (word is null || !workspace.RegistryFor(parameters).TryGetVerb(word, out var inflections))
             return null;
         var markdown = new StringBuilder($"**{word}** ({inflections[0].Role.ToString().ToLowerInvariant()})");
+        if (inflections[0].AliasOf is { } aliasOf)
+            markdown.Append($", another name for **{aliasOf}**");
         foreach (var inflection in VerbCatalogue.Describe(inflections))
         {
             markdown.Append($"\n\n`{word}.{inflection.Inflection}`");
@@ -35,6 +39,13 @@ internal sealed class LspHover(LspWorkspace workspace)
 
     private static JsonObject Markdown(string text) =>
         new() { ["contents"] = new JsonObject { ["kind"] = "markdown", ["value"] = text } };
+
+    private const string Proof =
+        "**@proof** (modifier): how a gate's credentials must have been proven, not only presented. `signed` accepts a " +
+        "signed request, a connection's proof or TLS, and refuses a bearer credential; `request`, `connection` or `tls` " +
+        "needs that kind, and can be written more than once; `any` accepts a bearer credential too. It replaces what the verb " +
+        "needs by default (`Authorise` and `Revoke` need `signed`), applies to every permission the module needs, and needs " +
+        "`@permission` or a verb that requires one.";
 
     // What @permission does, and the gate on this line: its @permission names and what its verb always needs.
     private static string Gate(string line, ModuleRegistry registry)

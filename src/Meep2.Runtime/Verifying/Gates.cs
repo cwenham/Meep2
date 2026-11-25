@@ -29,7 +29,7 @@ internal sealed class Gatekeeper(Func<PipelineOptions> options)
     /// What <paramref name="name"/> needs, as a gate asks it: the same object for every gate and message until the store
     /// or the pipeline's options change, so answers can be kept on messages.
     /// </summary>
-    public Requirement Resolve(PermissionName name, TrustStore? store)
+    public Requirement Resolve(PermissionName name, TrustStore? store, ProofSet proofs = default)
     {
         var generation = Volatile.Read(ref _generation);
         var resolved = _resolved;
@@ -38,21 +38,21 @@ internal sealed class Gatekeeper(Func<PipelineOptions> options)
             resolved = new Resolved(store, generation, Directives(options().Permissions));
             _resolved = resolved;
         }
-        return resolved.ByName.GetOrAdd(name, static (n, r) => Make(n, r.Store, r.Directives), resolved);
+        return resolved.ByName.GetOrAdd((name, proofs), static (key, r) => Make(key.Name, key.Proofs, r.Store, r.Directives), resolved);
     }
 
     /// <summary>
     /// What <paramref name="name"/> needs on <paramref name="target"/>, for one check in code
     /// (<see cref="SDK.Modules.ModuleContext.Demand"/>). Its answers aren't kept, since each target is different.
     /// </summary>
-    public Requirement Resolve(PermissionName name, string? target, TrustStore? store)
+    public Requirement Resolve(PermissionName name, string? target, TrustStore? store, ProofSet proofs = default)
     {
-        var basis = Resolve(name, store);
+        var basis = Resolve(name, store, proofs);
         if (target is null || basis.Problem is not null)
             return basis;
         if (basis.Permission.Name.Scope is { } scope && !scope.Matches(target))
             return new Requirement(name, $"{target} is outside {basis.Permission.Name}, where {name.Name} counts in this pipeline.");
-        return new Requirement(basis.Permission, target) { Name = name };
+        return new Requirement(basis.Permission, target) { Name = name, Proofs = proofs };
     }
 
     /// <summary>Why <paramref name="message"/> doesn't meet <paramref name="requirement"/>, or null if it does.</summary>
@@ -89,7 +89,7 @@ internal sealed class Gatekeeper(Func<PipelineOptions> options)
 
     // A gate's requirement: the definition, narrowed by the pipeline's directive and by the gate's own scope, and well
     // defined, or why it can't be held.
-    private static Requirement Make(PermissionName name, TrustStore? store, Dictionary<string, Permission> directives)
+    private static Requirement Make(PermissionName name, ProofSet proofs, TrustStore? store, Dictionary<string, Permission> directives)
     {
         if (store is null)
             return new Requirement(name, Trust.NoStore);
@@ -99,7 +99,7 @@ internal sealed class Gatekeeper(Func<PipelineOptions> options)
             // requires nothing, unless the pipeline's own directive narrows that. meep lsp warns about it.
             var open = directives.TryGetValue(name.Name, out var narrowing) ? narrowing : new Permission(new PermissionName(name.Name));
             var undefined = name.Scope is null ? open : new Permission(name) { Authorities = open.Authorities, Requires = open.Requires };
-            return new Requirement(undefined) { Name = name, Kept = true };
+            return new Requirement(undefined) { Name = name, Kept = true, Proofs = proofs };
         }
         var permission = directives.TryGetValue(name.Name, out var directive) ? definition.NarrowedBy(directive) : definition;
         if (name.Scope is not null)
@@ -107,7 +107,7 @@ internal sealed class Gatekeeper(Func<PipelineOptions> options)
         var failures = store.Permissions.Check(permission);
         if (failures.Count > 0)
             return new Requirement(name, $"{name} isn't well defined here: {string.Join(" ", failures.Select(f => f.Reason))}");
-        return new Requirement(permission) { Name = name, Kept = true };
+        return new Requirement(permission) { Name = name, Kept = true, Proofs = proofs };
     }
 
     // The requirements worked out for one store and one set of the pipeline's options.
@@ -119,7 +119,7 @@ internal sealed class Gatekeeper(Func<PipelineOptions> options)
 
         public Dictionary<string, Permission> Directives => directives;
 
-        public ConcurrentDictionary<PermissionName, Requirement> ByName { get; } = new();
+        public ConcurrentDictionary<(PermissionName Name, ProofSet Proofs), Requirement> ByName { get; } = new();
     }
 }
 
@@ -129,7 +129,8 @@ internal sealed class Gatekeeper(Func<PipelineOptions> options)
 /// </summary>
 /// <param name="keeper">The pipeline's gatekeeper.</param>
 /// <param name="needed">The permissions, in the order written, modifiers first.</param>
-internal sealed class Gate(Gatekeeper keeper, PermissionName[] needed)
+/// <param name="proofs">The kinds of proof the credentials must have been verified with (<c>@proof</c>), or any.</param>
+internal sealed class Gate(Gatekeeper keeper, PermissionName[] needed, ProofSet proofs = default)
 {
     private volatile Worked? _worked;
 
@@ -170,7 +171,7 @@ internal sealed class Gate(Gatekeeper keeper, PermissionName[] needed)
             return worked.Requirements;
         var requirements = new Requirement[needed.Length];
         for (var i = 0; i < needed.Length; i++)
-            requirements[i] = keeper.Resolve(needed[i], store);
+            requirements[i] = keeper.Resolve(needed[i], store, proofs);
         _worked = new Worked(store, generation, requirements);
         return requirements;
     }
@@ -182,3 +183,46 @@ internal sealed class Gate(Gatekeeper keeper, PermissionName[] needed)
 /// <param name="Needed">The permissions it lacked.</param>
 /// <param name="Reasons">Why, for each, in the same order.</param>
 internal sealed record Refusal(IReadOnlyList<PermissionName> Needed, IReadOnlyList<string> Reasons);
+
+/// <summary>
+/// The kinds of proof a gate accepts (<c>@proof</c>, Q299): how whoever presented a credential proved they hold its key,
+/// as its <see cref="VerifiedMessage.Proof"/> says. The default accepts any, a bearer credential included.
+/// </summary>
+/// <param name="Mask">A bit for each <see cref="Proof"/> accepted, or 0 for any.</param>
+internal readonly record struct ProofSet(int Mask)
+{
+    /// <summary>The kinds of proof in <paramref name="proofs"/>, or any if there are none.</summary>
+    public static ProofSet Of(IReadOnlyList<Proof> proofs)
+    {
+        var mask = 0;
+        foreach (var proof in proofs)
+            mask |= 1 << (int)proof;
+        return new ProofSet(mask);
+    }
+
+    /// <summary>Whether any kind of proof will do.</summary>
+    public bool IsAny => Mask == 0;
+
+    /// <summary>Whether <paramref name="proof"/> will do.</summary>
+    public bool Allows(Proof proof) => IsAny || (Mask & (1 << (int)proof)) != 0;
+
+    /// <summary>The kinds accepted, in words: "a signed request, a connection's proof or TLS".</summary>
+    public override string ToString()
+    {
+        if (IsAny)
+            return "any proof";
+        var mask = Mask;
+        var words = Enum.GetValues<Proof>().Where(p => (mask & (1 << (int)p)) != 0).Select(Describe).ToList();
+        return words.Count == 1 ? words[0] : $"{string.Join(", ", words[..^1])} or {words[^1]}";
+    }
+
+    /// <summary>A kind of proof in words.</summary>
+    public static string Describe(Proof proof) => proof switch
+    {
+        Proof.Bearer => "none, as a bearer credential",
+        Proof.RequestSignature => "a signed request",
+        Proof.Connection => "a connection's proof",
+        Proof.Tls => "TLS",
+        _ => "no proof",
+    };
+}

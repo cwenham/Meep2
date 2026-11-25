@@ -139,6 +139,25 @@ public class LanguageServerTests
     }
 
     [Test]
+    public async Task It_completes_and_describes_proof_and_says_Authorize_is_Authorise()
+    {
+        const string Uri = "file:///tmp/proven.meep";
+        var replies = await Converse(
+            Open(Uri, "Interval 1s\n    Authorize permission=\"ReadNotes\" @proof=signed @"),
+            At(1, "textDocument/completion", Uri, 1, 55),
+            At(2, "textDocument/hover", Uri, 1, 40),
+            At(3, "textDocument/hover", Uri, 1, 6));
+
+        var labels = replies.Single(r => r["id"]?.GetValue<int>() == 1)["result"]!["items"]!.AsArray().Select(i => i!["label"]!.GetValue<string>());
+        await Assert.That(labels).Contains("@proof");
+        var proof = replies.Single(r => r["id"]?.GetValue<int>() == 2)["result"]!["contents"]!["value"]!.GetValue<string>();
+        await Assert.That(proof).StartsWith("**@proof** (modifier):");
+        var verb = replies.Single(r => r["id"]?.GetValue<int>() == 3)["result"]!["contents"]!["value"]!.GetValue<string>();
+        await Assert.That(verb).StartsWith("**Authorize** (step), another name for **Authorise**");
+        await Assert.That(verb).Contains("Always needs `AuthorisePermission`");
+    }
+
+    [Test]
     public async Task It_warns_about_a_permission_the_trust_store_doesnt_define()
     {
         using var home = new TemporaryFolder();

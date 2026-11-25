@@ -24,7 +24,7 @@ namespace Meep2.Runtime;
 /// Messages refused because they lacked a permission the module needs: at its <c>@permission</c> gate, or by its own
 /// check (<see cref="SDK.Modules.ModuleContext.Demand"/>). Each became a <see cref="SDK.Security.PermissionDenied"/>
 /// error, or, for an error refused, passed the module by. Also what the module refused before it became a message,
-/// such as requests a Listen with <c>proof=required</c> answered with 401 (<see cref="SDK.Modules.ModuleContext.CountDenied"/>).
+/// such as requests a Listen with <c>signature=required</c> answered with 401 (<see cref="SDK.Modules.ModuleContext.CountDenied"/>).
 /// </param>
 public readonly record struct ModuleStats(
     long Received,

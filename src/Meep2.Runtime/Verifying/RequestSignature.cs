@@ -47,6 +47,18 @@ internal static class RequestSignature
         Header(request, "Signature-Input") is not null || Header(request, "Signature") is not null;
 
     /// <summary>
+    /// The components the request's signature says it covers, as named in <c>Signature-Input</c> (<c>@method</c>,
+    /// <c>content-digest</c>, …), or null if it has no signature Meep can read. Whether the signature is good is
+    /// <see cref="Check"/>'s question.
+    /// </summary>
+    public static IReadOnlyList<string>? Covered(IHttpRequest request)
+    {
+        if (!IsSigned(request) || !TryRead(request, out var input, out _, out _) || input.InnerList is not { } covered)
+            return null;
+        return [.. covered.Select(component => component.Item?.Value as string).OfType<string>()];
+    }
+
+    /// <summary>
     /// Checks the request's signature against <paramref name="credential"/>'s key, adding what it finds to
     /// <paramref name="verification"/>, and marks the proof as <see cref="Proof.RequestSignature"/> if it's good.
     /// </summary>

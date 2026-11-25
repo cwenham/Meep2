@@ -76,6 +76,7 @@ public static class MeepCommand
                                                 Issue a credential for a key with this machine's authority,
                                                 using ssh-keygen. It's valid for 52 weeks unless --valid says.
           meep trust list                       Show what the trust store holds
+          meep trust tidy                       Take out expired grants, and revocations of what has expired
           meep sign <folder or files> [--key <private key>]
                                                 Sign a plugin's files, or .meep pipeline files, with your SSH key,
                                                 using ssh-keygen
@@ -140,6 +141,7 @@ public static class MeepCommand
             ["trust", "revoke", .. var rest] => await TrustCommands.RevokeAsync(rest, context.Options(), output, error, cancellationToken).ConfigureAwait(false),
             ["trust", "issue", .. var rest] => await TrustCommands.IssueAsync(rest, context.Options(), output, error, cancellationToken).ConfigureAwait(false),
             ["trust", "list"] => await TrustCommands.ListAsync(context.Options(), output, error).ConfigureAwait(false),
+            ["trust", "tidy"] => await TrustCommands.TidyAsync(context.Options(), output, error).ConfigureAwait(false),
             ["sign", .. var rest] when rest is [.., "--key", _] && rest.Length > 2 =>
                 await KeysCommands.SignAsync(rest[..^2], rest[^1], context.Options(), output, error, cancellationToken).ConfigureAwait(false),
             ["sign", .. var rest] when rest.Length > 0 && !rest.Contains("--key") =>

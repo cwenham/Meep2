@@ -130,8 +130,8 @@ internal static class TrustCommands
         }
         using (certificate)
         {
-            if (certificate.Extensions.OfType<X509BasicConstraintsExtension>().FirstOrDefault() is not { CertificateAuthority: true })
-                return await FailAsync(error, $"{certificate.Subject} isn't a CA's certificate, so it can't be a root. Trust the CA that issued it instead.", 1).ConfigureAwait(false);
+            if (TrustedRoot.WhyNot(certificate) is { } notRoot)
+                return await FailAsync(error, notRoot, 1).ConfigureAwait(false);
 
             var folder = TrustFolder.In(options.Home);
             if (await LoadAsync(folder, error).ConfigureAwait(false) is not { } store)
@@ -174,7 +174,7 @@ internal static class TrustCommands
         if (words.Length == 1 && File.Exists(file) && Path.GetExtension(file) is ".krl" or ".crl")
             return await AddRevocationListAsync(folder, file, output, error, cancellationToken).ConfigureAwait(false);
 
-        Identified identified;
+        Revoking identified;
         try
         {
             var text = words.Length == 1 && File.Exists(file) ? await File.ReadAllTextAsync(file, cancellationToken).ConfigureAwait(false) : thing;
@@ -189,7 +189,10 @@ internal static class TrustCommands
             await output.WriteLineAsync($"That's revoked already: {identified.What}.").ConfigureAwait(false);
             return 0;
         }
-        folder.Revoke(identified.Revocation, identified.What);
+        // A grant named by its ID is looked up, so its revocation says until when it's needed (Q305).
+        if (identified.Revocation.Kind == RevocationKind.Grant && store.Grants.FirstOrDefault(g => g.Terms.Id.ToString() == identified.Revocation.Value) is { } recorded)
+            identified = Revoking.Grant(recorded);
+        folder.Revoke(identified);
         await output.WriteLineAsync($"Revoked {identified.What}. A running daemon stops honouring it at its next gate.").ConfigureAwait(false);
         return 0;
     }
@@ -264,6 +267,34 @@ internal static class TrustCommands
         }
     }
 
+    // meep trust tidy: takes out of grants and revoked what's no longer needed (Q305).
+    public static async Task<int> TidyAsync(PluginOptions options, TextWriter output, TextWriter error)
+    {
+        var folder = TrustFolder.In(options.Home);
+        Tidied tidied;
+        try
+        {
+            tidied = folder.Tidy(DateTime.UtcNow);
+        }
+        catch (Exception exception) when (exception is TrustStoreException or IOException or UnauthorizedAccessException)
+        {
+            await error.WriteLineAsync(exception.Message).ConfigureAwait(false);
+            return 1;
+        }
+        if (tidied.Grants.Count + tidied.Revocations.Count == 0)
+        {
+            await output.WriteLineAsync("Nothing in the trust store needed tidying.").ConfigureAwait(false);
+            return 0;
+        }
+        foreach (var (what, removed) in new[] { ("grants", tidied.Grants), ("revoked", tidied.Revocations) }.Where(part => part.Item2.Count > 0))
+        {
+            await output.WriteLineAsync($"Took {removed.Count} {(removed.Count == 1 ? "line" : "lines")} out of {what}:").ConfigureAwait(false);
+            foreach (var line in removed)
+                await output.WriteLineAsync($"  {line}").ConfigureAwait(false);
+        }
+        return 0;
+    }
+
     // meep trust list: everything in the store.
     public static async Task<int> ListAsync(PluginOptions options, TextWriter output, TextWriter error)
     {
@@ -314,33 +345,24 @@ internal static class TrustCommands
 
     private const string NoSshKeygen = "meep trust uses ssh-keygen, which comes with OpenSSH. Install it, or put it on your PATH.";
 
-    // A revocation, and what it revokes in words, for the comment above its line and for saying so.
-    private sealed record Identified(Revocation Revocation, string What);
-
     // A revocation for a credential, key, fingerprint, grant ID or certificate.
-    private static Identified Identify(string text, bool byKey)
+    private static Revoking Identify(string text, bool byKey)
     {
         var trimmed = text.Trim();
         if (Guid.TryParse(trimmed, out var grant))
-            return new(new Revocation(RevocationKind.Grant, grant.ToString()), $"the grant {grant}");
+            return Revoking.Grant(grant);
         if (trimmed.StartsWith("SHA256:", StringComparison.Ordinal) && !trimmed.Contains(' ', StringComparison.Ordinal))
-            return new(new Revocation(RevocationKind.Key, trimmed), $"the key {trimmed}");
+            return Revoking.Key(trimmed);
         if (trimmed.Contains("-----BEGIN CERTIFICATE-----", StringComparison.Ordinal))
-        {
-            var certificate = Certificate.FromPem(trimmed);
-            return new(new Revocation(RevocationKind.Certificate, certificate.Thumbprint), $"the certificate {certificate.Subject}, {certificate.Thumbprint}");
-        }
+            return Revoking.Certificate(Certificate.FromPem(trimmed));
         if (trimmed.Contains("-cert-v01@openssh.com", StringComparison.Ordinal))
         {
             var credential = Credential.Parse(trimmed);
-            if (byKey)
-                return new(new Revocation(RevocationKind.Key, credential.KeyFingerprint), $"{credential.KeyId}'s key {credential.KeyFingerprint}, and every credential for it");
-            return new(Revocation.Of(credential), $"{credential.KeyId}'s credential, serial {credential.Serial} from {credential.AuthorityFingerprint}");
+            return byKey ? Revoking.KeyOf(credential) : Revoking.Credential(credential);
         }
         if (trimmed.Contains("PRIVATE KEY", StringComparison.Ordinal))
             throw new FormatException("That's a private key. Revoke the public one beside it, its .pub file.");
-        var key = PublicKey.Parse("key", trimmed);
-        return new(new Revocation(RevocationKind.Key, key.Fingerprint), $"the key {key.Fingerprint}, and every credential for it");
+        return Revoking.Key(PublicKey.Parse("key", trimmed).Fingerprint);
     }
 
     private static async Task<int> AddRevocationListAsync(TrustFolder folder, string file, TextWriter output, TextWriter error, CancellationToken cancellationToken)

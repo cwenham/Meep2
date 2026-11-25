@@ -68,6 +68,63 @@ public sealed record Revocation(RevocationKind Kind, string Value, ulong Serial 
 }
 
 /// <summary>
+/// A revocation, and what it revokes in words, for the comment above its line in <c>revoked</c> and for saying so. Made
+/// for each kind of thing that can be revoked, as <c>meep trust revoke</c> and the <c>Revoke</c> verb do.
+/// </summary>
+/// <param name="Revocation">The line.</param>
+/// <param name="What">What it revokes, in words.</param>
+public sealed record Revoking(Revocation Revocation, string What)
+{
+    /// <summary>
+    /// When what it revokes expires, in UTC, after which the line isn't needed and <c>meep trust tidy</c> may take it
+    /// out (Q305), or null if it lasts for ever or that isn't known.
+    /// </summary>
+    public DateTime? Until { get; init; }
+
+    /// <summary>A credential, by its authority and serial. Throws <see cref="FormatException"/> for one with no serial.</summary>
+    public static Revoking Credential(Credential credential) =>
+        new(Revocation.Of(credential), $"{credential.KeyId}'s credential, serial {credential.Serial} from {credential.AuthorityFingerprint}")
+        {
+            Until = credential.ValidBefore,
+        };
+
+    /// <summary>A credential's key: every credential for it, and everything it signed as an authority.</summary>
+    public static Revoking KeyOf(Credential credential)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+        return new(new Revocation(RevocationKind.Key, credential.KeyFingerprint), $"{credential.KeyId}'s key {credential.KeyFingerprint}, and every credential for it");
+    }
+
+    /// <summary>A key, by its fingerprint (<c>SHA256:…</c>).</summary>
+    public static Revoking Key(string fingerprint) =>
+        new(new Revocation(RevocationKind.Key, fingerprint), $"the key {fingerprint}, and every credential for it");
+
+    /// <summary>A grant, by its ID.</summary>
+    public static Revoking Grant(Guid id) => new(new Revocation(RevocationKind.Grant, id.ToString()), $"the grant {id}");
+
+    /// <summary>A grant, saying what it gave.</summary>
+    public static Revoking Grant(Grant grant)
+    {
+        ArgumentNullException.ThrowIfNull(grant);
+        return new(new Revocation(RevocationKind.Grant, grant.Terms.Id.ToString()),
+            $"the grant {grant.Terms.Id}, of {grant.Terms.Permission} to {grant.Terms.CredentialKey} serial {grant.Terms.CredentialSerial}")
+        {
+            Until = grant.Terms.ValidBefore,
+        };
+    }
+
+    /// <summary>An X.509 certificate, by its SHA-256 hash.</summary>
+    public static Revoking Certificate(Certificate certificate)
+    {
+        ArgumentNullException.ThrowIfNull(certificate);
+        return new(new Revocation(RevocationKind.Certificate, certificate.Thumbprint), $"the certificate {certificate.Subject}, {certificate.Thumbprint}")
+        {
+            Until = certificate.NotAfter,
+        };
+    }
+}
+
+/// <summary>
 /// Everything the trust store revokes: the lines of its <c>revoked</c> file, and the KRLs and CRLs in
 /// <c>revocation-lists/</c>. A revocation only ever refuses, so none of them is checked for a signature: one someone
 /// slipped in could do no more than one you wrote.
@@ -117,7 +174,10 @@ public sealed class Revocations
         return null;
     }
 
-    /// <summary>Why <paramref name="grant"/> is revoked, as a sentence, or null if it isn't: by its ID, or its authority's key.</summary>
+    /// <summary>
+    /// Why <paramref name="grant"/> is revoked, as a sentence, or null if it isn't: by its ID, its authority's key, or
+    /// a revoked credential among those that authorised it (Q301).
+    /// </summary>
     public string? WhyRevoked(Grant grant)
     {
         ArgumentNullException.ThrowIfNull(grant);
@@ -127,6 +187,32 @@ public sealed class Revocations
             return $"The key that signed the grant {grant.Terms.Id}, {grant.AuthorityFingerprint}, is revoked.";
         foreach (var krl in _krls.Where(krl => krl.List.RevokesKey(grant.AuthorityKey.Span)))
             return $"The key that signed the grant {grant.Terms.Id} is revoked by {krl.Name}.";
+        foreach (var authoriser in grant.Terms.AuthorisedBy)
+        {
+            if (WhyRevoked(authoriser) is { } why)
+                return $"The grant {grant.Terms.Id}, of {grant.Terms.Permission}, falls with the credential that authorised it: {why}";
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Why the credential <paramref name="name"/> names is revoked, as a sentence, or null if it isn't: by its serial,
+    /// its key, its authority's key, or a KRL, as far as its fingerprints and serial tell.
+    /// </summary>
+    public string? WhyRevoked(CredentialName name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        if (name.Serial != 0 && _entries.Contains(new Revocation(RevocationKind.Serial, name.Authority, name.Serial)))
+            return $"the credential for {name.Key}, serial {name.Serial}, is revoked.";
+        if (_entries.Contains(new Revocation(RevocationKind.Key, name.Key)))
+            return $"its key, {name.Key}, is revoked.";
+        if (_entries.Contains(new Revocation(RevocationKind.Key, name.Authority)))
+            return $"the key of the authority that issued it, {name.Authority}, is revoked.";
+        foreach (var krl in _krls)
+        {
+            if (krl.List.WhyRevoked(name) is { } why)
+                return $"the credential for {name.Key} is revoked by {krl.Name}: {why}.";
+        }
         return null;
     }
 

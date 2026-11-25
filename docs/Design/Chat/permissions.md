@@ -80,7 +80,7 @@ A `VerifiedMessage` expires when the earliest thing it relied on does.
 - `@permission` on a source means the pipeline must hold it to start (Q252). Combined messages are covered by Q261.
 - An SDK attribute, `[RequiresPermission("Name")]`, lets a verb (built-in or plugin) declare a permission that can't be removed, and `context.Demand("Name", message)` checks one in code for finer gates, such as Fetch.File only outside its `root`.
 - The loader shows gates in `meep lsp` hovers and in the graph, so a drawing can put a lock on gated modules.
-- `Listen.HTTP proof=required` refuses, with 401, a request that has no `Signature-Input`, `Signature` and `Meep-Credential`, before it reaches the pipeline; `Verify` does the real check (Q280, answered in phase 3's doc). The TCP and WebSocket challenge waits for phase 7.
+- `Listen.HTTP signature=required` refuses, with 401, a request that has no `Signature-Input`, `Signature` and `Meep-Credential`, before it reaches the pipeline; `Verify` does the real check (Q280, answered in phase 3's doc). The TCP and WebSocket challenge waits for phase 7.
 
 ### Phase 5. `Authorise`
 
@@ -91,7 +91,7 @@ A `VerifiedMessage` expires when the earliest thing it relied on does.
 - Added 25 November, from phase 4's answers:
   - A `Parse` verb turns text into a `Credential`, `Certificate` or `Permission`, or an error if it's none of them, using one reader in the SDK that `Verify` shares. `Authorise` and `Revoke` take typed messages only, so their inflections are chosen by type, before the gate (Q293).
   - A refusal at a gate gets a short span of its own, named after the gated module, so every refusal is in the trace, including one straight after a source (Q298).
-  - Gates that need a kind of proof, as in `@permission=meep.files.write proof=signed`, so a bearer credential can't reach them (Q299).
+  - Gates that need a kind of proof, as in `@permission=meep.files.write @proof=signed`, so a bearer credential can't reach them (Q299).
 
 ### Phase 6. Meep's own restricted functions
 
@@ -107,6 +107,8 @@ Built-in permissions for what Meep does on the machine, under a `meep.` prefix s
 | `meep.daemon.observe`, `.inject`, `.control` | today's token capabilities |
 
 Turning these on everywhere would break every existing pipeline, since a source's messages have no ancestors and so no credentials. My proposal is in Q252: a pipeline carries a credential of its own, so its sources' messages start with one.
+
+Also in this phase (Q303, answered in phase 5's doc): trusting an SSH CA key as an authority from a pipeline. That needs an `AuthorityKey` message type, which `Parse` reads from a `.pub` line, an `Authorise.Authority` inflection that adds it to `authorities`, and a new `AuthoriseAuthority` permission, so that trusting X.509 roots and trusting credential issuers can be given apart.
 
 ### Phase 7. The daemon and Synesthesia
 
@@ -158,7 +160,7 @@ I recommend C. It also answers Q40 ("pipelines are granted specific permissions"
 - **TCP and WebSocket:** a challenge when connecting rather than a signature on every message. The Listen sends a nonce; the client answers with its certificate and a signature over the nonce, the Listen's address and, under TLS, the TLS exporter value (RFC 9266), which ties the proof to that TLS session so it can't be relayed. The proof is kept with the connection's lease, and `Verify.Credential` accepts messages carrying that lease. Without TLS (`ws://`, `tcp://`), someone in the middle could take over a connection after the handshake, and the verification says so. Signing every message is the alternative for links with few messages.
 - **Mutual TLS:** the handshake is the proof. A Listen that requires client certificates attaches the peer's certificate as a `Certificate` message marked as proven by TLS, a mark only the runtime can set, as with `VerifiedMessage`. This is for X.509 and `Verify.Certificate`. (Not built yet: Listen.HTTP and Listen.WebSocket only present a server certificate, through Kestrel's `UseHttps`, and the daemon is reached by its local socket and tokens.)
 - **Inside the process:** a pipeline's own credential (Q252, C) is proven when it loads: by the pipeline's signature if it's signed, or for your own unsigned file, by the file being yours and the daemon running as you, the peer check its socket already makes. A credential read from a file is a bearer credential, allowed only when the `Verify` says `bearer=true`, so it shows in the pipeline, and the certificate carries a `permit-bearer@meep` extension, so its issuer agreed. Otherwise it fails with `NoProofOfPossession`.
-- **What gates see:** `VerifiedMessage.Proof` is `None`, `Bearer`, `RequestSignature`, `Connection` or `Tls`. A gate could later ask for more, as in `@permission=meep.files.write proof=signed`; I'd leave that for later unless you want it from the start.
+- **What gates see:** `VerifiedMessage.Proof` is `None`, `Bearer`, `RequestSignature`, `Connection` or `Tls`. A gate could later ask for more, as in `@permission=meep.files.write @proof=signed`; I'd leave that for later unless you want it from the start.
 - **Costs:** each Ed25519 check takes tens of microseconds, fine for each request but the reason streams use a challenge at connect; and the nonce store holds every nonce for the length of the window.
 
 **Answer:** Let's go with your proposal, where the pipeline author can mark it as required in the parameters for the message receiving verbs.

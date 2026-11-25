@@ -117,7 +117,7 @@ Signature: meep=:<binary SSHSIG, base64>:
 - **"Met" re-looks at a verification made before the store last took something away:** the credential and its grants are checked for revocation again (Q259). The authority that conferred each permission is always looked up in the store as it is now, so an authority removed since confers nothing.
 - **Requirements are held as their own definitions say:** a requirement is met only if conferred by an authority its own definition allows, with its own requirements, recursively.
 - **No pipeline credential yet.** The brief listed a pipeline's own credential, proven when it loads, under proof of possession. But Q252's answer says it lands with phase 6, with the `meep.*` permissions, so I left it there.
-- **Listen's `proof=required` isn't built.** Q253's answer has the pipeline author mark proof as required on the receiving verbs, and a Listen refuse requests without it. That's Listen's side, which the brief didn't assign to this phase, and its TCP and WebSocket parts are phase 7's. See Q280.
+- **Listen's `signature=required` isn't built.** Q253's answer has the pipeline author mark proof as required on the receiving verbs, and a Listen refuse requests without it. That's Listen's side, which the brief didn't assign to this phase, and its TCP and WebSocket parts are phase 7's. See Q280.
 
 ## Found in passing
 
@@ -132,7 +132,7 @@ Signature: meep=:<binary SSHSIG, base64>:
 ## Questions
 
 **Q280.** Listen's side of Q253: the author marks proof as required, and a Listen refuses requests without it before the pipeline. A Listen can't verify fully, as it has no trust store and `Meep2.Modules` can't make verifications. Which?
-- A: `Listen.HTTP proof=required` refuses, with 401, requests that have no `Signature-Input`, `Signature` and `Meep-Credential`. `Verify` does the real check. Cheap, and stops anonymous traffic at the door.
+- A: `Listen.HTTP signature=required` refuses, with 401, requests that have no `Signature-Input`, `Signature` and `Meep-Credential`. `Verify` does the real check. Cheap, and stops anonymous traffic at the door.
 - B: The same, but Listen also checks the signature and freshness, through a narrow service the runtime gives it (as Q266 C does for the TLS mark).
 - C: Leave it to `Verify` and `@permission` gates.
 

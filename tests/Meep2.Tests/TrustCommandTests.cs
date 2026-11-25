@@ -220,6 +220,35 @@ public class TrustCommandTests
     }
 
     [Test]
+    public async Task Tidy_says_what_it_took_out_and_revoking_a_recorded_grant_by_ID_says_until_when()
+    {
+        Skip.Unless(SshKeygen.Available, "This needs OpenSSH's ssh-keygen.");
+        using var home = new TemporaryFolder();
+        using var lab = await CredentialLab.CreateAsync();
+        var folder = TrustFolder.In(home.Path);
+        await Assert.That((await Cli(home.Path, "trust", "init", "--name", "studio")).Code).IsEqualTo(0);
+        var bob = await lab.IssueAsync("-I", "bob", "-z", "3");
+        var until = DateTime.UtcNow.AddDays(3);
+        var grant = folder.SignGrant(new GrantTerms(bob, PermissionName.Parse("ReadNotes")) { ValidBefore = until });
+        folder.RecordGrant(grant);
+        folder.RecordGrant(folder.SignGrant(new GrantTerms(bob, PermissionName.Parse("WriteNotes")) { ValidBefore = DateTime.UtcNow.AddMinutes(-1) }));
+
+        var first = await Cli(home.Path, "trust", "tidy");
+        var revoked = await Cli(home.Path, "trust", "revoke", grant.Terms.Id.ToString());
+        await Assert.That(revoked.Output).StartsWith($"Revoked the grant {grant.Terms.Id}, of ReadNotes");
+        await Assert.That(File.ReadAllText(folder.Revoked)).Contains($"; needed until {until:yyyy-MM-dd}T");
+        var tidied = await Cli(home.Path, "trust", "tidy");
+
+        await Assert.That(first.Code).IsEqualTo(0).Because(first.Error);
+        await Assert.That(first.Output).StartsWith("Took 1 line out of grants:\n  WriteNotes for ");
+        await Assert.That(first.Output).Contains(": it expired at ");
+        await Assert.That(tidied.Output).StartsWith("Took 1 line out of grants:\n  ReadNotes for ");
+        await Assert.That(tidied.Output).Contains("it's revoked");
+        await Assert.That(TrustStore.Load(folder).Revocations.Entries.Single().Value).IsEqualTo(grant.Terms.Id.ToString());
+        await Assert.That((await Cli(home.Path, "trust", "tidy")).Output).IsEqualTo("Nothing in the trust store needed tidying.\n");
+    }
+
+    [Test]
     public async Task List_shows_everything_in_the_store_and_its_problems()
     {
         using var home = new TemporaryFolder();

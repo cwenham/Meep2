@@ -8,7 +8,7 @@ namespace Meep2.Cli;
 /// <param name="workspace">The open files and the verbs each can use.</param>
 internal sealed class LspCompletion(LspWorkspace workspace)
 {
-    private static readonly string[] s_modifiers = ["buffer", "bypass", "errors", "no-errors", "expires", "accept-expired", "on-error", "permission"];
+    private static readonly string[] s_modifiers = ["buffer", "bypass", "errors", "no-errors", "expires", "accept-expired", "on-error", "permission", "proof"];
     private static readonly string[] s_defaults = ["buffer", "expires", "on-error", "keep-finished"];
     private static readonly string[] s_keywords = ["defaults", "const", "template", "#include", "#plugin", "#permission"];
 
