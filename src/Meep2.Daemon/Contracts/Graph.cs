@@ -61,6 +61,12 @@ public sealed record GraphModule(
     public string? CopyOf { get; init; }
 
     /// <summary>
+    /// The permissions a message needs to reach it, so a drawing can put a lock on it: its <c>@permission</c>s, then
+    /// what its verb always requires. For a source, what the pipeline must hold for it to start. Null if it isn't gated.
+    /// </summary>
+    public IReadOnlyList<string>? Permissions { get; init; }
+
+    /// <summary>
     /// The template uses that made it, if a template did: the use of the template it's written in first, then the
     /// use that one is in, out to a line of the pipeline's own.
     /// </summary>

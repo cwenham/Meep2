@@ -2,6 +2,7 @@ using Meep2.Meeplang.Compilation;
 using Meep2.Meeplang.Parsing;
 using Meep2.Meeplang.Syntax;
 using Meep2.Runtime;
+using Meep2.SDK.Security;
 
 namespace Meep2.Meeplang.Loading;
 
@@ -14,7 +15,7 @@ namespace Meep2.Meeplang.Loading;
 internal sealed class OptionsBuilder(PipelineSyntax syntax, Diagnostics diagnostics)
 {
     private static readonly string[] s_defaults = ["buffer", "expires", "on-error", "keep-finished"];
-    private static readonly string[] s_modifiers = ["buffer", "bypass", "errors", "no-errors", "expires", "accept-expired", "on-error"];
+    private static readonly string[] s_modifiers = ["buffer", "bypass", "errors", "no-errors", "expires", "accept-expired", "on-error", "permission"];
 
     /// <summary>The pipeline's constants, included files' first, so the pipeline's own can't be redeclared by them unnoticed.</summary>
     public Dictionary<string, ConstantValue> Constants()
@@ -50,6 +51,8 @@ internal sealed class OptionsBuilder(PipelineSyntax syntax, Diagnostics diagnost
     {
         foreach (var setting in syntax.Defaults)
             options = WithDefault(options, setting);
+        if (syntax.Permissions.Count > 0)
+            options = options with { Permissions = [.. syntax.Permissions.Select(p => p.Permission)] };
         return options;
     }
 
@@ -161,10 +164,35 @@ internal sealed class OptionsBuilder(PipelineSyntax syntax, Diagnostics diagnost
                 else
                     node.OnError = Policy(modifier.Value, "@on-error=\"stop-branch after 5 in 1s\"", forPipeline: false) ?? node.OnError;
                 return options;
+            case "permission":
+                return Permission(modifier) is { } permission && !options.Permissions.Contains(permission)
+                    ? options with { Permissions = [.. options.Permissions, permission] }
+                    : options;
             default:
                 diagnostics.Error($"There's no modifier called @{modifier.Name}." + Suggestions.For(modifier.Name, s_modifiers), modifier.Span);
                 return options;
         }
+    }
+
+    // @permission's name, as written (ReadNotes, meep.files.read) or in quotes, needed for a scope
+    // ("meep.files.write:~/notes/**") or from a constant; or null, having reported why.
+    private PermissionName? Permission(ModifierSyntax modifier)
+    {
+        const string Needs = "@permission needs a permission's name, as in @permission=ReadNotes, with a scope in quotes, as in @permission=\"meep.files.write:~/notes/**\".";
+        if (modifier.Value is null)
+        {
+            diagnostics.Error(Needs, modifier.Span);
+            return null;
+        }
+        var written = syntax.TextOf(modifier.Value.Span);
+        if (PermissionName.TryParse(written, out var name))
+            return name;
+        if (!TryConstant(modifier.Value, diagnostics, out var value))
+            return null;
+        if (value is string text && PermissionName.TryParse(text, out name))
+            return name;
+        diagnostics.Error(value is string other ? $"{other} isn't a permission's name. " + Needs : Needs, modifier.Value.Span);
+        return null;
     }
 
     // @buffer's size, or null, having reported why.

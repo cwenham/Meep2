@@ -32,6 +32,7 @@ public sealed record PipelineShape(PipelineSyntax Syntax, PipelineSyntax Expande
         {
             Under = KeyOf(Under(loaded.Expanded.Modules, m.Syntax)),
             CopyOf = KeyOf(m.Syntax.CopyOf),
+            Permissions = m.Permissions,
         }).ToList();
 
         var links = new List<LinkShape>();
@@ -87,6 +88,12 @@ public sealed record ModuleShape(string Key, ModuleInfo Info, ModuleSyntax Synta
 
     /// <summary>The key of the module it's a copy of, if Distribute copied its branch.</summary>
     public string? CopyOf { get; init; }
+
+    /// <summary>
+    /// The permissions a message needs to reach it, or that its pipeline needs for it to start if it's a source: its
+    /// <c>@permission</c> modifiers, then what its verb requires. Empty if it isn't gated.
+    /// </summary>
+    public IReadOnlyList<SDK.Security.PermissionName> Permissions { get; init; } = [];
 }
 
 /// <summary>A link: everything one module emits goes to another.</summary>

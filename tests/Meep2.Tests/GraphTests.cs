@@ -108,6 +108,22 @@ public class GraphTests
     }
 
     [Test]
+    public async Task A_gated_module_says_which_permissions_it_needs_so_a_drawing_can_lock_it()
+    {
+        using var folder = new TemporaryFolder();
+        var file = folder.Write("gated.meep", """
+            Interval 10ms count=1
+                WriteLine "open"
+                WriteLine "shut" @permission=ReadNotes @permission="WriteNotes:~/notes/**"
+            """);
+
+        var graph = await GraphOf(file);
+
+        await Assert.That(graph.Modules[1].Permissions).IsNull();
+        await Assert.That(graph.Modules[2].Permissions!).IsEquivalentTo(["ReadNotes", "WriteNotes:~/notes/**"]);
+    }
+
+    [Test]
     public async Task A_module_from_a_template_in_an_included_file_says_where_it_came_from()
     {
         using var folder = new TemporaryFolder();

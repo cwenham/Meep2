@@ -374,11 +374,13 @@ internal static class DaemonCommands
         if (Why(detail.State, detail.Reason, detail.Restarts) is { } why)
             output.WriteLine(why);
         var width = Math.Max(6, detail.Modules.Count == 0 ? 0 : detail.Modules.Max(m => m.Module.Length));
-        output.WriteLine($"{"MODULE".PadRight(width)}  {"RECEIVED",9}  {"HANDLED",9}  {"EMITTED",9}  {"PASSED",9}  {"QUEUED",7}  {"DROPPED",8}  {"EXPIRED",8}  {"FAILED",7}");
+        // Refusals at gates get a column only when there are some, so pipelines without gates read as before.
+        var denied = detail.Modules.Any(m => m.Counts.Denied > 0);
+        output.WriteLine($"{"MODULE".PadRight(width)}  {"RECEIVED",9}  {"HANDLED",9}  {"EMITTED",9}  {"PASSED",9}  {"QUEUED",7}  {"DROPPED",8}  {"EXPIRED",8}  {"FAILED",7}{(denied ? $"  {"DENIED",7}" : "")}");
         foreach (var module in detail.Modules)
         {
             var c = module.Counts;
-            output.WriteLine($"{module.Module.PadRight(width)}  {c.Received,9}  {c.Handled,9}  {c.Emitted,9}  {c.Passed,9}  {c.Queued,7}  {c.Dropped,8}  {c.Expired,8}  {c.Failed,7}");
+            output.WriteLine($"{module.Module.PadRight(width)}  {c.Received,9}  {c.Handled,9}  {c.Emitted,9}  {c.Passed,9}  {c.Queued,7}  {c.Dropped,8}  {c.Expired,8}  {c.Failed,7}{(denied ? $"  {c.Denied,7}" : "")}");
         }
     }
 

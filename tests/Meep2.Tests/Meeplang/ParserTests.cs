@@ -167,7 +167,7 @@ public class ParserTests
         await Assert.That(diagnostics).Contains("(4,32): error: A plugin's SHA is written as sha256: and 64 hex digits.");
         await Assert.That(diagnostics).Contains("(5,9): error: Write a plugin as #plugin github.com/owner/repo 1.2.0 sha256:…");
         await Assert.That(diagnostics).Contains("(6,21): error: A plugin on this machine takes just its path, with no version or SHA.");
-        await Assert.That(diagnostics).Contains("(7,1): error: There's no #plugins directive. Meeplang has #plugin and #include.");
+        await Assert.That(diagnostics).Contains("(7,1): error: There's no #plugins directive. Meeplang has #plugin, #include and #permission.");
         await Assert.That(diagnostics).Contains("(9,1): error: #plugin goes before the pipeline's modules.");
         await Assert.That(syntax.Plugins.Count).IsEqualTo(0);
     }

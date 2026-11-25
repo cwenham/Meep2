@@ -36,4 +36,11 @@ internal sealed record LoadedModule(
     ErrorDelivery Errors,
     IReadOnlyList<ModuleSyntax> Upstream,
     IReadOnlySet<Type> Outputs,
-    ModuleSyntax? Parent);
+    ModuleSyntax? Parent)
+{
+    /// <summary>
+    /// The permissions a message needs to reach it: its <c>@permission</c> modifiers, then what its inflections require
+    /// (<see cref="ModuleRegistration.RequiredPermissions"/>). Empty for a module that isn't gated.
+    /// </summary>
+    public IReadOnlyList<SDK.Security.PermissionName> Permissions { get; init; } = [];
+}

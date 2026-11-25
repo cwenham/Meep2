@@ -423,6 +423,16 @@ public sealed class ModuleRegistry
             return $"{registration.Verb}'s inflections have to be all passthrough modules or none, but {first.Inflection} and {registration.Inflection} differ.";
         if (first.Role != registration.Role)
             return $"{registration.Verb}'s inflections have to agree on their role, but {first.Inflection} is {Article(first.Role)} and {registration.Inflection} is {Article(registration.Role)}. Give them the same [Role].";
+        // An inflection chosen for each message is chosen after the gate, which can only tell what a message needs by
+        // its type, so the verb's inflections must need the same permissions (Q293).
+        foreach (var other in inflections.Where(r => r.ChosenForEachMessage || registration.ChosenForEachMessage))
+        {
+            if (!new HashSet<SDK.Security.PermissionName>(other.RequiredPermissions).SetEquals(registration.RequiredPermissions))
+            {
+                return $"{registration.Verb}.{other.Inflection} and {registration.Verb}.{registration.Inflection} require different permissions ([RequiresPermission]), " +
+                    "but they're chosen for each message ([ChosenForEachMessage]), after the gate. Give them the same permissions, or have them take different message types.";
+            }
+        }
         return null;
     }
 

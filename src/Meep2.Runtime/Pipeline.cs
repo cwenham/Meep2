@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Meep2.Runtime.Internal;
+using Meep2.Runtime.Verifying;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
 using Meep2.SDK.Security;
@@ -62,6 +63,7 @@ public sealed class Pipeline : IAsyncDisposable
 
         Name = name;
         Options = options;
+        Gates = new Gatekeeper(() => Options);
         AbortToken = _abort.Token;
         StoppingToken = _stopSources.Token;
 
@@ -161,6 +163,9 @@ public sealed class Pipeline : IAsyncDisposable
 
     /// <summary>Settings for the whole pipeline. A change to the running pipeline can replace them.</summary>
     public PipelineOptions Options { get; private set; }
+
+    /// <summary>What the pipeline's gates need, against its trust store and its own <c>#permission</c> directives.</summary>
+    internal Gatekeeper Gates { get; }
 
     /// <summary>Cancelled when the pipeline gives up waiting for messages to finish. Modules receive it.</summary>
     internal CancellationToken AbortToken { get; }
@@ -441,6 +446,7 @@ public sealed class Pipeline : IAsyncDisposable
         foreach (var (node, links) in removedLinks)
             node.Links = Remaining(links, plan);
         Options = options;
+        Gates.OptionsChanged();
         Install(plan.Nodes, specs, options, plan.Updates.Select(u => (u.Old, u.Node)));
 
         // Kept modules take their new specs, between messages.
@@ -758,6 +764,8 @@ public sealed class Pipeline : IAsyncDisposable
         }
         if (target.Router is { } router)
         {
+            if (target.IsGated && Refused(target, message, depth))
+                return;
             // Distribute: the message goes on down one copy of the branch below, chosen here, on this thread.
             target.Counters.Received();
             target.Counters.Passed();
@@ -778,6 +786,10 @@ public sealed class Pipeline : IAsyncDisposable
                 // Expired messages stop at the next module that would take them (Q12).
                 target.Counters.Expired();
                 message.Tracking.Flag(MessageOutcome.Expired);
+            }
+            else if (target.IsGated && Refused(target, message, depth))
+            {
+                // It lacked a permission the module needs: it became a PermissionDenied error, or an error passed by.
             }
             else
             {
@@ -806,6 +818,24 @@ public sealed class Pipeline : IAsyncDisposable
             var error = new ErrorMessage { Error = $"{target.Info} doesn't take {message.GetType().Name} messages." };
             Emit(target, target.Info, error, defaultParent: message);
         }
+    }
+
+    // Whether a gated module refuses a message, before it's delivered, so a passthrough or Distribute doesn't pass it on
+    // either. A refused message becomes a PermissionDenied error from the module, following the error policy (Q258).
+    // A refused error passes the module by, as one it doesn't take would, so it still finds whatever handles errors and
+    // refusals don't pile up on each other.
+    private bool Refused(InflectionNode target, Message message, int depth)
+    {
+        if (target.GateFor(message) is not { } gate || gate.Check(message) is not { } refusal)
+            return false;
+        target.Counters.Denied();
+        if (Tracing.IsOn)
+            Tracing.Denied(target, message, refusal);
+        if (message is ErrorMessage)
+            Forward(target, message, depth);
+        else
+            Emit(target, target.Info, new PermissionDenied(target.Info, refusal.Needed, refusal.Reasons), defaultParent: message);
+        return true;
     }
 
     private void Forward(InflectionNode from, Message message, int depth)
@@ -925,7 +955,8 @@ public sealed class Pipeline : IAsyncDisposable
         {
             Console.Error.WriteLine($"The pipeline's unhandled-error callback failed: {exception}");
         }
-        if (!answered)
+        // A refusal is a gate doing its job, not a fault, so a stream of unwelcome requests can't stop the pipeline.
+        if (!answered && error is not PermissionDenied)
             CountTowardsStopping(error);
     }
 

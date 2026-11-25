@@ -10,7 +10,10 @@ namespace Meep2.Tests;
 public class LanguageServerTests
 {
     // Frames messages as an editor sends them, runs the server until they run out, and reads back what it sent.
-    private static async Task<List<JsonNode>> Converse(params JsonObject[] messages)
+    private static Task<List<JsonNode>> Converse(params JsonObject[] messages) => ConverseWith(null, messages);
+
+    // The same, with a home folder for plugins and the trust store.
+    private static async Task<List<JsonNode>> ConverseWith(Meep2.Plugins.PluginOptions? plugins, params JsonObject[] messages)
     {
         var input = new MemoryStream();
         foreach (var message in messages)
@@ -20,15 +23,15 @@ public class LanguageServerTests
             input.Write(Encoding.ASCII.GetBytes($"Content-Length: {body.Length}\r\n\r\n"));
             input.Write(body);
         }
-        return await ConverseRaw(input.ToArray());
+        return await ConverseRaw(input.ToArray(), plugins);
     }
 
     // Runs the server on bytes exactly as given, framing and all, and reads back what it sent.
-    private static async Task<List<JsonNode>> ConverseRaw(byte[] bytes)
+    private static async Task<List<JsonNode>> ConverseRaw(byte[] bytes, Meep2.Plugins.PluginOptions? plugins = null)
     {
         var input = new MemoryStream(bytes);
         var output = new MemoryStream();
-        await Wait.For(new LanguageServer(input, output).RunAsync(CancellationToken.None));
+        await Wait.For(new LanguageServer(input, output, plugins).RunAsync(CancellationToken.None));
 
         var replies = new List<JsonNode>();
         var text = Encoding.UTF8.GetString(output.ToArray());
@@ -117,6 +120,44 @@ public class LanguageServerTests
         await Assert.That(diagnostic["range"]!["start"]!["line"]!.GetValue<int>()).IsEqualTo(1);
         await Assert.That(diagnostic["range"]!["start"]!["character"]!.GetValue<int>()).IsEqualTo(4);
         await Assert.That(diagnostic["severity"]!.GetValue<int>()).IsEqualTo(1);
+    }
+
+    [Test]
+    public async Task It_completes_and_describes_permission_gates()
+    {
+        const string Uri = "file:///tmp/gated.meep";
+        var replies = await Converse(
+            Open(Uri, "Interval 1s\n    WriteLine \"x\" @permission=ReadNotes @permission=\"WriteNotes:~/notes/**\" @"),
+            At(1, "textDocument/completion", Uri, 1, 77),
+            At(2, "textDocument/hover", Uri, 1, 22));
+
+        var labels = replies.Single(r => r["id"]?.GetValue<int>() == 1)["result"]!["items"]!.AsArray().Select(i => i!["label"]!.GetValue<string>());
+        await Assert.That(labels).Contains("@permission");
+        var hover = replies.Single(r => r["id"]?.GetValue<int>() == 2)["result"]!["contents"]!["value"]!.GetValue<string>();
+        await Assert.That(hover).StartsWith("**@permission** (modifier): a gate.");
+        await Assert.That(hover).EndsWith("Needs here: `ReadNotes`, `WriteNotes:~/notes/**`");
+    }
+
+    [Test]
+    public async Task It_warns_about_a_permission_the_trust_store_doesnt_define()
+    {
+        using var home = new TemporaryFolder();
+        var folder = Meep2.Security.TrustFolder.In(home.Path);
+        folder.Create();
+        File.WriteAllText(folder.Permissions, "#permission ReadNotes\n");
+        const string Uri = "file:///tmp/gated.meep";
+
+        var replies = await ConverseWith(new Meep2.Plugins.PluginOptions { Home = home.Path },
+            Open(Uri, "#permission Fresh\nInterval 1s\n    WriteLine \"x\" @permission=ReadNotes @permission=Raednotes\n"));
+
+        var diagnostics = replies.Single(r => r["method"]?.GetValue<string>() == "textDocument/publishDiagnostics")["params"]!["diagnostics"]!.AsArray();
+        await Assert.That(diagnostics.Count).IsEqualTo(2);
+        await Assert.That(diagnostics.All(d => d!["severity"]!.GetValue<int>() == 2)).IsTrue();
+        await Assert.That(diagnostics[0]!["message"]!.GetValue<string>()).StartsWith("Fresh isn't defined in this machine's trust store");
+        var misspelt = diagnostics[1]!;
+        await Assert.That(misspelt["message"]!.GetValue<string>()).StartsWith("Raednotes isn't defined in this machine's trust store (permissions.meep), so any trusted authority confers it");
+        await Assert.That(misspelt["range"]!["start"]!["line"]!.GetValue<int>()).IsEqualTo(2);
+        await Assert.That(misspelt["range"]!["start"]!["character"]!.GetValue<int>()).IsEqualTo(40);
     }
 
     [Test]

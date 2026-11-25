@@ -85,6 +85,23 @@ internal static class Tracing
         return $"00-{ActivityTraceId.CreateRandom().ToHexString()}-{ActivitySpanId.CreateRandom().ToHexString()}-00";
     }
 
+    /// <summary>
+    /// Records a message refused at a gate as an event on the span of the module that emitted it, if that span is
+    /// being recorded: which module refused it, which permissions it lacked and why (<c>meep.permission.denied</c>).
+    /// </summary>
+    public static void Denied(Node gate, Message message, Verifying.Refusal refusal)
+    {
+        if (Activity.Current is not { IsAllDataRequested: true } span)
+            return;
+        span.AddEvent(new ActivityEvent("meep.permission.denied", tags: new ActivityTagsCollection
+        {
+            { "meep.module", gate.Label },
+            { "meep.message.id", message.Id.ToString() },
+            { "meep.permission", string.Join(" ", refusal.Needed) },
+            { "meep.permission.reasons", string.Join(" ", refusal.Reasons) },
+        }));
+    }
+
     /// <summary>Records an injected message as the start of a trace, as a source's messages are.</summary>
     public static void Injected(Pipeline pipeline, Message message)
     {

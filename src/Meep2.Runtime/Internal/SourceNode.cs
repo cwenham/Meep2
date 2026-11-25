@@ -1,4 +1,5 @@
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 
 namespace Meep2.Runtime.Internal;
 
@@ -16,7 +17,25 @@ internal sealed class SourceNode : Node
     public SourceNode(Pipeline pipeline, NodeSpec spec)
         : base(pipeline, spec) => _context = new SourceContext(this);
 
-    public override void CreateModule() => _module = (ASource)CreateInstance(Spec.Inflections[0]);
+    /// <summary>
+    /// Makes the source, unless it needs permissions (<c>@permission</c>, or its verb's
+    /// <see cref="RequiresPermissionAttribute"/>): the pipeline must hold them for it to start (Q252), and pipelines
+    /// don't carry credentials of their own yet, so a gated source can't start.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">It needs a permission.</exception>
+    public override void CreateModule()
+    {
+        var module = (ASource)CreateInstance(Spec.Inflections[0]);
+        var needed = Spec.Options.Permissions.Union(RequiresPermissionAttribute.Of(module.GetType())).ToList();
+        if (needed.Count > 0)
+        {
+            _ = DisposeInstanceAsync(module, $"{Info} couldn't be disposed");
+            throw new InvalidOperationException(
+                $"{Info} can't start: it needs {string.Join(" and ", needed)}, which the pipeline must hold for its sources to start, " +
+                "and pipelines don't carry credentials of their own yet.");
+        }
+        _module = module;
+    }
 
     public override IEnumerable<AModule> Instances => _module is { } module ? [module] : [];
 

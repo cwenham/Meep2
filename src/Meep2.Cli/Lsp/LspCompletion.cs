@@ -8,9 +8,9 @@ namespace Meep2.Cli;
 /// <param name="workspace">The open files and the verbs each can use.</param>
 internal sealed class LspCompletion(LspWorkspace workspace)
 {
-    private static readonly string[] s_modifiers = ["buffer", "bypass", "errors", "no-errors", "expires", "accept-expired", "on-error"];
+    private static readonly string[] s_modifiers = ["buffer", "bypass", "errors", "no-errors", "expires", "accept-expired", "on-error", "permission"];
     private static readonly string[] s_defaults = ["buffer", "expires", "on-error", "keep-finished"];
-    private static readonly string[] s_keywords = ["defaults", "const", "template", "#include", "#plugin"];
+    private static readonly string[] s_keywords = ["defaults", "const", "template", "#include", "#plugin", "#permission"];
 
     // What fits where the cursor is: a book in a module's quoted value that takes one, a modifier after @, a message
     // type after is, a setting under defaults, or a verb.

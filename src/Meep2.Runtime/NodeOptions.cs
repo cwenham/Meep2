@@ -1,3 +1,5 @@
+using Meep2.SDK.Security;
+
 namespace Meep2.Runtime;
 
 /// <summary>How the runtime treats one module in a pipeline. These are Meeplang's <c>@</c> modifiers.</summary>
@@ -44,4 +46,13 @@ public sealed record NodeOptions
 
     /// <summary>The error policy for this module and the branch below it. Null uses the pipeline's. Meeplang's <c>@on-error</c>.</summary>
     public ErrorPolicy? ErrorPolicy { get; init; }
+
+    /// <summary>
+    /// The permissions a message needs to reach this module, all of them: every line of its family must pass through a
+    /// verified credential holding each one, or it's refused with a <see cref="PermissionDenied"/> error, which
+    /// follows the error policy (Q258, Q261). What the module's verb requires (<see cref="RequiresPermissionAttribute"/>)
+    /// is needed as well. On a source, the pipeline must hold them for it to start. Meeplang's
+    /// <c>@permission=Name</c>, which can be written more than once.
+    /// </summary>
+    public IReadOnlyList<PermissionName> Permissions { get; init; } = [];
 }

@@ -20,6 +20,12 @@ namespace Meep2.Runtime;
 /// <param name="Expired">Messages that expired before the module could take them, or while it was handling them.</param>
 /// <param name="Refused">Messages that none of the module's inflections takes. Each one became an error (Q54).</param>
 /// <param name="Queued">Messages waiting in the module's buffer now.</param>
+/// <param name="Denied">
+/// Messages refused because they lacked a permission the module needs: at its <c>@permission</c> gate, or by its own
+/// check (<see cref="SDK.Modules.ModuleContext.Demand"/>). Each became a <see cref="SDK.Security.PermissionDenied"/>
+/// error, or, for an error refused, passed the module by. Also what the module refused before it became a message,
+/// such as requests a Listen with <c>proof=required</c> answered with 401 (<see cref="SDK.Modules.ModuleContext.CountDenied"/>).
+/// </param>
 public readonly record struct ModuleStats(
     long Received,
     long Handled,
@@ -31,7 +37,8 @@ public readonly record struct ModuleStats(
     long Restarts,
     long Expired,
     long Refused,
-    long Queued);
+    long Queued,
+    long Denied = 0);
 
 /// <summary>The count for one link since its pipeline started (<see cref="Pipeline.GetLinkStats"/>).</summary>
 /// <param name="From">The module it comes from.</param>

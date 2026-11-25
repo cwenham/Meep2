@@ -27,6 +27,13 @@ public abstract record Message
     /// <summary>Runtime state, such as whether an error has been handled.</summary>
     internal int RuntimeFlags;
 
+    /// <summary>
+    /// What gates have found about this message's permissions, kept so a gate, or a gate further down that needs the
+    /// same permission, doesn't walk its family again. Only the runtime's gates read or write it; a copy starts
+    /// without any.
+    /// </summary>
+    internal object? GateAnswers;
+
     /// <summary>Creates a message with a new <see cref="Id"/> and no parents.</summary>
     protected Message()
     {

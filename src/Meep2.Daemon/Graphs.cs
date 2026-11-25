@@ -108,6 +108,7 @@ public static class Graphs
             Under = module.Under,
             Feeder = built.IsFeeder,
             CopyOf = module.CopyOf,
+            Permissions = module.Permissions.Count == 0 ? null : [.. module.Permissions.Select(p => p.ToString())],
             Templates = built.TemplateUses.Count == 0 ? null : [.. built.TemplateUses.Select(use => new GraphTemplateUse(use.Verb, files.Span(use.Extent)))],
             Include = file is null ? null : files.IncludeOf(file),
         };

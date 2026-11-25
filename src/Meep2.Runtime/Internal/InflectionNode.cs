@@ -1,8 +1,10 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Threading.Channels;
+using Meep2.Runtime.Verifying;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 
 namespace Meep2.Runtime.Internal;
 
@@ -75,6 +77,20 @@ internal sealed class InflectionNode : Node
     /// <summary>How many messages its buffer holds.</summary>
     public int Capacity { get; }
 
+    /// <summary>
+    /// Whether a message needs permissions to reach the module: it has <c>@permission</c>, or one of its inflections
+    /// requires one (<see cref="RequiresPermissionAttribute"/>). Messages reach other modules without a look at their
+    /// family.
+    /// </summary>
+    public bool IsGated { get; private set; }
+
+    /// <summary>
+    /// The gate a message of this type passes through to reach the module, or null if it needs nothing: the module's
+    /// <c>@permission</c>s, and what each inflection that takes the type requires, since which one handles it may only
+    /// be decided later.
+    /// </summary>
+    public Gate? GateFor(Message message) => RouteOf(message.GetType()).Gate;
+
     /// <summary>Whether any of the module's inflections can handle this message's type.</summary>
     public bool Accepts(Message message) => RouteFor(message.GetType()).Length > 0;
 
@@ -102,6 +118,9 @@ internal sealed class InflectionNode : Node
         if (_slots.Any(slot => slot.Module!.IsPassthrough != IsPassthrough))
             throw new InvalidOperationException($"{Info}'s inflections don't agree on whether they're passthrough modules, so it can't route between them.");
         Router = _slots.Length == 1 ? _slots[0].Module as IRouteMessages : null;
+        IsGated = Options.Permissions.Count > 0 || _slots.Any(slot => slot.Requires.Length > 0);
+        _routes.Clear();
+        _lastRoute = null;
     }
 
     /// <summary>
@@ -283,6 +302,7 @@ internal sealed class InflectionNode : Node
             }
             Spec = next;
             _handlesType = next.Options.HandlesType is { } handlesType ? new TypeCheck(handlesType) : null;
+            IsGated = next.Options.Permissions.Count > 0 || _slots.Any(slot => slot.Requires.Length > 0);
             _routes.Clear();
             _lastRoute = null;
         }
@@ -332,19 +352,38 @@ internal sealed class InflectionNode : Node
                 $"{Describe(slot.Spec.Info)} handles {input.Name}, which is neither a message type nor an interface, so it would never receive anything.");
         }
         slot.InputType = input;
+        slot.Requires = [.. RequiresPermissionAttribute.Of(module.GetType())];
         return module;
     }
 
     // The inflections that take a type, closest fit first (Q20). The route for each type is remembered, and the last
     // one used is kept to hand, so messages of alternating types don't allocate.
-    private Slot[] RouteFor(Type type)
+    private Slot[] RouteFor(Type type) => RouteOf(type).Slots;
+
+    private Route RouteOf(Type type)
     {
         var last = _lastRoute;
         if (last is not null && last.Type == type)
-            return last.Slots;
-        var route = _routes.GetOrAdd(type, static (messageType, all) => new Route(messageType, Order(all, messageType)), _slots);
+            return last;
+        var route = _routes.GetOrAdd(type, static (messageType, node) => node.NewRoute(messageType), this);
         _lastRoute = route;
-        return route.Slots;
+        return route;
+    }
+
+    // A type's route: its inflections in order, and the gate a message of the type passes through, if any.
+    private Route NewRoute(Type messageType)
+    {
+        var slots = Order(_slots, messageType);
+        var needed = new List<PermissionName>(Options.Permissions);
+        foreach (var slot in slots.Length > 0 ? slots : _slots)
+        {
+            foreach (var permission in slot.Requires)
+            {
+                if (!needed.Contains(permission))
+                    needed.Add(permission);
+            }
+        }
+        return new Route(messageType, slots, needed.Count == 0 ? null : new Gate(Pipeline.Gates, [.. needed]));
     }
 
     private static Slot[] Order(Slot[] slots, Type messageType) =>
@@ -458,6 +497,16 @@ internal sealed class InflectionNode : Node
                         outcome = MessageOutcome.Expired;
                         Counters.Expired();
                     }
+                }
+                catch (PermissionDeniedException denied)
+                {
+                    // The module's own check refused the message (ModuleContext.Demand): a refusal, not a fault, so
+                    // the module isn't restarted and it doesn't count towards stopping its branch.
+                    Counters.Denied();
+                    var refusal = new Refusal([denied.Needed], [denied.Reason]);
+                    if (Tracing.IsOn)
+                        Tracing.Denied(this, message, refusal);
+                    Pipeline.Emit(this, slot.Spec.Info, new PermissionDenied(slot.Spec.Info, refusal.Needed, refusal.Reasons), defaultParent: message);
                 }
                 catch (Exception exception)
                 {
@@ -573,10 +622,13 @@ internal sealed class InflectionNode : Node
 
         public Type InputType { get; set; } = typeof(Message);
 
+        /// <summary>The permissions the inflection's class requires (<see cref="RequiresPermissionAttribute"/>).</summary>
+        public PermissionName[] Requires { get; set; } = [];
+
         public bool Broken { get; set; }
     }
 
-    private sealed record Route(Type Type, Slot[] Slots);
+    private sealed record Route(Type Type, Slot[] Slots, Gate? Gate);
 
     /// <summary>A new spec to apply between messages.</summary>
     private sealed record Change(NodeSpec Spec, bool Reconfigure);

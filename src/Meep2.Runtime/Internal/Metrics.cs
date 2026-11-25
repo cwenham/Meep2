@@ -17,7 +17,7 @@ internal static class Metrics
     static Metrics()
     {
         Meter.CreateObservableCounter("meep.module.messages", ObserveCounts, "{message}",
-            "Messages through each module, by what happened to them: received, handled, emitted, passed, dropped, filtered, expired or refused.");
+            "Messages through each module, by what happened to them: received, handled, emitted, passed, dropped, filtered, expired, refused or denied.");
         Meter.CreateObservableCounter("meep.module.failures", ObserveFailures, "{failure}",
             "Times each module threw, and times it was restarted.");
         Meter.CreateObservableUpDownCounter("meep.module.queued", ObserveQueues, "{message}",
@@ -58,6 +58,7 @@ internal static class Metrics
                 yield return Measure(stats.Filtered, pipeline, node, "filtered");
                 yield return Measure(stats.Expired, pipeline, node, "expired");
                 yield return Measure(stats.Refused, pipeline, node, "refused");
+                yield return Measure(stats.Denied, pipeline, node, "denied");
             }
         }
     }

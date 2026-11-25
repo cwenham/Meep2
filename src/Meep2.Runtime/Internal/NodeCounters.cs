@@ -18,6 +18,7 @@ internal sealed class NodeCounters
     private long _restarts;
     private long _expired;
     private long _refused;
+    private long _denied;
     private long _bytesReceived;
     private long _bytesSent;
 
@@ -36,7 +37,8 @@ internal sealed class NodeCounters
         Interlocked.Read(ref _restarts),
         Interlocked.Read(ref _expired),
         Interlocked.Read(ref _refused),
-        queued);
+        queued,
+        Interlocked.Read(ref _denied));
 
     public void CountBytes(long received, long sent)
     {
@@ -65,4 +67,6 @@ internal sealed class NodeCounters
     public void Expired() => Interlocked.Increment(ref _expired);
 
     public void Refused() => Interlocked.Increment(ref _refused);
+
+    public void Denied() => Interlocked.Increment(ref _denied);
 }

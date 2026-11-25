@@ -12,6 +12,10 @@ if (args is ["flows-micro", ..])
 if (args is ["flows", ..])
     return await Meep2.Benchmarks.FlowCost.RunAsync(args);
 
+// What an @permission gate costs (permissions phase 4): dotnet run -c Release -- gates [--messages 200000]
+if (args is ["gates", ..])
+    return await Meep2.Benchmarks.GateCost.RunAsync(args);
+
 // The memory the fam chain keeps alive (M8, for Q7): dotnet run -c Release -- fam [--messages 100000]
 if (args is ["fam", ..])
     return await Meep2.Benchmarks.FamCost.RunAsync(args);

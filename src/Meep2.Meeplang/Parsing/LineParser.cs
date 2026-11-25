@@ -1,4 +1,5 @@
 using Meep2.Meeplang.Syntax;
+using Meep2.SDK.Security;
 
 namespace Meep2.Meeplang.Parsing;
 
@@ -13,6 +14,7 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
     private readonly List<ArgumentSyntax> _defaults = [];
     private readonly List<ConstantSyntax> _constants = [];
     private readonly List<PluginDirective> _plugins = [];
+    private readonly List<PermissionDirective> _permissions = [];
     private readonly List<ModuleSyntax> _modules = [];
 
     // Open blocks, outermost first. Null owner means the left margin.
@@ -31,7 +33,7 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
         CheckFeeders(_modules);
         foreach (var template in _templates)
             CheckFeeders(template.Body);
-        return new PipelineSyntax(source, _defaults, _constants, _plugins, _modules, _diagnostics.Items, _templates, _includes);
+        return new PipelineSyntax(source, _defaults, _constants, _plugins, _modules, _diagnostics.Items, _templates, _includes) { Permissions = _permissions };
     }
 
     private void ParseLine(string text, int lineNumber)
@@ -180,8 +182,59 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
             ParseInclude(words, indent);
         else if (name.Text == "#plugin")
             ParsePlugin(words, indent);
+        else if (name.Text == Permission.Directive)
+            ParsePermission(text, start, words, indent);
         else
-            _diagnostics.Error($"There's no {name.Text} directive. Meeplang has #plugin and #include.", name.Span);
+            _diagnostics.Error($"There's no {name.Text} directive. Meeplang has #plugin, #include and #permission.", name.Span);
+    }
+
+    // #permission Name[:scope] [authority=name] [requires=permission]: at the margin, in the pipeline's own file, before
+    // its modules, once for each name. Read as the trust store's permissions file reads it.
+    private void ParsePermission(string text, int start, List<DirectiveWord> words, int indent)
+    {
+        var name = words[0];
+        if (isInclude)
+        {
+            _diagnostics.Error("An included file holds templates and constants; #permission goes in the pipeline's own file.", name.Span);
+            return;
+        }
+        if (!AtMarginBeforeModules(name, indent))
+            return;
+        var span = SourceSpan.Between(name.Span, words[^1].Span);
+        Permission permission;
+        try
+        {
+            permission = Permission.ParseDirective(text[start..]);
+        }
+        catch (FormatException exception)
+        {
+            _diagnostics.Error(exception.Message, span);
+            return;
+        }
+        if (_permissions.Any(p => p.Permission.Name.Name == permission.Name.Name))
+        {
+            _diagnostics.Error($"This pipeline already narrows {permission.Name.Name}. Write everything for it on one #permission line.", span);
+            return;
+        }
+        _permissions.Add(new PermissionDirective(permission, span));
+    }
+
+    // Whether a directive is at the margin and before the modules, reporting why not.
+    private bool AtMarginBeforeModules(DirectiveWord name, int indent)
+    {
+        if (indent > 0)
+        {
+            _diagnostics.Error($"{name.Text} goes at the left margin.", name.Span);
+            return false;
+        }
+        while (_levels.Count > 1)
+            _levels.RemoveAt(_levels.Count - 1);
+        if (_seenModule)
+        {
+            _diagnostics.Error($"{name.Text} goes before the pipeline's modules.", name.Span);
+            return false;
+        }
+        return true;
     }
 
     // #plugin github.com/owner/repo 1.2.0 sha256:…, #plugin nuget:Package.Id 1.2.0 [sha256:…], or #plugin "path",
