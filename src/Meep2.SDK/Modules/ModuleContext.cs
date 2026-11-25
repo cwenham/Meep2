@@ -169,6 +169,13 @@ public abstract class ModuleContext
         throw new NotSupportedException("This context isn't part of a pipeline, so there are no credentials to check.");
 
     /// <summary>
+    /// The credentials through which <paramref name="message"/> holds a permission, one for each line of its family, or
+    /// none if it doesn't hold it. The runtime provides it, for <c>Authorise</c> to name who authorised a grant.
+    /// </summary>
+    internal virtual IReadOnlyList<Credential> HeldBy(string permission, Message message) =>
+        throw new NotSupportedException("This context isn't part of a pipeline, so there are no credentials to check.");
+
+    /// <summary>
     /// Emits at any time, from any thread, for a module that handles messages, such as one passing on what arrives on a
     /// connection it opened. Take it while handling a message, so what it emits records the inflection doing the work.
     /// Sources emit through the context itself at any time, so they don't need one.

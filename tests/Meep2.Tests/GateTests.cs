@@ -14,7 +14,7 @@ using Meep2.Tests.Support;
 
 namespace Meep2.Tests;
 
-/// <summary>@permission gates, verbs that require permissions, checks in code, and Listen's proof=required (permissions phase 4).</summary>
+/// <summary>@permission gates, verbs that require permissions, checks in code, and Listen's signature=required (permissions phase 4).</summary>
 public class GateTests
 {
     private const string Definitions = "#permission ReadNotes\n#permission WriteNotes\n#permission Other\n";
@@ -265,9 +265,9 @@ public class GateTests
 
     [Test]
     [NotInParallel("tracing")]
-    public async Task A_refusal_is_an_event_on_the_span_of_the_module_that_emitted_the_message()
+    public async Task Every_refusal_is_a_short_span_of_its_own_and_its_error_hangs_under_it()
     {
-        var events = new ConcurrentQueue<ActivityEvent>();
+        var stopped = new ConcurrentQueue<Activity>();
         using var listener = new ActivityListener
         {
             ShouldListenTo = source => source.Name == MeepTelemetry.Name,
@@ -275,26 +275,126 @@ public class GateTests
             ActivityStopped = activity =>
             {
                 if ((string?)activity.GetTagItem("meep.pipeline") is "Pipeline" or "test")
-                {
-                    foreach (var item in activity.Events)
-                        events.Enqueue(item);
-                }
+                    stopped.Enqueue(activity);
             },
         };
         ActivitySource.AddActivityListener(listener);
 
+        // One refusal straight after a source, which has no handling span to put it on, and one after a module. The
+        // names are this test's own, since other tests' pipelines refuse things too.
         var run = await TestRun.Start("""
-            Numbers to=1
-                Derive
-                    Sink as Gated @permission=ReadNotes
+            Numbers to=1 as SourceQ298
+                Sink as StraightQ298 @permission=ReadNotes
+                    Sink as AnswerQ298 @errors
+                Derive as DeriveQ298
+                    Sink as GatedQ298 @permission=ReadNotes
             """);
 
         await Assert.That(run.Diagnostics).IsEmpty();
-        var denied = events.Single(e => e.Name == "meep.permission.denied");
-        var tags = denied.Tags.ToDictionary(t => t.Key, t => t.Value);
-        await Assert.That(tags["meep.module"]).IsEqualTo("Gated");
-        await Assert.That(tags["meep.permission"]).IsEqualTo("ReadNotes");
-        await Assert.That((string)tags["meep.permission.reasons"]!).Contains("There's no trust store to check against");
+        Activity Named(string module, string? suffix = null) => stopped.Single(a => (string?)a.GetTagItem("meep.module") == module
+            && (suffix is null || a.DisplayName.EndsWith(suffix, StringComparison.Ordinal)));
+        var straight = Named("StraightQ298");
+        var gated = Named("GatedQ298");
+        foreach (var refusal in new[] { straight, gated })
+        {
+            await Assert.That(refusal.DisplayName).StartsWith("Sink");
+            await Assert.That(refusal.DisplayName).EndsWith(".denied");
+            await Assert.That(refusal.Status).IsEqualTo(ActivityStatusCode.Unset);
+            await Assert.That((string?)refusal.GetTagItem("meep.outcome")).IsEqualTo("denied");
+            await Assert.That((string?)refusal.GetTagItem("meep.permission")).IsEqualTo("ReadNotes");
+            await Assert.That((string?)refusal.GetTagItem("meep.permission.reasons")).Contains("There's no trust store to check against");
+            var denied = refusal.Events.Single(e => e.Name == "meep.permission.denied");
+            await Assert.That(denied.Tags.Single(t => t.Key == "meep.permission").Value).IsEqualTo("ReadNotes");
+        }
+
+        // The one after the source hangs under the source's span; the other under Derive's.
+        var source = Named("SourceQ298");
+        await Assert.That(straight.ParentSpanId).IsEqualTo(source.SpanId);
+        await Assert.That(gated.ParentSpanId).IsEqualTo(Named("DeriveQ298").SpanId);
+
+        // The @errors branch answering the refusal is its child: request, refused at Straight, answered.
+        var answer = Named("AnswerQ298");
+        await Assert.That(answer.ParentSpanId).IsEqualTo(straight.SpanId);
+        await Assert.That(answer.TraceId).IsEqualTo(source.TraceId);
+    }
+
+    // ---- Gates that need a kind of proof ----
+
+    [Test]
+    public async Task A_gate_with_proof_refuses_a_bearer_credential_and_lets_a_signed_request_through()
+    {
+        Skip.Unless(SshKeygen.Available, "This needs OpenSSH's ssh-keygen.");
+        using var lab = await GateLab.CreateAsync("ReadNotes");
+        var port = TestServer.FreePort();
+        var url = $"http://127.0.0.1:{port}/notes/";
+        await using var running = TestRun.Begin($$"""
+            Listen "{{url}}"
+                Verify from=msg.Headers["Meep-Credential"] bearer=true
+                    Send text="Welcome." @permission=ReadNotes @proof=signed
+                        Send error-status=403 error-reply="{msg.Error}" @errors
+            """, TrustStoreSource.Of(lab.Store()));
+        await Assert.That(running.Run.Diagnostics).IsEmpty();
+        using var client = new HttpClient();
+
+        async Task<(HttpStatusCode Status, string Text)> PostAsync(Dictionary<string, string> headers)
+        {
+            var deadline = DateTime.UtcNow + Wait.Limit;
+            while (true)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Post, url) { Content = new StringContent("hello", Encoding.UTF8, "text/plain") };
+                foreach (var (name, value) in headers)
+                {
+                    if (!request.Headers.TryAddWithoutValidation(name, value))
+                        request.Content.Headers.TryAddWithoutValidation(name, value);
+                }
+                try
+                {
+                    using var response = await client.SendAsync(request);
+                    return (response.StatusCode, await response.Content.ReadAsStringAsync());
+                }
+                catch (HttpRequestException) when (DateTime.UtcNow < deadline)
+                {
+                    await Task.Delay(20);
+                }
+            }
+        }
+
+        var signer = new RequestSigner(RequestSigner.With(lab.Lab.Subject), lab.Credential) { Url = url };
+        var signed = await PostAsync(signer.Headers());
+        await Assert.That(signed.Status).IsEqualTo(HttpStatusCode.OK);
+
+        // The same credential, unsigned: Verify takes it as a bearer credential, which passes, but the gate wants proof.
+        var bearer = await PostAsync(new Dictionary<string, string> { ["Meep-Credential"] = Convert.ToBase64String(lab.Credential.Blob.Span) });
+        await Assert.That(bearer.Status).IsEqualTo(HttpStatusCode.Forbidden);
+        await Assert.That(bearer.Text).Contains("alice's credential was verified with none, as a bearer credential, and this needs a signed request, a connection's proof or TLS.");
+    }
+
+    [Test]
+    [Arguments("Numbers to=1\n    Sink @permission=ReadNotes @proof=sometimes", "@proof needs the kind of proof")]
+    [Arguments("Numbers to=1\n    Sink @proof=signed", "isn't a gate: give it @permission too")]
+    public async Task Proof_modifiers_that_cant_be_honoured_are_reported(string text, string expected)
+    {
+        var run = await TestRun.Start(text.Replace("\\n", "\n", StringComparison.Ordinal), run: false);
+        await Assert.That(run.Diagnostics).Contains(expected);
+    }
+
+    [Test]
+    public async Task Proof_modifiers_load_and_say_which_kinds_they_accept()
+    {
+        var run = await TestRun.Start("""
+            Numbers to=1
+                Sink as Signed @permission=ReadNotes @proof=signed
+                Sink as Some @permission=ReadNotes @proof=tls @proof=request
+            """, run: false);
+        await Assert.That(run.Diagnostics).IsEmpty();
+
+        var signed = ProofSet.Of([Proof.RequestSignature, Proof.Connection, Proof.Tls]);
+        await Assert.That(signed.Allows(Proof.Bearer)).IsFalse();
+        await Assert.That(signed.Allows(Proof.None)).IsFalse();
+        await Assert.That(signed.Allows(Proof.Connection)).IsTrue();
+        await Assert.That(signed.ToString()).IsEqualTo("a signed request, a connection's proof or TLS");
+        await Assert.That(ProofSet.Of([Proof.Tls, Proof.RequestSignature]).ToString()).IsEqualTo("a signed request or TLS");
+        await Assert.That(ProofSet.Of([]).Allows(Proof.Bearer)).IsTrue();
     }
 
     // ---- The pipeline's own directives ----
@@ -443,7 +543,7 @@ public class GateTests
         var port = TestServer.FreePort();
         var url = $"http://127.0.0.1:{port}/notes/";
         await using var running = TestRun.Begin($$"""
-            Listen "{{url}}" proof=required
+            Listen "{{url}}" signature=required
                 Send text="in"
             """);
         await Assert.That(running.Run.Diagnostics).IsEmpty();
@@ -490,7 +590,7 @@ public class GateTests
         var url = $"http://127.0.0.1:{port}/notes/";
         // The example in docs/verbs.md, under Gates.
         await using var running = TestRun.Begin($$"""
-            Listen "{{url}}" proof=required
+            Listen "{{url}}" signature=required
                 Verify from=msg.Headers["Meep-Credential"]
                     Send text="Welcome." @permission=ReadNotes
                         Send error-status=403 error-reply="{msg.Error}" @errors

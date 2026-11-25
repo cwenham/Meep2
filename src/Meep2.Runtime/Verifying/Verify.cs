@@ -182,5 +182,8 @@ internal static class Trust
     public const string NoStore = "There's no trust store to check against: this pipeline wasn't given one, or it can't be read.";
 
     /// <summary>The trust store as it is now, or null if there's none.</summary>
-    public static TrustStore? Of(ModuleContext context) => (context as IPipelineContext)?.Options.Trust?.Current;
+    public static TrustStore? Of(ModuleContext context) => SourceOf(context)?.Current;
+
+    /// <summary>Where the pipeline gets its trust store, for verbs that change it and read it again, or null if it has none.</summary>
+    public static TrustStoreSource? SourceOf(ModuleContext context) => (context as IPipelineContext)?.Options.Trust;
 }

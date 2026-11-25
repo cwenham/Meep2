@@ -1,6 +1,6 @@
 # Permissions, phase 4: `@permission` gates
 
-Written 24 November 2026. Phase 4 of the plan in `permissions.md`: the `@permission` gates, verbs that require permissions, checks in code, a pipeline's own `#permission` directives, gates in `meep lsp` and the graph, and `Listen.HTTP proof=required`. The work is on the branch `permissions-phase-4`, made from `main` at f6fa47a, not committed, merged or pushed. This covers what was built, the decisions I made while building, what I found in passing, and questions numbered from Q289, for you to answer inline.
+Written 24 November 2026. Phase 4 of the plan in `permissions.md`: the `@permission` gates, verbs that require permissions, checks in code, a pipeline's own `#permission` directives, gates in `meep lsp` and the graph, and `Listen.HTTP signature=required`. The work is on the branch `permissions-phase-4`, made from `main` at f6fa47a, not committed, merged or pushed. This covers what was built, the decisions I made while building, what I found in passing, and questions numbered from Q289, for you to answer inline.
 
 ## Results
 
@@ -59,15 +59,15 @@ The walk follows single parents in a loop and only recurses at joins, so a long 
 - **The graph.** `GraphModule.Permissions` lists what a module needs, its `@permission`s and then its verb's, or is null if it isn't gated, so a drawing can put a lock on it. `ModuleShape` and `LoadedModule` carry it for the LSP's graph and the daemon's.
 - **The verb catalogue.** `VerbEntry.Requires`.
 
-### `Listen.HTTP proof=required`
+### `Listen.HTTP signature=required`
 
-A new parameter, `proof`, `optional` (the default) or `required` (Q280 A). With `required`, a request without `Signature-Input`, `Signature` and `Meep-Credential` is answered with 401 before it reaches the pipeline: `This server needs requests signed with a Meep credential, and this one has no Signature-Input, Signature or Meep-Credential.`, naming the ones missing. It's counted against the client as a rejected request, as other 4xx replies are. `Verify` still does the real check.
+A new parameter, `signature`, `optional` (the default) or `required` (Q280 A). With `required`, a request without `Signature-Input`, `Signature` and `Meep-Credential` is answered with 401 before it reaches the pipeline: `This server needs requests signed with a Meep credential, and this one has no Signature-Input, Signature or Meep-Credential.`, naming the ones missing. It's counted against the client as a rejected request, as other 4xx replies are. `Verify` still does the real check.
 
 ### Documentation
 
-- `docs/verbs.md`: a "Gates: `@permission`" section after `Verify`, with `#permission` directives, and `proof` on Listen.
+- `docs/verbs.md`: a "Gates: `@permission`" section after `Verify`, with `#permission` directives, and `signature` on Listen.
 - `docs/writing-verbs.md`: a Permissions section on `[RequiresPermission]`, `Demand` and `PermissionDenied`, and `Demand` in the context's table.
-- `docs/troubleshooting.md`: "Gates and refusals": how to read a refusal, each reason a gate gives and what to do about it, a gated source that won't start, and a 401 from `proof=required`.
+- `docs/troubleshooting.md`: "Gates and refusals": how to read a refusal, each reason a gate gives and what to do about it, a gated source that won't start, and a 401 from `signature=required`.
 
 ### The tests
 
@@ -85,7 +85,7 @@ A new parameter, `proof`, `optional` (the default) or `required` (Q280 A). With 
 - A gated source, by `@permission` or by its verb, stops its pipeline starting (two cases).
 - A verb that requires a permission keeps it, `@permission` adds to it, the catalogue shows it, and a bad name can't be registered.
 - `Demand` refuses a file outside the credential's scope without counting a failure or a restart.
-- `Listen proof=required` answers 401 naming what's missing, and lets in a request with all three headers.
+- `Listen signature=required` answers 401 naming what's missing, and lets in a request with all three headers.
 - The example in `docs/verbs.md`: a signed request with the permission is answered, and one signed by another key gets the 403 from the `@errors` branch.
 
 Also: `GraphTests` has a gated module's `Permissions` in the graph, and `LanguageServerTests` the completion and the hover.
@@ -146,7 +146,7 @@ About 0.5–1 µs and 130 B for each gate a message passes on this Mac, and abou
 - **`Demand` throws, and the runtime catches it**, so a module calls one line and needs no error handling of its own. The exception isn't caught as a failure: no restart, no `stop-branch`.
 - **Directives only in the pipeline's own file** (Q295), once for each name, before the modules, as `#plugin`. They apply to `Verify.Permission` as well as gates, so asking ahead of time gives the gate's answer.
 - **Whether a directive widens a definition is checked at the gate**, not at load, since the loader has no trust store and the store can change while a pipeline runs.
-- **`proof=` is an enum, `optional` or `required`**, with room for a `connection` later (phase 7's challenge). A 401 from it isn't an error in the pipeline, since the request never reached it, and isn't a `denied` count, since `ModuleContext` has no way for a source to count one (Q296).
+- **`signature=` is an enum, `optional` or `required`**, with room for a `connection` later (phase 7's challenge). A 401 from it isn't an error in the pipeline, since the request never reached it, and isn't a `denied` count, since `ModuleContext` has no way for a source to count one (Q296).
 - **`ModuleStats.Denied` is the last field**, with a default, so code that makes one positionally doesn't change. In the daemon's subscriptions it's the last of each module's counts, which moves `sourced`, `bytesReceived` and `bytesSent` along by one among the totals (Q294).
 - **`meep stats` shows `DENIED` only when something was refused**, so the table of a pipeline without gates reads as before.
 
@@ -201,7 +201,7 @@ About 0.5–1 µs and 130 B for each gate a message passes on this Mac, and abou
 
 **Answer:** Keep in own file.
 
-**Q296.** A 401 from `Listen proof=required` is counted against the client as rejected, but not in the Listen's own `denied` count, as sources have no way to count one. Add a `CountDenied()` to `ModuleContext` so the Listen's refusals show beside the gates', or leave them as rejected requests?
+**Q296.** A 401 from `Listen signature=required` is counted against the client as rejected, but not in the Listen's own `denied` count, as sources have no way to count one. Add a `CountDenied()` to `ModuleContext` so the Listen's refusals show beside the gates', or leave them as rejected requests?
 
 **Answer:** Add `CountDenied()`
 
@@ -221,7 +221,7 @@ About 0.5–1 µs and 130 B for each gate a message passes on this Mac, and abou
 
 **Answer:**
 
-**Q299.** Q253's proposal mentioned gates that need a kind of proof, as in `@permission=meep.files.write proof=signed`, so a bearer credential can't reach them. Add it in phase 5, or wait until someone needs it?
+**Q299.** Q253's proposal mentioned gates that need a kind of proof, as in `@permission=meep.files.write @proof=signed`, so a bearer credential can't reach them. Add it in phase 5, or wait until someone needs it?
 
 **Answer:** Add in phase 5.
 
@@ -234,6 +234,6 @@ Added 25 November 2026. What each answer changed. Still on `permissions-phase-4`
 - **Q290, Q291, Q292, Q295, Q297.** Kept as they are.
 - **Q293 (`Parse`, and refusing mismatched inflections).** `Parse`, typed-only `Authorise` and `Revoke`, and the shared SDK reader are added to phase 5 in `permissions.md`. The registry rule is built now, since it's about `[RequiresPermission]`: a verb whose inflections are chosen for each message, if any of them is, must have them all require the same permissions, or registering it fails saying why. `writing-verbs.md` says so. Tested with three inflections of a test verb.
 - **Q294 (Synesthesia).** `docs/Design/synesthesia-handover.md` lists what changed in what the daemon sends across phases 1–4, the moved totals first, for a session that updates Synesthesia; `docs/Design/ToDo.md` points to it.
-- **Q296 (`CountDenied()`).** `ModuleContext.CountDenied()` adds to a module's `denied` count without a message, and a Listen with `proof=required` calls it for each 401. The test checks the Listen's count. `writing-verbs.md` and `verbs.md` mention it.
+- **Q296 (`CountDenied()`).** `ModuleContext.CountDenied()` adds to a module's `denied` count without a message, and a Listen with `signature=required` calls it for each 401. The test checks the Listen's count. `writing-verbs.md` and `verbs.md` mention it.
 - **Q298 (a span for each refusal).** For phase 5, as the proposal under the question says; added to phase 5 in `permissions.md`.
 - **Q299 (gates that need a kind of proof).** For phase 5; added to phase 5 in `permissions.md`.

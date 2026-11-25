@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 
 namespace Meep2.Runtime.Internal;
 
@@ -21,6 +22,9 @@ internal static class Tracing
     // The span each message came from, while tracing is on. Weak, so it lasts no longer than the message.
     private static readonly ConditionalWeakTable<Message, StrongBox<ActivityContext>> s_cameFrom = new();
 
+    // The refusal span each PermissionDenied came from, so its trace hangs under the refusal (Q298).
+    private static readonly ConditionalWeakTable<Message, StrongBox<ActivityContext>> s_refusals = new();
+
     // The span on another host that a message a source is about to emit continues (ContinueTrace).
     private static readonly ConditionalWeakTable<Message, StrongBox<ActivityContext>> s_remote = new();
 
@@ -31,7 +35,11 @@ internal static class Tracing
     public static void Emitted(Node from, ModuleInfo emitter, Message message)
     {
         ActivityContext cameFrom;
-        if (from.Handling is { } handling && ReferenceEquals(handling.Message, message.Parent))
+        if (message is PermissionDenied && s_refusals.TryGetValue(message, out var refusal))
+        {
+            cameFrom = refusal.Value;
+        }
+        else if (from.Handling is { } handling && ReferenceEquals(handling.Message, message.Parent))
         {
             cameFrom = handling.Span.Context;
         }
@@ -86,20 +94,44 @@ internal static class Tracing
     }
 
     /// <summary>
-    /// Records a message refused at a gate as an event on the span of the module that emitted it, if that span is
-    /// being recorded: which module refused it, which permissions it lacked and why (<c>meep.permission.denied</c>).
+    /// Records a refusal as a short span of its own (Q298), named after the module that refused, as in
+    /// <c>Save.denied</c>, whose parent is the span the message came from, as a handling span's is, so every refusal is
+    /// in the trace, one straight after a source too. It carries the module, the message, the permissions it lacked
+    /// and why, and <c>meep.outcome = denied</c>, and an event, <c>meep.permission.denied</c>, saying the same. Its
+    /// status isn't an error, since a refusal isn't a fault. The <paramref name="denial"/> it becomes, if any, hangs
+    /// under it, so an <c>@errors</c> branch answering it is its child. Nothing is recorded for a message whose trace
+    /// isn't, as for handling spans.
     /// </summary>
-    public static void Denied(Node gate, Message message, Verifying.Refusal refusal)
+    /// <param name="gate">The node that refused the message.</param>
+    /// <param name="module">The module, or inflection, that refused it, which names the span.</param>
+    /// <param name="message">The message refused.</param>
+    /// <param name="refusal">What it lacked, and why.</param>
+    /// <param name="denial">The <see cref="PermissionDenied"/> it becomes, about to be emitted, or null for an error passed by.</param>
+    public static void Denied(Node gate, ModuleInfo module, Message message, Verifying.Refusal refusal, PermissionDenied? denial)
     {
-        if (Activity.Current is not { IsAllDataRequested: true } span)
+        if (!s_cameFrom.TryGetValue(message, out var cameFrom) || (cameFrom.Value.TraceFlags & ActivityTraceFlags.Recorded) == 0)
             return;
-        span.AddEvent(new ActivityEvent("meep.permission.denied", tags: new ActivityTagsCollection
+        using var span = Source.StartActivity(SpanName(module) + ".denied", ActivityKind.Internal, cameFrom.Value, tags: null, links: Links(message));
+        if (span is null)
+            return;
+        if (span.IsAllDataRequested)
         {
-            { "meep.module", gate.Label },
-            { "meep.message.id", message.Id.ToString() },
-            { "meep.permission", string.Join(" ", refusal.Needed) },
-            { "meep.permission.reasons", string.Join(" ", refusal.Reasons) },
-        }));
+            Describe(span, gate.Pipeline, module, gate.Key, message);
+            var permissions = string.Join(" ", refusal.Needed);
+            var reasons = string.Join(" ", refusal.Reasons);
+            span.SetTag("meep.permission", permissions);
+            span.SetTag("meep.permission.reasons", reasons);
+            span.SetTag("meep.outcome", "denied");
+            span.AddEvent(new ActivityEvent("meep.permission.denied", tags: new ActivityTagsCollection
+            {
+                { "meep.module", gate.Label },
+                { "meep.message.id", message.Id.ToString() },
+                { "meep.permission", permissions },
+                { "meep.permission.reasons", reasons },
+            }));
+        }
+        if (denial is not null && span.Recorded)
+            s_refusals.AddOrUpdate(denial, new StrongBox<ActivityContext>(span.Context));
     }
 
     /// <summary>Records an injected message as the start of a trace, as a source's messages are.</summary>

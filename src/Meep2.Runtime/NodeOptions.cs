@@ -55,4 +55,12 @@ public sealed record NodeOptions
     /// <c>@permission=Name</c>, which can be written more than once.
     /// </summary>
     public IReadOnlyList<PermissionName> Permissions { get; init; } = [];
+
+    /// <summary>
+    /// The kinds of proof a gate's credentials must have been verified with, any of them (Q299), so a bearer credential
+    /// can't reach it; empty for any, bearer included. It applies to every permission the module needs, and to its
+    /// checks in code (<see cref="SDK.Modules.ModuleContext.Demand"/>). Meeplang's <c>@proof=signed</c>, or
+    /// <c>request</c>, <c>connection</c> or <c>tls</c> for one kind, which can be written more than once.
+    /// </summary>
+    public IReadOnlyList<Proof> Proofs { get; init; } = [];
 }

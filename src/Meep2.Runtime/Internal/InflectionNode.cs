@@ -353,6 +353,7 @@ internal sealed class InflectionNode : Node
         }
         slot.InputType = input;
         slot.Requires = [.. RequiresPermissionAttribute.Of(module.GetType())];
+        slot.DefaultProofs = [.. DefaultProofAttribute.Of(module.GetType())];
         return module;
     }
 
@@ -383,7 +384,22 @@ internal sealed class InflectionNode : Node
                     needed.Add(permission);
             }
         }
-        return new Route(messageType, slots, needed.Count == 0 ? null : new Gate(Pipeline.Gates, [.. needed]));
+        return new Route(messageType, slots, needed.Count == 0 ? null : new Gate(Pipeline.Gates, [.. needed], ProofsFor(slots.Length > 0 ? slots : _slots)));
+    }
+
+    /// <summary>
+    /// The kinds of proof the module's gate and its own checks need: the line's <c>@proof</c>, or else what its
+    /// inflections declare (<see cref="DefaultProofAttribute"/>), or any.
+    /// </summary>
+    internal ProofSet Proofs => ProofsFor(_slots);
+
+    // The line's @proof, or the kinds any of these inflections declares, or any.
+    private ProofSet ProofsFor(Slot[] slots)
+    {
+        if (Options.Proofs.Count > 0)
+            return ProofSet.Of(Options.Proofs);
+        var declared = slots.SelectMany(slot => slot.DefaultProofs).Distinct().ToList();
+        return ProofSet.Of(declared);
     }
 
     private static Slot[] Order(Slot[] slots, Type messageType) =>
@@ -504,9 +520,10 @@ internal sealed class InflectionNode : Node
                     // the module isn't restarted and it doesn't count towards stopping its branch.
                     Counters.Denied();
                     var refusal = new Refusal([denied.Needed], [denied.Reason]);
+                    var denial = new PermissionDenied(slot.Spec.Info, refusal.Needed, refusal.Reasons);
                     if (Tracing.IsOn)
-                        Tracing.Denied(this, message, refusal);
-                    Pipeline.Emit(this, slot.Spec.Info, new PermissionDenied(slot.Spec.Info, refusal.Needed, refusal.Reasons), defaultParent: message);
+                        Tracing.Denied(this, slot.Spec.Info, message, refusal, denial);
+                    Pipeline.Emit(this, slot.Spec.Info, denial, defaultParent: message);
                 }
                 catch (Exception exception)
                 {
@@ -624,6 +641,9 @@ internal sealed class InflectionNode : Node
 
         /// <summary>The permissions the inflection's class requires (<see cref="RequiresPermissionAttribute"/>).</summary>
         public PermissionName[] Requires { get; set; } = [];
+
+        // The kinds of proof its verb needs unless the line's @proof says otherwise ([DefaultProof]); none for any.
+        public Proof[] DefaultProofs { get; set; } = [];
 
         public bool Broken { get; set; }
     }

@@ -25,6 +25,9 @@ internal sealed class Verification(Message subject, VerificationKind kind, Trust
     /// <summary>The moment it's checked at, in UTC.</summary>
     public DateTime Now => now;
 
+    /// <summary>What has failed so far.</summary>
+    public IReadOnlyList<VerificationFailure> Failures => _failures;
+
     /// <summary>Whether anything has failed so far.</summary>
     public bool Failed => _failures.Count > 0;
 

@@ -168,7 +168,7 @@ public class SecurityMessageTests
         var grant = Grant.Signed(terms, Unarmor(signature.ToArmored()));
         var read = Grant.Parse(grant.ToText());
 
-        await Assert.That(grant.ToText()).StartsWith("meep-grant-v01 ");
+        await Assert.That(grant.ToText()).StartsWith("meep-grant-v02 ");
         await Assert.That(read.Terms).IsEqualTo(terms);
         await Assert.That(read.Terms.AppliesTo(credential)).IsTrue();
         await Assert.That(read.Terms.AppliesTo(other)).IsFalse();
@@ -176,6 +176,42 @@ public class SecurityMessageTests
         await Assert.That(read.AuthorityKey.ToArray()).IsEquivalentTo(authority.Public.Blob);
         await Assert.That(SshSignature.Parse(Armor(read.Signature.ToArray())).Verifies(read.Terms.ToSignedData())).IsTrue();
         await Assert.That(signature.Verifies(new GrantTerms(credential, PermissionName.Parse("meep.files.write")) { Id = terms.Id, ValidBefore = terms.ValidBefore }.ToSignedData())).IsFalse();
+    }
+
+    [Test]
+    public async Task A_grant_names_who_authorised_it_and_a_v01_grant_still_reads()
+    {
+        Skip.Unless(SshKeygen.Available, "This needs OpenSSH's ssh-keygen.");
+        using var lab = await CredentialLab.CreateAsync();
+        var bob = await lab.IssueAsync("-I", "bob", "-z", "7");
+        var admin = await lab.IssueAsync("-I", "admin", "-z", "8");
+        using var authority = SshKeyPair.CreateEd25519("authority");
+
+        var terms = new GrantTerms(bob, PermissionName.Parse("ReadNotes")) { AuthorisedBy = [CredentialName.Of(admin)] };
+        var grant = Grant.Signed(terms, Unarmor(authority.Sign(terms.ToSignedData(), Grant.Namespace).ToArmored()));
+        var read = Grant.Parse(grant.ToText());
+        await Assert.That(read.Terms).IsEqualTo(terms);
+        await Assert.That(read.Terms.AuthorisedBy.Single().Names(admin)).IsTrue();
+        await Assert.That(read.Terms.AuthorisedBy.Single().Names(bob)).IsFalse();
+        await Assert.That(SecurityText.KindOf(grant.ToText())).IsEqualTo(SecurityTextKind.Grant);
+
+        // A grant made before v02: the same fields, without the authorisers. It reads, and is written and signed as it was.
+        var id = Guid.CreateVersion7();
+        var v01 = new SshWireWriter()
+            .Text(Grant.FormatV01).String(id.ToByteArray(bigEndian: true))
+            .Text(bob.KeyFingerprint).UInt64(bob.Serial).Text(bob.AuthorityFingerprint)
+            .Text("ReadNotes").UInt64(0).UInt64(ulong.MaxValue)
+            .ToArray();
+        var signature = authority.Sign(v01, Grant.Namespace);
+        var old = Grant.FromBlob(new SshWireWriter().Raw(v01).String(Unarmor(signature.ToArmored())).ToArray());
+        await Assert.That(old.Terms.Format).IsEqualTo(Grant.FormatV01);
+        await Assert.That(old.Terms.Id).IsEqualTo(id);
+        await Assert.That(old.Terms.AuthorisedBy).IsEmpty();
+        await Assert.That(old.Terms.ToSignedData()).IsEquivalentTo(v01);
+        await Assert.That(old.ToText()).StartsWith("meep-grant-v01 ");
+        await Assert.That(SecurityText.KindOf(old.ToText())).IsEqualTo(SecurityTextKind.Grant);
+        await Assert.That(Grant.Parse(old.ToText()).Terms).IsEqualTo(old.Terms);
+        await Assert.That(() => old.Terms with { AuthorisedBy = [CredentialName.Of(bob)] }).Throws<InvalidOperationException>();
     }
 
     [Test]

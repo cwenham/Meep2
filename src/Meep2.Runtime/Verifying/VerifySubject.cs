@@ -62,7 +62,7 @@ internal static class VerifySubject
             return new SubjectRead<T>(null, parameters.From is null ? "There's nothing to verify: the message's text is empty." : "There's nothing to verify: from= gave nothing.");
         try
         {
-            return new SubjectRead<T>((T)Parse(text.Trim(), typeof(T)), null);
+            return new SubjectRead<T>(SecurityText.Read<T>(text), null);
         }
         catch (FormatException exception)
         {
@@ -91,69 +91,14 @@ internal static class VerifySubject
         }
     }
 
-    // PEM or DER is a certificate; a #permission line or a permission's name is a permission; anything else, an SSH
-    // certificate included, a credential. An SSH certificate's base64 is recognised first, as a long one could happen
-    // to look like a permission's name.
-    internal static VerificationKind KindOfText(string text)
+    // What text is, by the SDK's one reader (Q293). Anything that isn't a certificate or a permission, a grant
+    // included, goes to Verify.Credential, which says why it can't be read as a credential.
+    internal static VerificationKind KindOfText(string text) => SecurityText.KindOf(text) switch
     {
-        var trimmed = text.AsSpan().Trim();
-        if (trimmed.StartsWith("-----BEGIN", StringComparison.Ordinal))
-            return VerificationKind.Certificate;
-        if (trimmed.StartsWith(Permission.Directive, StringComparison.Ordinal))
-            return VerificationKind.Permission;
-        var first = FirstWord(trimmed);
-        if (first.EndsWith("-cert-v01@openssh.com", StringComparison.Ordinal))
-            return VerificationKind.Credential;
-        if (Decoded(first) is { } bytes)
-        {
-            if (IsSshCertificate(bytes))
-                return VerificationKind.Credential;
-            if (bytes.Length > 0 && bytes[0] == 0x30)
-                return VerificationKind.Certificate;
-        }
-        return PermissionName.TryParse(trimmed.ToString(), out _) ? VerificationKind.Permission : VerificationKind.Credential;
-    }
-
-    private static object Parse(string text, Type wanted)
-    {
-        if (wanted == typeof(Credential))
-            return Credential.Parse(text);
-        if (wanted == typeof(Certificate))
-        {
-            if (text.StartsWith("-----BEGIN", StringComparison.Ordinal))
-                return Certificate.FromPem(text);
-            return Decoded(text) is { } der
-                ? Certificate.FromDer(der)
-                : throw new FormatException("A certificate is written as PEM, or as DER in base64. This is neither.");
-        }
-        return text.StartsWith(Permission.Directive, StringComparison.Ordinal)
-            ? Permission.ParseDirective(text)
-            : new Permission(PermissionName.Parse(text));
-    }
-
-    private static ReadOnlySpan<char> FirstWord(ReadOnlySpan<char> text)
-    {
-        var space = text.IndexOfAny(' ', '\t');
-        return space < 0 ? text : text[..space];
-    }
-
-    private static byte[]? Decoded(ReadOnlySpan<char> base64)
-    {
-        if (base64.Length == 0 || base64.Length % 4 != 0)
-            return null;
-        var bytes = new byte[base64.Length / 4 * 3];
-        return Convert.TryFromBase64Chars(base64, bytes, out var written) ? bytes[..written] : null;
-    }
-
-    // An SSH certificate starts with its type's name, as a length and the name.
-    private static bool IsSshCertificate(byte[] bytes)
-    {
-        if (bytes.Length < 4)
-            return false;
-        var length = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
-        return length is > 0 and < 64 && bytes.Length >= 4 + length
-            && System.Text.Encoding.ASCII.GetString(bytes, 4, length).EndsWith("-cert-v01@openssh.com", StringComparison.Ordinal);
-    }
+        SecurityTextKind.Certificate => VerificationKind.Certificate,
+        SecurityTextKind.Permission => VerificationKind.Permission,
+        _ => VerificationKind.Credential,
+    };
 
     private sealed record Choice(Message Message, VerifyParameters Parameters, VerificationKind Kind);
 }

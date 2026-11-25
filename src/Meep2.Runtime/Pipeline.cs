@@ -829,12 +829,13 @@ public sealed class Pipeline : IAsyncDisposable
         if (target.GateFor(message) is not { } gate || gate.Check(message) is not { } refusal)
             return false;
         target.Counters.Denied();
+        var denial = message is ErrorMessage ? null : new PermissionDenied(target.Info, refusal.Needed, refusal.Reasons);
         if (Tracing.IsOn)
-            Tracing.Denied(target, message, refusal);
-        if (message is ErrorMessage)
+            Tracing.Denied(target, target.Info, message, refusal, denial);
+        if (denial is null)
             Forward(target, message, depth);
         else
-            Emit(target, target.Info, new PermissionDenied(target.Info, refusal.Needed, refusal.Reasons), defaultParent: message);
+            Emit(target, target.Info, denial, defaultParent: message);
         return true;
     }
 

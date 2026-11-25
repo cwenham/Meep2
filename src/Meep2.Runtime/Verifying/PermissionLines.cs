@@ -38,6 +38,9 @@ internal sealed class PermissionLines(TrustStore store, DateTime? now = null)
     // walked twice.
     private Dictionary<Message, LineAnswer>? _joins;
 
+    // The credentials that met the requirement, one for each line, while Holders is asking.
+    private List<Credential>? _holders;
+
     /// <summary>Whether a genuine verification of a credential is among <paramref name="message"/>'s ancestors, or is it.</summary>
     public static bool HasCredentials(Message message) =>
         Ancestry.Of(message).Any(m => m is VerifiedMessage { IsGenuine: true, Kind: VerificationKind.Credential });
@@ -63,6 +66,31 @@ internal sealed class PermissionLines(TrustStore store, DateTime? now = null)
         return answer.WhyNot;
     }
 
+    /// <summary>
+    /// The credentials that meet <paramref name="requirement"/> on <paramref name="message"/>'s lines: for each line,
+    /// the nearest verified credential that holds it, as a gate finds them, without a repeat. Empty if any line doesn't
+    /// meet it. <c>Authorise</c> names them in a grant as who authorised it (Q301). Answers kept on messages are
+    /// passed by, since they don't say who.
+    /// </summary>
+    public IReadOnlyList<Credential> Holders(Message message, Requirement requirement)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentNullException.ThrowIfNull(requirement);
+        if (requirement.Problem is not null || requirement.Kept)
+            return [];
+        _joins = null;
+        _steps = 0;
+        _holders = [];
+        try
+        {
+            return Line(message, requirement, 0).WhyNot is null ? [.. _holders.Distinct<Credential>(ReferenceEqualityComparer.Instance)] : [];
+        }
+        finally
+        {
+            _holders = null;
+        }
+    }
+
     // One line, from a message up its single parents until an answer: one kept on a message, a verification that holds
     // the permission, a message with no parents, or a join, whose parents' lines are each walked in turn (the only
     // recursion, so a long family costs no stack). If the line fails, a verification on the way that doesn't hold the
@@ -84,9 +112,12 @@ internal sealed class PermissionLines(TrustStore store, DateTime? now = null)
             string? here = null;
             if (current is VerifiedMessage { IsGenuine: true, Kind: VerificationKind.Credential } verified && verified.IsStamped)
             {
-                here = WhyNotHeld(verified, requirement.Permission.Name, requirement.Target, requirement.Permission.Authorities, requirement.Permission.Requires, []);
+                here = WhyNotHeld(verified, requirement.Permission.Name, requirement.Target, requirement.Permission.Authorities, requirement.Permission.Requires, [])
+                    ?? WhyNotProven(verified, requirement.Proofs);
                 if (here is null)
                 {
+                    if (verified.Subject is Credential holder)
+                        _holders?.Add(holder);
                     answer = Finish(current, requirement, new LineAnswer(null, verified.ExpiresTimestamp));
                     break;
                 }
@@ -187,6 +218,15 @@ internal sealed class PermissionLines(TrustStore store, DateTime? now = null)
         return null;
     }
 
+    // Why a verification wasn't proven as a gate needs (@proof, Q299), or null if it was.
+    private static string? WhyNotProven(VerifiedMessage verified, ProofSet proofs)
+    {
+        if (proofs.Allows(verified.Proof))
+            return null;
+        var who = verified.Subject is Credential credential ? $"{credential.KeyId}'s credential" : "The credential";
+        return $"{who} was verified with {ProofSet.Describe(verified.Proof)}, and this needs {proofs}.";
+    }
+
     // The permissions a verification holds and the names of the authorities that conferred them, as the store is now:
     // the credential's own, from its issuer, and its grants', from their signers. A grant revoked since is left out.
     private List<Conferred> Held(VerifiedMessage verified, Credential credential, bool recheck)
@@ -240,6 +280,9 @@ internal sealed class Requirement
 
     /// <summary>Why no message can hold it, or null.</summary>
     public string? Problem { get; }
+
+    /// <summary>The kinds of proof the credentials must have been verified with (<c>@proof</c>), or any.</summary>
+    public ProofSet Proofs { get; init; }
 
     /// <summary>
     /// Whether answers for it are kept on messages: true for a gate's, which is made once for each trust store and

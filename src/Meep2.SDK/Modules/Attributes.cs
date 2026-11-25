@@ -21,6 +21,12 @@ public sealed class VerbAttribute(string name) : Attribute
 
     /// <summary>The inflection's name, such as <c>HTTP</c>. Defaults to the class name.</summary>
     public string? Inflection { get; init; }
+
+    /// <summary>
+    /// Another name the verb answers to, such as <c>Authorize</c> for <c>Authorise</c>. A pipeline may write either,
+    /// and tools and errors use the one written. Give it on every inflection of the verb.
+    /// </summary>
+    public string? Alias { get; init; }
 }
 
 /// <summary>

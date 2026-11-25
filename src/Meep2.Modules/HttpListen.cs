@@ -26,7 +26,7 @@ namespace Meep2.Modules;
 /// </para>
 /// <para>When the pipeline stops, Listen stops taking requests but keeps the requests it has open until they're answered.</para>
 /// <para>
-/// With <c>proof=required</c>, a request without a signature and a credential (<c>Signature-Input</c>, <c>Signature</c>
+/// With <c>signature=required</c>, a request without a signature and a credential (<c>Signature-Input</c>, <c>Signature</c>
 /// and <c>Meep-Credential</c>) is refused with 401 before it reaches the pipeline (Q253, Q280). That only keeps
 /// anonymous requests out: <c>Verify</c> still checks the signature and the credential.
 /// </para>
@@ -207,7 +207,7 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
                 return;
             }
 
-            if (parameters.Proof == RequiredProof.Required && MissingProof(request) is { } missing)
+            if (parameters.Signature == RequiredSignature.Required && MissingSignature(request) is { } missing)
             {
                 tally.Count(received: 1);
                 context.CountDenied();
@@ -233,9 +233,9 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
     }
 
     /// <summary>The headers that prove who sent a request that a request lacks, in words, or null if it has them all.</summary>
-    internal static string? MissingProof(Microsoft.AspNetCore.Http.HttpRequest request)
+    internal static string? MissingSignature(Microsoft.AspNetCore.Http.HttpRequest request)
     {
-        var missing = s_proofHeaders.Where(header => !request.Headers.TryGetValue(header, out var value) || string.IsNullOrWhiteSpace(value)).ToList();
+        var missing = s_signatureHeaders.Where(header => !request.Headers.TryGetValue(header, out var value) || string.IsNullOrWhiteSpace(value)).ToList();
         return missing.Count switch
         {
             0 => null,
@@ -244,7 +244,7 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
         };
     }
 
-    private static readonly string[] s_proofHeaders = ["Signature-Input", "Signature", "Meep-Credential"];
+    private static readonly string[] s_signatureHeaders = ["Signature-Input", "Signature", "Meep-Credential"];
 
     /// <summary>
     /// Where a request or WebSocket comes from, for counting it (<see cref="ModuleContext.Arrival"/>): the origin
@@ -322,15 +322,15 @@ public sealed record HttpListenParameters
     public string DefaultReply { get; init; } = "No module answered this request.";
 
     /// <summary>
-    /// Whether requests must prove who sent them (Q253): <c>required</c> refuses, with 401, one without
+    /// Whether requests must be signed, proving who sent them (Q253): <c>required</c> refuses, with 401, one without
     /// <c>Signature-Input</c>, <c>Signature</c> and <c>Meep-Credential</c>, before it reaches the pipeline. <c>Verify</c>
     /// still checks them. <c>optional</c>, the default, lets every request in.
     /// </summary>
-    public RequiredProof Proof { get; init; }
+    public RequiredSignature Signature { get; init; }
 }
 
-/// <summary>Whether a Listen lets in requests that don't prove who sent them.</summary>
-public enum RequiredProof
+/// <summary>Whether a Listen lets in requests that aren't signed.</summary>
+public enum RequiredSignature
 {
     /// <summary>Every request comes in; a pipeline's <c>Verify</c> decides what to make of it.</summary>
     Optional,

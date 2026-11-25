@@ -123,6 +123,9 @@ internal sealed record RequestSigner(Func<byte[], string, byte[]> Sign, Credenti
     /// <summary>What's covered: the method, address, authority and, with a body, its digest, unless set.</summary>
     public IReadOnlyList<string>? Components { get; init; }
 
+    /// <summary>Other headers to send, which the signature covers only if <see cref="Components"/> names them.</summary>
+    public IReadOnlyDictionary<string, string>? Extra { get; init; }
+
     /// <summary>The headers a client would send: the credential, the body's digest and the signature.</summary>
     public Dictionary<string, string> Headers()
     {
@@ -131,6 +134,8 @@ internal sealed record RequestSigner(Func<byte[], string, byte[]> Sign, Credenti
         {
             ["Meep-Credential"] = Convert.ToBase64String(Credential.Blob.Span),
         };
+        foreach (var (name, value) in Extra ?? new Dictionary<string, string>())
+            headers[name] = value;
         if (body.Length > 0)
             headers["Content-Digest"] = $"sha-256=:{Convert.ToBase64String(SHA256.HashData(body))}:";
         var components = Components ?? (body.Length > 0 ? ["@method", "@target-uri", "@authority", "content-digest"] : ["@method", "@target-uri", "@authority"]);

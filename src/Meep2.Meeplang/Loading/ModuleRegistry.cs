@@ -113,7 +113,7 @@ public sealed class ModuleRegistry
             if (type.IsAbstract)
                 continue;
             if (type.GetCustomAttribute<VerbAttribute>() is not null && typeof(AModule).IsAssignableFrom(type))
-                modules.Add(Registration(type, entry.Name));
+                modules.AddRange(Registrations(type, entry.Name));
             else if (typeof(Message).IsAssignableFrom(type))
                 entry.MessageTypes[ExpressionBinder.FriendlyName(type)] = type;
         }
@@ -311,25 +311,39 @@ public sealed class ModuleRegistry
     public ModuleRegistry Add(Type moduleType)
     {
         ArgumentNullException.ThrowIfNull(moduleType);
-        return Register(Registration(moduleType, plugin: null));
+        foreach (var registration in Registrations(moduleType, plugin: null))
+            Register(registration);
+        return this;
     }
 
-    private static ModuleRegistration Registration(Type moduleType, string? plugin)
+    // An inflection's registration under its verb's name, and another under its alias if it has one (Q264), so a
+    // pipeline may write either, and tools and errors show the one written.
+    private static IEnumerable<ModuleRegistration> Registrations(Type moduleType, string? plugin)
+    {
+        var registration = Registration(moduleType, plugin);
+        yield return registration;
+        if (moduleType.GetCustomAttribute<VerbAttribute>()?.Alias is { Length: > 0 } alias && alias != registration.Verb)
+            yield return Registration(moduleType, plugin, alias);
+    }
+
+    private static ModuleRegistration Registration(Type moduleType, string? plugin, string? alias = null)
     {
         var attribute = moduleType.GetCustomAttribute<VerbAttribute>()
             ?? throw new ArgumentException($"{moduleType.Name} has no [Verb] attribute.", nameof(moduleType));
         var inflection = attribute.Inflection ?? ExpressionBinder.FriendlyName(moduleType);
+        var verb = alias ?? attribute.Name;
+        var aliasOf = alias is null ? null : attribute.Name;
 
         var constructors = moduleType.GetConstructors();
         var withParameters = constructors.FirstOrDefault(c => c.GetParameters() is [{ ParameterType.IsClass: true }]);
         if (withParameters is not null)
         {
             var parametersType = withParameters.GetParameters()[0].ParameterType;
-            return new ModuleRegistration(attribute.Name, inflection, moduleType, parametersType, p => (AModule)withParameters.Invoke([p])) { Plugin = plugin };
+            return new ModuleRegistration(verb, inflection, moduleType, parametersType, p => (AModule)withParameters.Invoke([p])) { Plugin = plugin, AliasOf = aliasOf };
         }
         var parameterless = constructors.FirstOrDefault(c => c.GetParameters().Length == 0)
             ?? throw new ArgumentException($"{moduleType.Name} needs a public constructor that takes its parameters, or none.", nameof(moduleType));
-        return new ModuleRegistration(attribute.Name, inflection, moduleType, null, _ => (AModule)parameterless.Invoke(null)) { Plugin = plugin };
+        return new ModuleRegistration(verb, inflection, moduleType, null, _ => (AModule)parameterless.Invoke(null)) { Plugin = plugin, AliasOf = aliasOf };
     }
 
     /// <summary>

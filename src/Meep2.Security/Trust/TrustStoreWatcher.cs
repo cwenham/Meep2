@@ -97,6 +97,9 @@ public sealed class TrustStoreWatcher : IDisposable
 
     private void Changed(object sender, FileSystemEventArgs e)
     {
+        // The lock writers hold, and the files they write before renaming them into place, aren't the store.
+        if (e.Name is { } name && (Path.GetFileName(name) == ".lock" || name.EndsWith(".new", StringComparison.Ordinal)))
+            return;
         // A file being written in place, then renamed over the old one, settles as one change.
         try
         {

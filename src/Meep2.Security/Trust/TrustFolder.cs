@@ -22,9 +22,17 @@ namespace Meep2.Security;
 /// <item><c>permissions.meep</c>: permission definitions (Q257).</item>
 /// <item><c>serial</c>: the last serial <c>meep trust issue</c> gave a credential.</item>
 /// </list>
+/// <para>
+/// The daemon, <c>meep run</c> and <c>meep trust</c> may all change the store at once, so every change holds an
+/// exclusive lock on <c>.lock</c> while it works, and every file is written whole and renamed into place, so a
+/// <see cref="TrustStoreWatcher"/> reloading meanwhile never reads half of one.
+/// </para>
 /// </remarks>
 public sealed class TrustFolder
 {
+    // How long to wait for another process changing the store before giving up.
+    private static readonly TimeSpan s_lockWait = TimeSpan.FromSeconds(10);
+
     /// <summary>A trust store in <paramref name="path"/>.</summary>
     public TrustFolder(string path)
     {
@@ -74,6 +82,13 @@ public sealed class TrustFolder
     /// </summary>
     public void Create()
     {
+        using var held = Lock();
+        CreateFiles();
+    }
+
+    // Create's work, for callers that hold the lock already.
+    private void CreateFiles()
+    {
         PrivateFolders.Create(Path);
         PrivateFolders.Create(Roots);
         PrivateFolders.Create(RevocationLists);
@@ -108,18 +123,49 @@ public sealed class TrustFolder
         if (!IsFileName(name))
             throw new FormatException($"{name} can't name a root: use letters, digits, ., - and _.");
         var file = System.IO.Path.Combine(Roots, name + ".pem");
+        using var held = Lock();
         if (System.IO.File.Exists(file))
             throw new IOException($"There's a root called {name} already, in {file}.");
         Write(file, Encoding.ASCII.GetBytes(PemEncoding.WriteString("CERTIFICATE", der) + "\n"));
         return file;
     }
 
-    /// <summary>Adds a line to <see cref="Revoked"/>, after a comment saying what it was and when.</summary>
-    public void Revoke(Revocation revocation, string what)
+    /// <summary>
+    /// Adds a line to <see cref="Revoked"/>, after a comment saying what it was, when, and until when it's needed, if
+    /// that's known (<see cref="StoreTidying.Until"/>).
+    /// </summary>
+    public void Revoke(Revocation revocation, string what, DateTime? until = null)
     {
         ArgumentNullException.ThrowIfNull(revocation);
         ArgumentNullException.ThrowIfNull(what);
-        AppendLine(Revoked, $"# {what.ReplaceLineEndings(" ")}, revoked {DateTime.UtcNow:yyyy-MM-dd HH:mm}Z\n{revocation}");
+        var needed = until is { } end ? $"; {StoreTidying.Until(end)}" : "";
+        AppendLine(Revoked, $"# {what.ReplaceLineEndings(" ")}, revoked {DateTime.UtcNow:yyyy-MM-dd HH:mm}Z{needed}\n{revocation}");
+    }
+
+    /// <summary>Adds a revocation to <see cref="Revoked"/>, after a comment saying what it revokes, when, and until when.</summary>
+    public void Revoke(Revoking revoking)
+    {
+        ArgumentNullException.ThrowIfNull(revoking);
+        Revoke(revoking.Revocation, revoking.What, revoking.Until);
+    }
+
+    /// <summary>
+    /// Takes out of <see cref="Grants"/> and <see cref="Revoked"/> what's no longer needed, as of
+    /// <paramref name="now"/>, as <see cref="StoreTidying"/> decides (Q305), holding the lock. Throws
+    /// <see cref="TrustStoreException"/> if the store can't be read.
+    /// </summary>
+    public Tidied Tidy(DateTime now)
+    {
+        using var held = Lock();
+        var tidying = new StoreTidying(TrustStore.Load(this), now);
+        var grants = StoreLines.Parse(System.IO.File.Exists(Grants) ? System.IO.File.ReadAllText(Grants) : "");
+        var revoked = StoreLines.Parse(System.IO.File.Exists(Revoked) ? System.IO.File.ReadAllText(Revoked) : "");
+        var tidied = new Tidied(grants.RemoveWhere(tidying.WhyGrantGoes), revoked.RemoveWhere(tidying.WhyRevocationGoes(grants)));
+        if (tidied.Grants.Count > 0)
+            Write(Grants, Encoding.UTF8.GetBytes(grants.ToString()));
+        if (tidied.Revocations.Count > 0)
+            Write(Revoked, Encoding.UTF8.GetBytes(revoked.ToString()));
+        return tidied;
     }
 
     /// <summary>Copies a KRL or CRL into <see cref="RevocationLists"/>, under its own name, and returns where it went.</summary>
@@ -128,6 +174,7 @@ public sealed class TrustFolder
         if (!IsFileName(name) || System.IO.Path.GetExtension(name) is not (".krl" or ".crl"))
             throw new FormatException($"{name} can't name a revocation list: it ends .krl or .crl, with letters, digits, ., - and _ before.");
         var file = System.IO.Path.Combine(RevocationLists, name);
+        using var held = Lock();
         Write(file, contents.ToArray());
         return file;
     }
@@ -142,18 +189,46 @@ public sealed class TrustFolder
     /// <summary>The next serial for a credential: one more than the last given, kept in <see cref="Serial"/>.</summary>
     public ulong NextSerial()
     {
-        Create();
-        // Two at once can't both open it, rather than giving the same serial.
-        var options = new FileStreamOptions { Mode = FileMode.OpenOrCreate, Access = FileAccess.ReadWrite, Share = FileShare.None };
-        if (!OperatingSystem.IsWindows())
-            options.UnixCreateMode = PrivateFolders.File;
-        using var file = new FileStream(Serial, options);
-        using var reader = new StreamReader(file, leaveOpen: true);
-        var last = ulong.TryParse(reader.ReadToEnd().Trim(), out var read) ? read : 0;
+        using var held = Lock();
+        CreateFiles();
+        var last = System.IO.File.Exists(Serial) && ulong.TryParse(System.IO.File.ReadAllText(Serial).Trim(), out var read) ? read : 0;
         var next = last + 1;
-        file.SetLength(0);
-        file.Write(Encoding.ASCII.GetBytes($"{next}\n"));
+        Write(Serial, Encoding.ASCII.GetBytes($"{next}\n"));
         return next;
+    }
+
+    /// <summary>
+    /// Signs <paramref name="terms"/> with this machine's authority key, in the <c>meep-grant</c> namespace, as
+    /// <c>Authorise</c> does. Throws <see cref="TrustStoreException"/> if there's no authority key, or it can't be
+    /// read or used.
+    /// </summary>
+    public Grant SignGrant(GrantTerms terms)
+    {
+        ArgumentNullException.ThrowIfNull(terms);
+        string text;
+        try
+        {
+            text = System.IO.File.ReadAllText(AuthorityKey);
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            throw new TrustStoreException($"This machine has no authority key to sign grants with ({AuthorityKey}). Make one with meep trust init.", exception);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new TrustStoreException($"Can't read {AuthorityKey}: {exception.Message}", exception);
+        }
+        SshKeyPair key;
+        try
+        {
+            key = SshKeyPair.FromOpenSsh("this machine", text);
+        }
+        catch (FormatException exception)
+        {
+            throw new TrustStoreException($"{AuthorityKey} can't sign grants: {exception.Message}", exception);
+        }
+        using (key)
+            return Grant.Signed(terms, key.Sign(terms.ToSignedData(), Grant.Namespace).ToBinary());
     }
 
     /// <summary>
@@ -168,7 +243,17 @@ public sealed class TrustFolder
         foreach (var path in new[] { parent, Path, Roots, RevocationLists }.Where(Directory.Exists)
             .Concat(Directory.EnumerateFiles(Path, "*", SearchOption.AllDirectories)))
         {
-            if (PrivateFolders.OthersCanWrite(path))
+            bool othersCanWrite;
+            try
+            {
+                othersCanWrite = PrivateFolders.OthersCanWrite(path);
+            }
+            catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // A file a writer in another process renamed into place, or away, since the folder was listed.
+                continue;
+            }
+            if (othersCanWrite)
                 throw new TrustStoreException($"{path} can be changed by other users, so Meep doesn't trust what's in it. Make it yours alone with chmod go-w \"{path}\".");
         }
         if (System.IO.File.Exists(AuthorityKey)
@@ -189,14 +274,49 @@ public sealed class TrustFolder
             Write(file, Encoding.UTF8.GetBytes(text));
     }
 
+    // Adds a line to a file by writing the whole file again and renaming it into place, holding the lock, so a reload
+    // never sees half a line, and two processes adding at once don't lose either's.
     private void AppendLine(string file, string line)
     {
-        Create();
-        using var stream = new FileStream(file, PrivateFolders.NewFile(FileMode.Append));
-        stream.Write(Encoding.UTF8.GetBytes(line + "\n"));
+        using var held = Lock();
+        CreateFiles();
+        var before = System.IO.File.Exists(file) ? System.IO.File.ReadAllBytes(file) : [];
+        var added = Encoding.UTF8.GetBytes(line + "\n");
+        var separator = before.Length > 0 && before[^1] != (byte)'\n' ? "\n"u8.ToArray() : [];
+        Write(file, [.. before, .. separator, .. added]);
     }
 
-    // Writes a whole file, kept to the user, by renaming a new file into place, so a reload never sees half of it.
+    /// <summary>The lock file every change to the store holds, so the daemon, meep run and meep trust can all change it.</summary>
+    public string LockFile => File(".lock");
+
+    // Holds the store's lock until disposed: an exclusive lock on .lock, which other processes, and other changes in
+    // this one, wait for. On macOS and Linux this is an advisory lock (flock) that only Meep's own writers take.
+    private FileStream Lock()
+    {
+        PrivateFolders.Create(Path);
+        var options = new FileStreamOptions { Mode = FileMode.OpenOrCreate, Access = FileAccess.ReadWrite, Share = FileShare.None };
+        if (!OperatingSystem.IsWindows())
+            options.UnixCreateMode = PrivateFolders.File;
+        var started = System.Diagnostics.Stopwatch.GetTimestamp();
+        while (true)
+        {
+            try
+            {
+                return new FileStream(LockFile, options);
+            }
+            catch (IOException) when (System.Diagnostics.Stopwatch.GetElapsedTime(started) < s_lockWait)
+            {
+                Thread.Sleep(Random.Shared.Next(5, 25));
+            }
+            catch (IOException exception)
+            {
+                throw new IOException($"The trust store in {Path} has been being changed by something else for {s_lockWait.TotalSeconds:0} seconds, so it was left alone. Try again.", exception);
+            }
+        }
+    }
+
+    // Writes a whole file, kept to the user, by renaming a new file into place, so a reload never sees half of it. The
+    // caller holds the lock.
     private void Write(string file, byte[] contents)
     {
         PrivateFolders.Create(System.IO.Path.GetDirectoryName(file)!);
