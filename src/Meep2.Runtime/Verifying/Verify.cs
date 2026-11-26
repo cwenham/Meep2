@@ -181,6 +181,9 @@ internal static class Trust
     /// <summary>The reason given when there's none.</summary>
     public const string NoStore = "There's no trust store to check against: this pipeline wasn't given one, or it can't be read.";
 
+    /// <summary>The reason given when there's a store that can't be read, for every permission, Meep's own included.</summary>
+    public const string Unreadable = "This machine's trust store can't be read, and it might narrow this permission, so nothing holds it until the store can be read. Meep's log says why.";
+
     /// <summary>The trust store as it is now, or null if there's none.</summary>
     public static TrustStore? Of(ModuleContext context) => SourceOf(context)?.Current;
 

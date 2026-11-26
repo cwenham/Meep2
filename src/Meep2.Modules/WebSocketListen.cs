@@ -4,6 +4,7 @@ using System.Net.WebSockets;
 using System.Text;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Extensions;
 using AspRequest = Microsoft.AspNetCore.Http.HttpRequest;
@@ -43,6 +44,8 @@ namespace Meep2.Modules;
 /// </para>
 /// </remarks>
 [Verb("Listen", Inflection = "WebSocket")]
+[ChecksPermission(MeepPermissions.NetworkListen, "its host and port")]
+[ChecksPermission(MeepPermissions.FilesRead, "its certificate and key")]
 [Role(VerbRole.Inlet)]
 [Emits(typeof(WebSocketText))]
 [Emits(typeof(WebSocketBinary))]
@@ -84,8 +87,9 @@ public sealed class WebSocketListen(WebSocketListenParameters parameters) : ASou
         var start = _parameters;
         if (!HttpAddress.TryParse(start.Url, out var address, webSocket: true))
             throw new InvalidOperationException($"Listen.WebSocket needs a ws:// or wss:// address, not {start.Url}");
-        var endpoint = new IPEndPoint(await Endpoints.ResolveAsync(address.Host, cancellationToken).ConfigureAwait(false), address.Port);
-        var certificate = address.Secure ? Certificates.Load(start.Certificate!, start.Key) : null;
+        var reach = context.DemandEndpoint(MeepPermissions.NetworkListen, null, address.Host, address.Port);
+        var endpoint = new IPEndPoint(Listens.Within(await Endpoints.ResolveAsync(address.Host, cancellationToken).ConfigureAwait(false), address.Host, reach), address.Port);
+        var certificate = address.Secure ? Certificates.Load(start.Certificate!, start.Key, context) : null;
 
         var room = new Room();
         var key = context.Module.Name is { } name ? RoomKey(name) : null;

@@ -1,3 +1,4 @@
+using Meep2.Runtime.Verifying;
 using Meep2.SDK.Modules;
 using Meep2.SDK.Security;
 
@@ -13,28 +14,84 @@ internal sealed class SourceNode : Node
     private CancellationTokenSource? _instance;
     private NodeSpec? _restartWith;
     private int _finished;
+    private PermissionName[] _needed = [];
 
     public SourceNode(Pipeline pipeline, NodeSpec spec)
         : base(pipeline, spec) => _context = new SourceContext(this);
 
     /// <summary>
     /// Makes the source, unless it needs permissions (<c>@permission</c>, or its verb's
-    /// <see cref="RequiresPermissionAttribute"/>): the pipeline must hold them for it to start (Q252), and pipelines
-    /// don't carry credentials of their own yet, so a gated source can't start.
+    /// <see cref="RequiresPermissionAttribute"/>) that the pipeline's own credential doesn't hold: the pipeline must hold
+    /// them for the source to start (Q252, Q290).
     /// </summary>
-    /// <exception cref="InvalidOperationException">It needs a permission.</exception>
+    /// <exception cref="InvalidOperationException">It needs a permission the pipeline doesn't hold.</exception>
     public override void CreateModule()
     {
         var module = (ASource)CreateInstance(Spec.Inflections[0]);
-        var needed = Spec.Options.Permissions.Union(RequiresPermissionAttribute.Of(module.GetType())).ToList();
-        if (needed.Count > 0)
+        var needed = Spec.Options.Permissions.Union(RequiresPermissionAttribute.Of(module.GetType())).ToArray();
+        if (needed.FirstOrDefault(name => !MeepPermissions.IsReserved(name.Name)) is { } others)
+        {
+            // A pipeline's own credential holds only Meep's permissions, so no source can start needing another.
+            _ = DisposeInstanceAsync(module, $"{Info} couldn't be disposed");
+            throw new InvalidOperationException(
+                $"{Info} can't start: it needs {others}, which the pipeline must hold for its sources to start, and a pipeline's own credential holds only Meep's own permissions (meep.…). " +
+                $"Gate the module under it with @permission={others} instead, so each message is checked.");
+        }
+        if (StartRefusal(needed) is { } refusal)
         {
             _ = DisposeInstanceAsync(module, $"{Info} couldn't be disposed");
             throw new InvalidOperationException(
-                $"{Info} can't start: it needs {string.Join(" and ", needed)}, which the pipeline must hold for its sources to start, " +
-                "and pipelines don't carry credentials of their own yet.");
+                $"{Info} can't start: it needs {string.Join(" and ", refusal.Needed)}, which the pipeline must hold for its sources to start. {string.Join(" ", refusal.Reasons)}");
         }
+        _needed = needed;
         _module = module;
+    }
+
+    // Why the pipeline's own credential doesn't pass the source's gate, if it has one, or null.
+    private Refusal? StartRefusal(PermissionName[] needed) =>
+        needed.Length == 0 ? null : new Gate(Pipeline.Gates, needed, ProofSet.Of(Spec.Options.Proofs)).Check(Pipeline.Credential);
+
+    /// <summary>
+    /// Checks again, after the trust store or the pipeline's options changed, what the source needed to start and what
+    /// its running instance checked the pipeline's own credential for, such as a Listen's address (Q319). If any no
+    /// longer holds, the source is refused as it would have been at the start: a <see cref="PermissionDenied"/>, a
+    /// notice, and it stops.
+    /// </summary>
+    public void CheckAgain()
+    {
+        if (Volatile.Read(ref _finished) != 0 || IsRemoved)
+            return;
+        PermissionDeniedException? denied;
+        if (StartRefusal(_needed) is { } refusal)
+            denied = new PermissionDeniedException(refusal.Needed[0], refusal.Reasons[0]);
+        else
+            denied = _context.FirstNoLongerHeld();
+        if (denied is null)
+            return;
+        lock (_changing)
+        {
+            if (_revoked || Volatile.Read(ref _finished) != 0)
+                return;
+            _revoked = true;
+            _restartWith = null;
+        }
+        Deny(denied, "no longer holds");
+        lock (_changing)
+            _instance?.Cancel();
+    }
+
+    private bool _revoked;
+
+    // Refuses the source: counted, a span, a PermissionDenied from it, and a notice.
+    private void Deny(PermissionDeniedException denied, string holds)
+    {
+        Counters.Denied();
+        var refusal = new Refusal([denied.Needed], [denied.Reason]);
+        var denial = new PermissionDenied(Info, refusal.Needed, refusal.Reasons);
+        if (Tracing.IsOn)
+            Tracing.Denied(this, Info, Pipeline.Credential, refusal, denial);
+        _context.EmitDenial(denial);
+        Pipeline.Notify($"{Info} stopped, as the pipeline {holds} {denied.Needed}: {denied.Reason}");
     }
 
     public override IEnumerable<AModule> Instances => _module is { } module ? [module] : [];
@@ -100,10 +157,13 @@ internal sealed class SourceNode : Node
                 {
                     if (IsRemoved)
                         return;
+                    if (_revoked)
+                        return;
                     _instance?.Dispose();
                     _instance = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                     token = _instance.Token;
                 }
+                _context.ForgetChecks();
                 try
                 {
                     await _module!.Run(_context, token).ConfigureAwait(false);
@@ -114,6 +174,14 @@ internal sealed class SourceNode : Node
                 {
                     if (cancellationToken.IsCancellationRequested || IsRemoved)
                         return; // stopped, as asked
+                }
+                catch (PermissionDeniedException denied)
+                {
+                    // The source checked what it's about to touch against the pipeline's own credential
+                    // (ModuleContext.DemandFile, DemandEndpoint) and it isn't held: a refusal, not a fault, so it isn't
+                    // restarted, as it would only be refused again.
+                    Deny(denied, "doesn't hold");
+                    return;
                 }
                 catch (Exception exception)
                 {

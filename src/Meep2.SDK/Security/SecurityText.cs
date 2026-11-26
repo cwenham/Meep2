@@ -20,10 +20,13 @@ public enum SecurityTextKind
 
     /// <summary>A grant, as <c>meep-grant-v02 base64</c> (or v01): a <see cref="Grant"/>.</summary>
     Grant,
+
+    /// <summary>An SSH public key, as a <c>.pub</c> file has it: an <see cref="Security.AuthorityKey"/> (Q303).</summary>
+    AuthorityKey,
 }
 
 /// <summary>
-/// The one reader of credentials, certificates, permissions and grants written as text, which <c>Verify</c> and
+/// The one reader of credentials, certificates, permissions, grants and authorities' keys written as text, which <c>Verify</c> and
 /// <c>Parse</c> share, so the two can't disagree (Q293). It tells them apart by the text's form, cheaply, and reads
 /// them in full only when asked.
 /// </summary>
@@ -33,6 +36,7 @@ public enum SecurityTextKind
 /// <item>PEM, or base64 that decodes to DER, is a certificate.</item>
 /// <item><c>meep-grant-v02 base64</c>, or v01, is a grant.</item>
 /// <item>A <c>#permission</c> line or a permission's name is a permission.</item>
+/// <item>An SSH public key, as a <c>.pub</c> file has it, is an authority's key.</item>
 /// </list>
 /// An SSH certificate's base64 is recognised before a permission's name, since a long one could look like a name.
 /// </remarks>
@@ -55,6 +59,8 @@ public static class SecurityText
             return SecurityTextKind.Grant;
         if (first.EndsWith(CertificateSuffix, StringComparison.Ordinal))
             return SecurityTextKind.Credential;
+        if (AuthorityKey.IsKeyType(first))
+            return SecurityTextKind.AuthorityKey;
         if (Decoded(first) is { } bytes)
         {
             if (IsSshCertificate(bytes))
@@ -67,7 +73,7 @@ public static class SecurityText
 
     /// <summary>
     /// Reads <paramref name="text"/> as whatever it is: a <see cref="Credential"/>, <see cref="Certificate"/>,
-    /// <see cref="Permission"/> or <see cref="Grant"/>. Throws <see cref="FormatException"/>, saying what it found,
+    /// <see cref="Permission"/>, <see cref="Grant"/> or <see cref="AuthorityKey"/>. Throws <see cref="FormatException"/>, saying what it found,
     /// if it's none of them or can't be read as the one it looks like.
     /// </summary>
     public static Message Read(string text)
@@ -82,8 +88,9 @@ public static class SecurityText
 
     /// <summary>
     /// Reads <paramref name="text"/> as <typeparamref name="T"/>, one of <see cref="Credential"/>,
-    /// <see cref="Certificate"/>, <see cref="Permission"/> or <see cref="Grant"/>, whatever its form. Throws
-    /// <see cref="FormatException"/>, saying why, if it can't be read as one.
+    /// <see cref="Certificate"/>, <see cref="Permission"/>, <see cref="Grant"/> or <see cref="AuthorityKey"/>, whatever
+    /// its form. Throws <see cref="FormatException"/>, saying why, if it can't be read as one; an authority's key read as
+    /// a credential says it's a public key, not a certificate.
     /// </summary>
     public static T Read<T>(string text)
         where T : Message
@@ -93,7 +100,10 @@ public static class SecurityText
             : typeof(T) == typeof(Certificate) ? SecurityTextKind.Certificate
             : typeof(T) == typeof(Permission) ? SecurityTextKind.Permission
             : typeof(T) == typeof(Grant) ? SecurityTextKind.Grant
-            : throw new ArgumentException($"{typeof(T).Name} isn't a credential, certificate, permission or grant.", nameof(T));
+            : typeof(T) == typeof(AuthorityKey) ? SecurityTextKind.AuthorityKey
+            : throw new ArgumentException($"{typeof(T).Name} isn't a credential, certificate, permission, grant or authority's key.", nameof(T));
+        if (kind == SecurityTextKind.Credential && KindOf(text) == SecurityTextKind.AuthorityKey)
+            throw new FormatException(WhatItIs(text));
         return (T)Read(text, kind);
     }
 
@@ -112,6 +122,8 @@ public static class SecurityText
                     : throw new FormatException("A certificate is written as PEM, or as DER in base64. This is neither.");
             case SecurityTextKind.Grant:
                 return Grant.Parse(trimmed);
+            case SecurityTextKind.AuthorityKey:
+                return AuthorityKey.Parse(trimmed);
             default:
                 return trimmed.StartsWith(Permission.Directive, StringComparison.Ordinal)
                     ? Permission.ParseDirective(trimmed)

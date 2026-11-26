@@ -1,6 +1,6 @@
 # Verbs and inflections
 
-The verbs Meeplang has so far, as of 25 November 2026, from the `[Verb]` attributes in `src/Meep2.Modules`, and the security verbs `Verify`, `Parse`, `Authorise` and `Revoke`, which the runtime provides itself (`src/Meep2.Runtime/Verifying`), since only the runtime may make a verification, and the others work with the trust store beside it. A verb with more than one inflection has a class for each. The runtime picks one by the message's type or by the parameters (usually the address's scheme), and `Verb.Inflection` names one directly, as in `Fetch.HTTP`.
+The verbs Meeplang has so far, as of 26 November 2026, from the `[Verb]` attributes in `src/Meep2.Modules`, and the security verbs `Verify`, `Parse`, `Authorise` and `Revoke`, which the runtime provides itself (`src/Meep2.Runtime/Verifying`), since only the runtime may make a verification, and the others work with the trust store beside it. A verb with more than one inflection has a class for each. The runtime picks one by the message's type or by the parameters (usually the address's scheme), and `Verb.Inflection` names one directly, as in `Fetch.HTTP`.
 
 Parameters are written in kebab case (`max-size`, `save-every`). The positional parameter, written straight after the verb without a name, is shown in the Positional column.
 
@@ -24,13 +24,15 @@ Parameters are written in kebab case (`max-size`, `save-every`). The positional 
 | Forget | — | Emits its input | step |
 | Verify | Credential, Certificate, Permission | Inflection | step |
 | Parse | Text | Inflection | step |
-| Authorise (or Authorize) | Permission, Certificate | Inflection | step |
+| Authorise (or Authorize) | Permission, Certificate, Authority | Inflection | step |
 | Revoke | Credential, Grant, Certificate | Emits its input | step |
 | WriteLine | — | Passthrough | outlet (declared) |
 | Save | — | Passthrough | outlet (declared) |
 | Send | Reply, Broadcast, HTTP, TCP, WebSocket | Passthrough | outlet (declared) |
 
-21 verbs, 34 inflections in all, counting `Authorise` and `Authorize` once.
+21 verbs, 35 inflections in all, counting `Authorise` and `Authorize` once.
+
+Verbs that touch the machine need Meep's own permissions, which every pipeline you run holds unless it starts with less: see [Meep's own permissions](#meeps-own-permissions).
 
 The role says what a verb does with messages, so tools can show it without knowing its name: a source makes messages itself, an inlet receives them from outside, a filter passes on some of what it receives, an outlet sends messages out of the pipeline, a tap receives another module's messages without being indented under it, a router spreads messages over copies of a branch, and a step is anything else. Sources, routers and steps are worked out from the class, and the rest declared with `[Role]`. See [Roles](writing-verbs.md#roles) in the guide to writing verbs.
 
@@ -48,6 +50,7 @@ Reads a text file once and emits it as `FileText`.
 
 - Positional: `path`
 - Example: `Read "~/notes.txt"`
+- Needs: `meep.files.read` for the file, held by the pipeline. Without it, Read emits a `PermissionDenied` and stops.
 
 ### Listen
 Receives messages from the network, each carrying a lease so `Send` can reply. Chosen by the address's scheme. All three can be reconfigured while running.
@@ -60,6 +63,7 @@ Receives messages from the network, each carrying a lease so `Send` can reply. C
 
 - Positional: `url`
 - Example: `Listen "ws://0.0.0.0:8080/chat/" as Room`
+- Needs: `meep.network.listen` for its host and port, as written (`0.0.0.0:8080`), held by the pipeline, and for https, `meep.files.read` for its certificate and key. Without them, the Listen emits a `PermissionDenied` and stops, before it binds.
 - `signature=required` on an HTTP Listen refuses, with 401, a request that has no `Signature-Input`, `Signature` and `Meep-Credential`, before it reaches the pipeline, and counts it as `denied`. It only keeps anonymous requests out; `Verify` still checks the signature and the credential. `signature=optional`, the default, lets every request in.
 - HTTP and WebSocket Listens tell a client that asks with `Meep-Host: ?` the daemon's ID only if it's on this machine or a private address, unless the daemon's settings have `meep-host-public = true` (or `meep run` or `meep daemon` is given `--meep-host-public`). An origin a client gives is counted as it says; it's a claim, not proof.
 
@@ -75,6 +79,7 @@ Fetches something for each message it receives.
 
 - Positional: `url`
 - Example: `Fetch "https://api.example.com/stops/{msg.StopId}"`
+- Needs: `meep.network.send` for the host and port (HTTP), checked again for every redirect it follows, or `meep.files.read` for the file (File). A message that doesn't hold it becomes a `PermissionDenied`.
 - What a `{msg…}` hole gives can't make a file path absolute, start it with `~`, climb out of its folder with `..`, or be part of a `file://` address, unless `any-path=true`. So `Fetch "~/stops/{msg.Name}.json"` reads only files in `~/stops`, whatever the message says. Holes that don't read the message, such as constants, aren't limited.
 - `root=` keeps every path inside a folder: relative paths start from it, and a path that leads anywhere else becomes an error. A Fetch with `root=` only reads files.
 - HTTP Fetches (and Sends) tell where a message comes from, or ask whether the other end is Meep, only to hosts the daemon's `meep-hosts` names, this machine, and hosts on private addresses. An API on the internet hears nothing about the pipeline calling it. Private means this machine, 10/8, 172.16/12, 192.168/16, link-local, and IPv6's unique-local range; a name is private if every address it has is. The range carriers share, 100.64/10, isn't, though Tailscale gives its machines addresses there: name those in `meep-hosts`, or for `meep run`, with `--meep-hosts`, as in `--meep-hosts studio.local,10.0.0.5:8080`.
@@ -134,6 +139,7 @@ Teaches a named naive Bayes tree that each message belongs to a class, then pass
 - Positional: `tree`
 - Parameters: `class` (required), `text`, `file`, `save-every`
 - Example: `Learn "topics" class="Science"`
+- Needs: `meep.files.read` for the tree's file when `file=` names one, and `meep.files.write` for it when it saves (`save-every` above 0, the default 5), for each message it learns from. A tree in its own place in `~/.meep/trees` needs neither.
 - A tree stays in memory while any Learn, Classify or Forget uses it. When the last lets go, as when its pipelines end, it's saved (unless every Learn had `save-every=0`) and leaves memory, to be loaded from its file when it's next named. A tree kept in memory only, with `save-every=0`, is gone once no pipeline uses it.
 
 ### Classify
@@ -142,6 +148,7 @@ Emits a `ClassifiedMessage` with the class and score a named tree gives each mes
 - Positional: `tree`
 - Parameters: `text`, `file`, `min-training`, `against`
 - Example: `Classify "mail" against="Ham"`
+- Needs: `meep.files.read` for the tree's file when `file=` names one.
 
 ### Forget
 Makes a named tree forget everything, or one class, then passes the message on.
@@ -149,6 +156,7 @@ Makes a named tree forget everything, or one class, then passes the message on.
 - Positional: `tree`
 - Parameters: `class`, `file`
 - Example: `Forget "topics" class="Science"`
+- Needs: `meep.files.write` for the tree's file when `file=` names one, since it saves at once; nothing for a tree in its own place.
 
 ## Security
 
@@ -171,32 +179,35 @@ The inflection is chosen for each message by what it's given: the message itself
 - When a check fails and the reason isn't clear, see [troubleshooting.md](troubleshooting.md).
 
 ### Parse
-Reads text as a credential, certificate, permission or grant, and emits it as that message, for the verbs that take only typed messages: `Authorise` and `Revoke`. Text that's none of them becomes an error saying what it found, such as "This is an SSH public key, not a certificate." It reads with the same reader as `Verify`, so the two never disagree about what text is.
+Reads text as a credential, certificate, permission, grant or authority's key, and emits it as that message, for the verbs that take only typed messages: `Authorise` and `Revoke`. Text that's none of them becomes an error saying what it found, such as "This is an SSH public key, not a certificate." It reads with the same reader as `Verify`, so the two never disagree about what text is.
 
-- Parameters: `from` (the text, read from the message; without it, the message's own text), `kind` (`any`, the default, or `credential`, `certificate`, `permission` or `grant`: anything else becomes an error)
-- With `kind=`, it emits only that type, so the modules under it need take only that type. Without it, the loader expects all four, and a module under it that takes fewer, such as `Authorise permission=…`, which takes credentials, is an error when the pipeline loads.
-- A message that's already one of the four is passed on as it is. A credential it emits is only read, not checked: `Verify` checks one.
+- Parameters: `from` (the text, read from the message; without it, the message's own text), `kind` (`any`, the default, or `credential`, `certificate`, `permission`, `grant` or `authority`: anything else becomes an error)
+- An SSH public key, as a `.pub` file has it (`ssh-ed25519 AAAA… comment`), is an `AuthorityKey`, for `Authorise.Authority`. Read as a credential, it's an error saying it's a public key, not a certificate.
+- With `kind=`, it emits only that type, so the modules under it need take only that type. Without it, the loader expects all five, and a module under it that takes fewer, such as `Authorise permission=…`, which takes credentials, is an error when the pipeline loads.
+- A message that's already one of the five is passed on as it is. A credential it emits is only read, not checked: `Verify` checks one.
 - Examples: `Parse kind=credential from=fam.Listen.Text`, `Fetch "~/bob.credential"` then `Parse kind=credential`
 
 ### Authorise
-Grants a permission to a credential, or trusts a certificate authority, in this machine's trust store. `Authorize` is the same verb; tools and errors use the name you wrote. The inflection is chosen by the message's type, so put a `Parse kind=…` above it.
+Grants a permission to a credential, or trusts a certificate authority, X.509 or SSH, in this machine's trust store. `Authorize` is the same verb; tools and errors use the name you wrote. The inflection is chosen by the message's type, so put a `Parse kind=…` above it.
 
 | Inflection | Takes | Needs | Emits | Parameters |
 |---|---|---|---|---|
 | Permission | `Credential`: the credential to grant to | `AuthorisePermission` | `Grant` | `permission` (required), `valid` |
 | Certificate | `Certificate`: a CA's certificate | `AuthoriseCertificate` | the certificate | `name` |
+| Authority | `AuthorityKey`: an SSH certificate authority's public key | `AuthoriseAuthority` | the key | `name`, `grants` |
 
 - `Authorise.Permission` signs a `Grant` with this machine's authority key (`~/.meep/trust/authority.key`, made by `meep trust init`) and records it in the trust store's `grants`, so it applies whenever the credential is verified, here or after a restart. It emits the grant too, so it can be sent back or carried. The credential isn't reissued, and the grant can be revoked alone.
 - `permission=` is the permission to grant, with a scope if it has one: `permission="WriteNotes"`, `permission="meep.files.write:~/notes/**"`, or from the message, as in `permission=fam.Listen.Query['permission']`. `valid=` is how long the grant lasts, as in `valid=30d`; without it, as long as the credential.
 - Whoever authorises is the credential the message's family was verified with, as at any gate. It must have been proven, by a signed request, a connection or TLS, not only presented: `Authorise` and `Revoke` act as if `@proof=signed` were written on them. A line's own `@proof` replaces that, and `@proof=any` accepts a bearer credential, as when an administrator's credential is read from a file.
-- It can pass on only what it holds itself, with a scope no wider, unless it holds `AuthoriseAny`; otherwise the message is refused with a `PermissionDenied`. The permissions over the trust store itself, `AuthorisePermission`, `AuthoriseAny`, `AuthoriseCertificate` and `RevokePermission`, can be granted only by a credential holding `AuthoriseAny`, so an authoriser can't make more authorisers.
+- It can pass on only what it holds itself, with a scope no wider, unless it holds `AuthoriseAny`; otherwise the message is refused with a `PermissionDenied`. The permissions over the trust store itself, `AuthorisePermission`, `AuthoriseAny`, `AuthoriseCertificate`, `AuthoriseAuthority` and `RevokePermission`, can be granted only by a credential holding `AuthoriseAny`, so an authoriser can't make more authorisers.
 - What it grants, and to whom, must come from a part of the signed request the signature covers: the body (covered by `content-digest`), the address (`@target-uri` or `@query`), or a header the client listed in `Signature-Input`. Read from a header the signature doesn't cover, it could have been changed on the way, so `Authorise` refuses it with an error naming the header. What didn't come from the request, such as a file the pipeline reads, isn't affected.
 - The credential granted to must be one this machine trusts: issued by a trusted authority, in date and not revoked. If not, it's an error saying why, and nothing is recorded.
 - The grant names the credential that authorised it, and falls when that credential is revoked: `Verify` leaves it out, and gates refuse it at once. That goes one level only. The grant doesn't fall when the authoriser's credential expires or loses `AuthorisePermission`, and grants made by someone a grant was given to don't fall with that grant.
 - `Authorise.Certificate` adds a CA's certificate to `roots/`, so certificates that chain to it verify. Any CA will do, an intermediate too. `name=` is what to call its file; without it, its common name and the start of its thumbprint. One trusted already is passed on without writing it again.
+- `Authorise.Authority` trusts an SSH CA's key to issue credentials, adding it to `authorities` as `meep trust add-authority` does, and with `grants=true`, to sign grants too. `name=` is the name definitions use in `authority=`; without it, the key's comment if that's one word, or `authority-` and the start of its fingerprint. A key trusted already is passed on; a name in use for another key is an error. It needs `AuthoriseAuthority`, which `AuthoriseCertificate` doesn't give, so trusting X.509 roots and trusting credential issuers can be given apart. Put `Parse kind=authority` above it.
 - `@permission` on `Authorise` adds to what it needs: both are needed. No pipeline can remove what it needs.
 - What it changes is in force at once, in the pipeline that changed it, and in a running daemon or `meep run` as soon as their watcher notices, within about a second.
-- Examples: `Authorise permission="WriteNotes" valid=30d`, `Authorize permission=fam.Listen.Query['permission']`
+- Examples: `Authorise permission="WriteNotes" valid=30d`, `Authorize permission=fam.Listen.Query['permission']`, `Authorise name="department"` under `Parse kind=authority`
 
 ### Revoke
 Revokes a credential, a grant or a certificate in this machine's trust store, and emits what it revoked. Gates notice at once: a message verified before the revocation is refused at the next gate it reaches. It needs `RevokePermission`, whatever it's given, and `@permission` adds to that. As with `Authorise`, the credential holding it must have been proven unless the line's `@proof` says otherwise, and what to revoke must come from a covered part of a signed request.
@@ -264,10 +275,10 @@ Listen "http://0.0.0.0:8080/notes/" signature=required
 - A refused message becomes a `PermissionDenied` error from the module, with the message as its parent, saying which permissions it lacked and why (`Needed`, `Reasons`). It follows the error policy as other errors do, so an `@errors` module can answer it. One nothing handles is logged, but refusals never count towards `stop-pipeline`, so unwelcome requests can't stop a pipeline. An error refused at a gate passes the module by instead, still looking for a module that takes errors.
 - A refused message goes no further along that path, even past a passthrough module or `Distribute`.
 - Each module counts what it refused as `denied`, in `meep` and Synesthesia (a Listen with `signature=required` counts its 401s there too), and the OpenTelemetry metric `meep.module.messages` has `meep.event = denied`. Each refusal is also a short span of its own, named after the module's verb, as in `Save.denied`, under the span the message came from, with the permissions, the reasons and `meep.outcome = denied`, and an event, `meep.permission.denied`, saying the same. Its status isn't an error, since a refusal isn't a fault. The `PermissionDenied` it becomes hangs under it, so an `@errors` branch answering with a 403 is its child. A refusal straight after a source has a span too.
-- `@proof=signed` on a gate needs its credentials to have been proven, not only presented: by a signed request, a connection's proof, or TLS. A bearer credential (`Verify bearer=true`, taken without proof) is refused, saying so. `@proof=request`, `@proof=connection` or `@proof=tls` needs that kind; write more than one to accept any of them. It applies to every permission the module needs, its verb's included, and to its checks in code. On a module that isn't a gate it's an error.
+- `@proof=signed` on a gate needs its credentials to have been proven, not only presented: by a signed request, a connection's proof, or TLS. A bearer credential (`Verify bearer=true`, taken without proof) is refused, saying so, and so is the pipeline's own credential. `@proof=request`, `@proof=connection`, `@proof=tls` or `@proof=pipeline` (the pipeline's own) needs that kind; write more than one to accept any of them. It applies to every permission the module needs, its verb's included, and to its checks in code. On a module that isn't a gate it's an error.
 - A verb can need proof by default, as `Authorise` and `Revoke` need `signed`. A line's own `@proof` replaces the default, and `@proof=any` accepts a bearer credential.
 - A verb can require a permission itself, which no pipeline can remove; `@permission` adds to it. `meep lsp` shows what a module needs when you hover over `@permission`, and the graph lists it as `permissions`, so a drawing can put a lock on it.
-- On a source, `@permission` means the pipeline must hold the permission for the source to start. Pipelines don't carry credentials of their own yet, so for now a gated source stops its pipeline starting.
+- On a source, `@permission` means the pipeline's own credential must hold the permission for the source to start. It holds only Meep's own permissions, so a source gated on any other stops its pipeline starting: gate the module under it instead.
 - A credential revoked after it was verified is refused at the next gate, which looks again whenever the trust store has changed since.
 - A gate's answer is kept on the message, so later gates needing the same permission, for it or the messages made from it, don't walk its family again.
 
@@ -278,6 +289,46 @@ A pipeline can narrow a definition for its own gates and `Verify`s with a `#perm
 ```
 
 When a refusal's reason isn't clear, see [troubleshooting.md](troubleshooting.md#a-message-is-refused-with-permissiondenied).
+
+### Meep's own permissions
+What Meep does on the machine is gated by permissions Meep defines itself, under `meep.`, a prefix kept for them. They're defined without a trust store, with no requirements; a `#permission meep.…` line in `permissions.meep`, or in a pipeline, narrows them as it narrows any other.
+
+| Permission | Needed by | Scope matched against |
+|---|---|---|
+| `meep.files.read` | Read, Fetch.File, Learn and Classify with `file=` | the file's real path |
+| `meep.files.write` | Save, Learn when it saves, Forget | the file's real path |
+| `meep.network.listen` | every Listen | its host and port, as written |
+| `meep.network.send` | Fetch.HTTP, and Send.HTTP, TCP and WebSocket (not a reply, nor a broadcast to a Listen's clients) | the host and port it sends to, and each redirect's |
+| `meep.scripts.run` | embedded scripts, when Meep has them | — |
+| `meep.daemon.observe`, `.inject`, `.control` | the daemon's clients, in phase 7 | — |
+
+**A pipeline's own credential.** Every message a source emits descends from a verification the runtime makes when the pipeline starts, of the pipeline's own credential. So the messages hold what the pipeline does, and a gate, or a check in a verb, finds it on every line. Which credential a pipeline gets depends on where it came from:
+
+- yours, as the owner, for a file on this machine that's yours alone, standard input, text sent to the daemon, an unsigned pipeline from a URL on this machine in developer mode (you turned it on), or a URL or Git address that pins its content (`#sha256=`, a commit's full SHA). A file is yours alone when it belongs to you, nobody else can change it, and every folder above it, up to the root, belongs to you or root and nobody else can change it either, as OpenSSH asks of `authorized_keys`; a sticky folder such as `/tmp` may be anyone's. Every file it `#include`s from this machine must be yours alone too;
+- its signer's, for one signed by a key you trust, unless that key has been revoked in the trust store (`meep trust revoke`), which takes the credential from pipelines already running as well;
+- none, for one nobody vouches for, such as a file, or an include, someone else could have written or changed. It can compute, but not touch files or the network. A pipeline built in code holds none unless the code that builds it says who vouches for it.
+
+The owner's and a signer's hold every `meep.files.*`, `meep.network.*` and `meep.scripts.run` permission, unscoped, but never a name people define: a gate on `ReadNotes` still needs a verified credential of its own, even though a Listen's requests descend from the pipeline too. A message sent in from outside, through the daemon's inject, doesn't descend from the pipeline's credential, so it holds nothing, and Meep's own verbs refuse it, until injecting clients present credentials of their own (phase 7).
+
+`meep trust init` isn't needed for any of this: Meep's permissions and a pipeline's credential work without a trust store. But a store that's there and can't be read, such as one others could change, holds everything back, Meep's own permissions included, until it's fixed, since it might narrow them.
+
+**Meep's own folder.** No `meep.files.*` permission reaches `~/.meep` (or `MEEP_HOME`), however it's scoped, except its `trees` folder: the trust store, plugins, and the daemon's settings and tokens change only through `meep trust`, `Authorise`, `Revoke` and Meep itself. A path is judged by its real form, so a link into `~/.meep` from elsewhere is refused too. A tree in its own place, in `~/.meep/trees`, needs no permission at all.
+
+**A pipeline's permissions and `authority=`.** A pipeline's own credential confers Meep's permissions as a reserved authority, `pipeline`, which needs no trust store, and which no authority in one can be called. A definition with no `authority=` allows pipelines. `#permission meep.files.write authority=home` in `permissions.meep` allows only messages whose line passes through a credential `home` conferred it to, and not pipelines on their own; `authority=home authority=pipeline` allows both.
+
+**Running sources are checked again.** When the trust store changes, or a live change gives the pipeline new `#holds` or `#permission` lines, each running source is checked again for what it needed to start and what it checked then, such as a Listen's address. One that no longer holds it emits a `PermissionDenied`, the log says "… stopped, as the pipeline no longer holds …", and it stops.
+
+**Starting with less.** `#holds` at the top of a pipeline, before its modules, keeps only what it lists of what its credential holds, with scopes as narrow as you like; `#holds none` keeps nothing. Lines add up. What it lists but the credential doesn't hold is noted on the verification, not held.
+
+```
+#holds meep.files.read "meep.files.write:~/notes/**" meep.network.send:api.example.com:443
+```
+
+**Scopes.** A file scope is matched against the path's real form: whole, with symbolic links and `..` followed, and in the case it has on disk, so `~/Notes/a.md` matches `~/notes/**` on a Mac's disk, and a link inside `~/notes` that leads elsewhere doesn't. The scope's fixed start, up to its first wildcard, is read the same way, so `/tmp/**` on a Mac means `/private/tmp/**`. A network scope is a host and port, as in `*.example.com:443`; without a port, as in `meep.network.send:*.example.com`, any port. The host is matched as the address writes it, in lower case and its ASCII form, not the addresses it resolves to, so `localhost` and `127.0.0.1` are different. Listening on every network is written `0.0.0.0` or `[::]`, and `*:8080` matches any host on that port.
+
+**Public and private addresses.** `meep.network.send:public` allows sending only to addresses on the internet, and `meep.network.send:private` only to this machine and private networks (loopback, 10/8, 172.16/12, 192.168/16, link-local, 100.64/10, and IPv6's unique-local and link-local ranges), with a port after them if you like, as in `public:443`. They're checked against the address actually connected to, not the name: a name is resolved as the connection is made, and only addresses of the right kind are tried, so a request can't steer a Fetch at the router by naming something that resolves there. A connection limited this way is never shared with one that isn't. An address written as one, such as `127.0.0.1`, is checked when it's named. `0.0.0.0` and `::` are neither. For a Listen, `meep.network.listen:private` allows binding only to a private address.
+
+**Gates on them.** A verb checks Meep's permissions in its own code, against what it's about to touch, so only scoped ones cost more than a kept answer. `meep lsp` shows what each verb checks when you hover over it, as in "Checks meep.files.write, on each file it writes". `@permission=meep.files.write` on any module works too, and `@proof=signed` there means only a proven request may cause it, not the pipeline itself.
 
 ## Output
 
@@ -293,6 +344,7 @@ Saves each message's text to a file, appending by default.
 - Positional: `path`
 - Parameters: `mode` (`Append` or `Overwrite`), `root`, `any-path`
 - Example: `Save "~/bus/{msg.Created:yyyy-MM-dd}.jsonl"`
+- Needs: `meep.files.write` for the file, for each message. A message that doesn't hold it isn't saved, becomes a `PermissionDenied`, and carries on downstream all the same, as every message through a passthrough does.
 - What a `{msg…}` hole gives can't make the path absolute, start it with `~` or climb out with `..`, unless `any-path=true`, so behind a Listen, `Save "~/inbox/{msg.Query['name']}.txt"` only writes in `~/inbox`. Holes that don't read the message, such as constants, aren't limited.
 - `root=` keeps every path inside a folder: relative paths start from it, and a path that leads anywhere else becomes an error, as in `Save "{msg.Name}.txt" root="~/inbox"`. It goes by the path as written, so a link inside the folder that points out of it is followed.
 
@@ -308,6 +360,7 @@ Sends messages on. Every Send is a passthrough: messages carry on downstream bef
 | WebSocket | `url`: `ws://`, `wss://` | `WebSocketText`, `WebSocketBinary`; `WebSocketConnected`/`WebSocketDisconnected` with `connections` | `text`, `timeout`, `tries`, `retry-delay`, `connections`, `max-size`, `ping`, `max-queued` |
 
 - Examples: `Send text="Hello"`, `Send "Room"`, `Send "https://api.example.com/claims"`
+- Needs: `meep.network.send` for the host and port, for HTTP (and each redirect), TCP and WebSocket. Replies and broadcasts need nothing: they answer connections a Listen accepted.
 
 ## Not counted here
 

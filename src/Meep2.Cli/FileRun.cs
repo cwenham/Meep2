@@ -4,6 +4,7 @@ using Meep2.Meeplang.Loading;
 using Meep2.Modules;
 using Meep2.Plugins;
 using Meep2.Runtime;
+using Meep2.SDK.Security;
 using Meep2.Security;
 
 namespace Meep2.Cli;
@@ -61,7 +62,7 @@ internal sealed class FileRun(CommandContext context, string file, bool watch, s
     private PipelineBuilder Bootstrap(PipelineAddress address)
     {
         var plugins = context.Plugins;
-        var hosted = HostedOptions();
+        var hosted = HostedOptions(address);
         var builder = new PipelineBuilder("bootstrap", BootstrapOptions());
         builder.Chain(
             address.IsFile
@@ -88,9 +89,12 @@ internal sealed class FileRun(CommandContext context, string file, bool watch, s
 
     // The pipeline's own options: its errors and notices go to standard error. The trust store is only read and
     // watched once a Verify asks for it.
-    private PipelineOptions HostedOptions() => new()
+    private PipelineOptions HostedOptions(PipelineAddress address) => new()
     {
         HostId = hostId,
+        MeepFolder = context.Plugins.Home,
+        // A file read here earns its credential now; one from elsewhere gets what Build finds on its PipelineText.
+        Credential = address.IsFile ? PipelineSources.CredentialForFile(file) : PipelineCredential.None("it came from somewhere that didn't say who vouches for it"),
         Trust = _trust ??= TrustStoreSource.Watching(TrustFolder.In(context.Plugins.Home), Log),
         UnhandledError = e => Log(e.AnsweredBy is { } answerer
             ? $"error from {e.EmittedBy?.ToString() ?? "the pipeline"}, answered by {answerer}: {e.Error}"
@@ -101,6 +105,8 @@ internal sealed class FileRun(CommandContext context, string file, bool watch, s
     // The bootstrap's: why loading failed, or why the pipeline stopped, sets the exit code.
     private PipelineOptions BootstrapOptions() => new()
     {
+        Credential = PipelineCredential.Owner("it's Meep's own, loading a pipeline"),
+        MeepFolder = null,
         UnhandledError = e =>
         {
             switch (e)

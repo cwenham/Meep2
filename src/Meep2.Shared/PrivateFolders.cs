@@ -73,6 +73,35 @@ public static class PrivateFolders
         return (mode & UnixFileMode.GroupWrite) != 0 && !UserPrivateGroups.IsOwnersAlone(path);
     }
 
+    /// <summary>
+    /// Why <paramref name="path"/> isn't the user's alone, as a clause ("it belongs to someone else"), or null if it is:
+    /// it belongs to the user Meep runs as and nobody else can change it (<see cref="OthersCanWrite"/>), and so for
+    /// every folder above it, up to the root, as OpenSSH asks of <c>authorized_keys</c> (Q320), except that a folder may
+    /// be root's, and a sticky folder, such as <c>/tmp</c>, may be anyone's, since only a file's owner can replace it there.
+    /// </summary>
+    public static string? WhyNotUsersAlone(string path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        if (OperatingSystem.IsWindows())
+            return null;
+        var full = System.IO.Path.GetFullPath(path);
+        if (!UserPrivateGroups.IsUsers(full))
+            return "it belongs to someone else";
+        if (OthersCanWrite(full))
+            return "it can be changed by others";
+        for (var folder = System.IO.Path.GetDirectoryName(full); folder is not null; folder = System.IO.Path.GetDirectoryName(folder))
+        {
+            var mode = System.IO.File.GetUnixFileMode(folder);
+            if ((mode & UnixFileMode.StickyBit) != 0)
+                continue;
+            if (!UserPrivateGroups.IsUsersOrRoots(folder))
+                return $"the folder {folder} belongs to someone else";
+            if (OthersCanWrite(folder))
+                return $"the folder {folder} can be changed by others";
+        }
+        return null;
+    }
+
     /// <summary>Options for a new file that only the user can read and write, appended to or created.</summary>
     public static FileStreamOptions NewFile(FileMode mode) => OperatingSystem.IsWindows()
         ? new FileStreamOptions { Mode = mode, Access = FileAccess.Write }

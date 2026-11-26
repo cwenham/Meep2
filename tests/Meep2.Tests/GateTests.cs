@@ -434,7 +434,7 @@ public class GateTests
     [Arguments("  #permission ReadNotes\n", "#permission goes at the left margin.")]
     [Arguments("#permission ReadNotes\n#permission ReadNotes requires=Other\n", "This pipeline already narrows ReadNotes. Write everything for it on one #permission line.")]
     [Arguments("#permission ReadNotes colour=blue\n", "colour isn't something #permission takes. It takes authority=name and requires=permission.")]
-    [Arguments("#permit ReadNotes\n", "There's no #permit directive. Meeplang has #plugin, #include and #permission.")]
+    [Arguments("#permit ReadNotes\n", "There's no #permit directive. Meeplang has #plugin, #include, #permission and #holds.")]
     public async Task Permission_directives_that_cant_be_read_are_reported(string text, string expected)
     {
         var syntax = Script.Parse(text);
@@ -471,7 +471,7 @@ public class GateTests
     {
         var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => TestRun.Start(text));
         await Assert.That(failure!.Message).StartsWith(expected);
-        await Assert.That(failure.Message).Contains("pipelines don't carry credentials of their own yet");
+        await Assert.That(failure.Message).Contains("a pipeline's own credential holds only Meep's own permissions");
     }
 
     [Test]

@@ -26,6 +26,18 @@ internal static class Certificates
         return null;
     }
 
+    /// <summary>
+    /// Loads a Listen's certificate, and its key if it's apart, once the pipeline's own credential is found to hold
+    /// <c>meep.files.read</c> for each (Q317).
+    /// </summary>
+    public static X509Certificate2 Load(string certificate, string? key, SDK.Modules.ModuleContext context)
+    {
+        context.DemandFile(SDK.Security.MeepPermissions.FilesRead, null, certificate);
+        if (key is not null)
+            context.DemandFile(SDK.Security.MeepPermissions.FilesRead, null, key);
+        return Load(certificate, key);
+    }
+
     public static X509Certificate2 Load(string certificate, string? key)
     {
         var path = System.IO.Path.GetFullPath(certificate);

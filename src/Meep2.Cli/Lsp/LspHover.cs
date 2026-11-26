@@ -19,6 +19,8 @@ internal sealed class LspHover(LspWorkspace workspace)
             return Markdown(Gate(document.Text.Split('\n')[lineNumber], workspace.RegistryFor(parameters)));
         if (word is "proof" && at > 0 && document.Text.Split('\n')[lineNumber][at - 1] == '@')
             return Markdown(Proof);
+        if (word is "holds" && at > 0 && document.Text.Split('\n')[lineNumber][at - 1] == '#')
+            return Markdown(Holds);
         if (word is null || !workspace.RegistryFor(parameters).TryGetVerb(word, out var inflections))
             return null;
         var markdown = new StringBuilder($"**{word}** ({inflections[0].Role.ToString().ToLowerInvariant()})");
@@ -31,6 +33,8 @@ internal sealed class LspHover(LspWorkspace workspace)
                 markdown.Append(": ").Append(description);
             if (inflection.Requires.Count > 0)
                 markdown.Append($"\n\nAlways needs {string.Join(" and ", inflection.Requires.Select(p => $"`{p}`"))}, which a pipeline can't remove.");
+            if (inflection.Checks.Count > 0)
+                markdown.Append($"\n\nChecks {string.Join("; ", inflection.Checks)}.");
             foreach (var parameter in inflection.Parameters)
                 AppendParameter(markdown, parameter);
         }
@@ -43,9 +47,17 @@ internal sealed class LspHover(LspWorkspace workspace)
     private const string Proof =
         "**@proof** (modifier): how a gate's credentials must have been proven, not only presented. `signed` accepts a " +
         "signed request, a connection's proof or TLS, and refuses a bearer credential; `request`, `connection` or `tls` " +
-        "needs that kind, and can be written more than once; `any` accepts a bearer credential too. It replaces what the verb " +
+        "needs that kind, and can be written more than once; `pipeline` accepts the pipeline's own credential; `any` accepts " +
+        "a bearer credential too. It replaces what the verb " +
         "needs by default (`Authorise` and `Revoke` need `signed`), applies to every permission the module needs, and needs " +
         "`@permission` or a verb that requires one.";
+
+    private const string Holds =
+        "**#holds** (directive): which of Meep's own permissions this pipeline starts with, such as " +
+        "`#holds meep.files.read \"meep.files.write:~/notes/**\"`, or `#holds none`. A pipeline's own credential holds every " +
+        "`meep.files.*`, `meep.network.*` and `meep.scripts.run` permission if it's yours or signed by a key you trust, and " +
+        "none if nobody vouches for it; `#holds` keeps only what it lists, with scopes as narrow as you like. Every message " +
+        "its sources emit holds what the pipeline does.";
 
     // What @permission does, and the gate on this line: its @permission names and what its verb always needs.
     private static string Gate(string line, ModuleRegistry registry)

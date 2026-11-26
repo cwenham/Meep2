@@ -16,8 +16,11 @@ internal sealed class Gatekeeper(Func<PipelineOptions> options)
     private volatile Resolved? _resolved;
     private int _generation;
 
-    /// <summary>The pipeline's trust store as it is now, or null if it has none.</summary>
-    public TrustStore? Store => options().Trust?.Current;
+    /// <summary>
+    /// The pipeline's trust store as it is now, or null if it has none. One that hasn't been made yet isn't made by
+    /// asking (<see cref="TrustStoreSource.Existing"/>), since every pipeline's gates ask for Meep's own permissions.
+    /// </summary>
+    public TrustStore? Store => options().Trust?.Existing;
 
     /// <summary>Goes up each time the pipeline's options change.</summary>
     public int Generation => Volatile.Read(ref _generation);
@@ -32,27 +35,83 @@ internal sealed class Gatekeeper(Func<PipelineOptions> options)
     public Requirement Resolve(PermissionName name, TrustStore? store, ProofSet proofs = default)
     {
         var generation = Volatile.Read(ref _generation);
+        var unreadable = store is null && options().Trust?.CantBeRead == true;
         var resolved = _resolved;
-        if (resolved is null || !ReferenceEquals(resolved.Store, store) || resolved.Generation != generation)
+        if (resolved is null || !ReferenceEquals(resolved.Store, store) || resolved.Generation != generation || resolved.Unreadable != unreadable)
         {
-            resolved = new Resolved(store, generation, Directives(options().Permissions));
+            resolved = new Resolved(store, generation, Directives(options().Permissions), unreadable);
             _resolved = resolved;
         }
-        return resolved.ByName.GetOrAdd((name, proofs), static (key, r) => Make(key.Name, key.Proofs, r.Store, r.Directives), resolved);
+        return resolved.ByName.GetOrAdd((name, proofs), static (key, r) => Make(key.Name, key.Proofs, r.Store, r.Directives, r.Unreadable), resolved);
     }
 
     /// <summary>
     /// What <paramref name="name"/> needs on <paramref name="target"/>, for one check in code
     /// (<see cref="SDK.Modules.ModuleContext.Demand"/>). Its answers aren't kept, since each target is different.
     /// </summary>
-    public Requirement Resolve(PermissionName name, string? target, TrustStore? store, ProofSet proofs = default)
+    public Requirement Resolve(PermissionName name, PermissionTarget? target, TrustStore? store, ProofSet proofs = default)
     {
         var basis = Resolve(name, store, proofs);
         if (target is null || basis.Problem is not null)
             return basis;
-        if (basis.Permission.Name.Scope is { } scope && !scope.Matches(target))
+        if (basis.Permission.Name.Scope is { } scope && !Targets.Matches(scope, target))
             return new Requirement(name, $"{target} is outside {basis.Permission.Name}, where {name.Name} counts in this pipeline.");
         return new Requirement(basis.Permission, target) { Name = name, Proofs = proofs };
+    }
+
+    /// <summary>
+    /// Why <paramref name="message"/> doesn't hold <paramref name="name"/> on <paramref name="target"/>, or null if it
+    /// does, as <see cref="SDK.Modules.ModuleContext.Demand"/> asks. It first asks the question a gate would, without
+    /// the target, whose answers are kept on messages: a message whose lines hold the permission as the pipeline
+    /// defines it holds it on any target within that, so the usual case costs no more than a gate's. Only when that
+    /// fails, such as for a credential holding a narrower scope, is the target itself checked.
+    /// </summary>
+    public string? WhyNot(Message message, PermissionName name, PermissionTarget? target, ProofSet proofs)
+    {
+        target = target is null ? null : Targets.Lazy(target);
+        if (target is LazyFile file && options().MeepFolder is { } meepFolder && MeepsOwn(file, meepFolder) is { } own)
+            return own;
+        var store = Store;
+        var basis = Resolve(name, store, proofs);
+        if (basis.Problem is { } problem)
+            return problem;
+        if (target is not null && basis.Permission.Name.Scope is { } scope && !Targets.Matches(scope, target))
+            return $"{target} is outside {basis.Permission.Name}, where {name.Name} counts in this pipeline.";
+        var whyNot = WhyNot(message, basis, store);
+        if (whyNot is null || target is null)
+            return whyNot;
+        return WhyNot(message, Resolve(name, target, store, proofs), store);
+    }
+
+    /// <summary>
+    /// Why a file is out of reach of every <c>meep.files.*</c> permission, or null if it isn't: it's in Meep's own folder
+    /// (by its real form), other than its <c>trees</c> folder (Q321). The trust store, plugins, and the daemon's settings
+    /// and tokens change only through <c>meep trust</c>, <c>Authorise</c>, <c>Revoke</c> and Meep itself.
+    /// </summary>
+    private static string? MeepsOwn(LazyFile file, string meepFolder)
+    {
+        var meep = RealMeepFolder(meepFolder);
+        var real = file.Real;
+        if (real != meep && !real.StartsWith(meep + "/", StringComparison.Ordinal))
+            return null;
+        var trees = meep + "/trees";
+        if (real.StartsWith(trees + "/", StringComparison.Ordinal))
+            return null;
+        return $"{file.Path} is in Meep's own folder, {meep}, which no meep.files permission reaches, except its trees folder. Its trust store changes through meep trust, Authorise and Revoke.";
+    }
+
+    // Meep's folder's real form, worked out at most once a second, as a scope's is.
+    private static (string Folder, string Real, long Until) s_meepFolder;
+
+    private static string RealMeepFolder(string folder)
+    {
+        var now = System.Diagnostics.Stopwatch.GetTimestamp();
+        var known = s_meepFolder;
+        if (known.Folder == folder && now < known.Until)
+            return known.Real;
+        var real = Meep2.Shared.RealPaths.Of(folder).TrimEnd('/');
+        s_meepFolder = (folder, real, now + System.Diagnostics.Stopwatch.Frequency);
+        return real;
     }
 
     /// <summary>Why <paramref name="message"/> doesn't meet <paramref name="requirement"/>, or null if it does.</summary>
@@ -62,7 +121,7 @@ internal sealed class Gatekeeper(Func<PipelineOptions> options)
             return problem;
         if (requirement.Kept && GateAnswers.Find(message, requirement) is { } known)
             return known.WhyNot;
-        return new PermissionLines(store!).WhyNotMet(message, requirement);
+        return new PermissionLines(store).WhyNotMet(message, requirement);
     }
 
     /// <summary>
@@ -89,10 +148,18 @@ internal sealed class Gatekeeper(Func<PipelineOptions> options)
 
     // A gate's requirement: the definition, narrowed by the pipeline's directive and by the gate's own scope, and well
     // defined, or why it can't be held.
-    private static Requirement Make(PermissionName name, ProofSet proofs, TrustStore? store, Dictionary<string, Permission> directives)
+    private static Requirement Make(PermissionName name, ProofSet proofs, TrustStore? store, Dictionary<string, Permission> directives, bool unreadable)
     {
+        // Meep's own permissions are defined without a trust store (Q279), so pipelines on a machine that has none
+        // work. A store that's there but can't be read might narrow them, so then nothing is held (Q312).
+        if (unreadable)
+            return new Requirement(name, Trust.Unreadable);
+        if (store is null && MeepPermissions.Definition(name.Name) is { } meeps)
+            return Defined(name, proofs, meeps, directives, PermissionDefinitions.None);
         if (store is null)
             return new Requirement(name, Trust.NoStore);
+        if (MeepPermissions.WhyNotKnown(name.Name) is { } unknown)
+            return new Requirement(name, unknown);
         if (store.Permissions.Find(name.Name) is not { } definition)
         {
             // A name the store doesn't define can still be needed (Q289): any trusted authority confers it, and it
@@ -101,18 +168,27 @@ internal sealed class Gatekeeper(Func<PipelineOptions> options)
             var undefined = name.Scope is null ? open : new Permission(name) { Authorities = open.Authorities, Requires = open.Requires };
             return new Requirement(undefined) { Name = name, Kept = true, Proofs = proofs };
         }
+        return Defined(name, proofs, definition, directives, store.Permissions);
+    }
+
+    // A defined permission's requirement: the definition, narrowed by the pipeline's directive and the gate's scope,
+    // checked against the definitions it's in.
+    private static Requirement Defined(PermissionName name, ProofSet proofs, Permission definition, Dictionary<string, Permission> directives, PermissionDefinitions definitions)
+    {
         var permission = directives.TryGetValue(name.Name, out var directive) ? definition.NarrowedBy(directive) : definition;
         if (name.Scope is not null)
             permission = new Permission(name) { Authorities = permission.Authorities, Requires = permission.Requires };
-        var failures = store.Permissions.Check(permission);
+        var failures = definitions.Check(permission);
         if (failures.Count > 0)
             return new Requirement(name, $"{name} isn't well defined here: {string.Join(" ", failures.Select(f => f.Reason))}");
         return new Requirement(permission) { Name = name, Kept = true, Proofs = proofs };
     }
 
     // The requirements worked out for one store and one set of the pipeline's options.
-    private sealed class Resolved(TrustStore? store, int generation, Dictionary<string, Permission> directives)
+    private sealed class Resolved(TrustStore? store, int generation, Dictionary<string, Permission> directives, bool unreadable)
     {
+        public bool Unreadable => unreadable;
+
         public TrustStore? Store => store;
 
         public int Generation => generation;
@@ -153,7 +229,7 @@ internal sealed class Gate(Gatekeeper keeper, PermissionName[] needed, ProofSet 
             else if (GateAnswers.Find(message, requirement) is { } known)
                 why = known.WhyNot;
             else
-                why = (lines ??= new PermissionLines(store!)).WhyNotMet(message, requirement);
+                why = (lines ??= new PermissionLines(store)).WhyNotMet(message, requirement);
             if (why is null)
                 continue;
             (missing ??= []).Add(requirement.Name);
@@ -223,6 +299,7 @@ internal readonly record struct ProofSet(int Mask)
         Proof.RequestSignature => "a signed request",
         Proof.Connection => "a connection's proof",
         Proof.Tls => "TLS",
+        Proof.Pipeline => "the pipeline's own proof, when it loaded",
         _ => "no proof",
     };
 }

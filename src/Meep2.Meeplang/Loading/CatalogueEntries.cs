@@ -35,6 +35,12 @@ public sealed record VerbEntry(
     /// </summary>
     public IReadOnlyList<string> Requires { get; init; } = [];
 
+    /// <summary>
+    /// What it checks in its own code against what it touches (<c>[ChecksPermission]</c>, Q315), as
+    /// "meep.files.write, on each file it writes", or none.
+    /// </summary>
+    public IReadOnlyList<string> Checks { get; init; } = [];
+
     /// <summary>What it does, from its class's documentation, if that was shipped beside it.</summary>
     public string? Description { get; init; }
 

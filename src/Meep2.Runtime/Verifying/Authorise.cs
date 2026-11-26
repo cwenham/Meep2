@@ -18,6 +18,9 @@ public static class SecurityPermissions
     /// <summary>Needed by <c>Authorise.Certificate</c>, to trust a CA or root.</summary>
     public const string AuthoriseCertificate = "AuthoriseCertificate";
 
+    /// <summary>Needed by <c>Authorise.Authority</c>, to trust an SSH certificate authority to issue credentials (Q303).</summary>
+    public const string AuthoriseAuthority = "AuthoriseAuthority";
+
     /// <summary>Lets <c>Authorise.Permission</c> grant a permission the authorising credential doesn't hold.</summary>
     public const string AuthoriseAny = "AuthoriseAny";
 
@@ -29,7 +32,7 @@ public static class SecurityPermissions
     /// <see cref="AuthoriseAny"/> may grant one of them, so holding <c>AuthorisePermission</c> isn't enough to make
     /// more authorisers.
     /// </summary>
-    public static IReadOnlyList<string> OverTrust { get; } = [AuthorisePermission, AuthoriseAny, AuthoriseCertificate, RevokePermission];
+    public static IReadOnlyList<string> OverTrust { get; } = [AuthorisePermission, AuthoriseAny, AuthoriseCertificate, AuthoriseAuthority, RevokePermission];
 }
 
 /// <summary>
@@ -101,13 +104,13 @@ public sealed class AuthorisePermission(AuthorisePermissionParameters parameters
 
         // Only what the authorising credential holds can be passed on, unless it holds AuthoriseAny (Q262); and the
         // permissions over the trust store itself only with AuthoriseAny, so authorisers can't make more authorisers.
-        var anyWhyNot = context.WhyNotHeld(SecurityPermissions.AuthoriseAny, message, null);
+        var anyWhyNot = context.WhyNotHeld(SecurityPermissions.AuthoriseAny, message, (PermissionTarget?)null);
         if (anyWhyNot is not null && SecurityPermissions.OverTrust.Contains(permission.Name))
         {
             throw new PermissionDeniedException(new PermissionName(SecurityPermissions.AuthoriseAny),
                 $"Only a credential holding {SecurityPermissions.AuthoriseAny} may grant {permission.Name}, which changes what this machine trusts: {anyWhyNot}");
         }
-        if (anyWhyNot is not null && context.WhyNotHeld(permission.ToString(), message, null) is { } notHeld)
+        if (anyWhyNot is not null && context.WhyNotHeld(permission.ToString(), message, (PermissionTarget?)null) is { } notHeld)
         {
             throw new PermissionDeniedException(permission,
                 $"Authorise passes on only what the authorising credential holds, unless it holds {SecurityPermissions.AuthoriseAny}: {notHeld}");
@@ -259,4 +262,113 @@ public sealed record AuthoriseCertificateParameters
     /// and the start of its thumbprint.
     /// </summary>
     public Computed<string>? Name { get; init; }
+}
+
+/// <summary>
+/// Authorise's authority inflection: trusts an SSH certificate authority's key to issue credentials, adding it to the
+/// trust store's <c>authorities</c>, as <c>meep trust add-authority</c> does (Q303). In Meeplang: <c>Authorise</c>, under
+/// a <c>Parse kind=authority</c> that gives it the key, as a <c>.pub</c> file has it. <c>Authorize</c> is the same verb.
+/// </summary>
+/// <remarks>
+/// It needs <c>AuthoriseAuthority</c>, which trusting X.509 roots (<c>AuthoriseCertificate</c>) doesn't give, so the two
+/// can be given apart; <c>@permission</c> adds to it. The key is named <c>name=</c>, or its comment if that's one word,
+/// or <c>authority-</c> and the start of its fingerprint. A key trusted already is passed on without writing it again,
+/// and a name in use for another key is an error. With <c>grants=true</c> it's trusted to sign grants too. It emits the
+/// key once it's trusted.
+/// </remarks>
+[Verb("Authorise", Inflection = "Authority", Alias = "Authorize")]
+[EmitsInput]
+[RequiresPermission(SecurityPermissions.AuthoriseAuthority)]
+[DefaultProof(Proof.RequestSignature, Proof.Connection, Proof.Tls)]
+public sealed class AuthoriseAuthority(AuthoriseAuthorityParameters parameters) : AInflection<AuthorityKey>
+{
+    /// <inheritdoc/>
+    protected override ValueTask HandleAsync(AuthorityKey message, ModuleContext context, CancellationToken cancellationToken)
+    {
+        if (Trust.SourceOf(context) is not { Current: { } store } source)
+        {
+            context.EmitError(Trust.NoStore);
+            return ValueTask.CompletedTask;
+        }
+        if (SignedParts.WhyNotCovered(message, Convert.ToBase64String(message.Key.Span), whole: false, "the authority's key to trust") is { } moved)
+        {
+            context.EmitError($"Authorise didn't trust the key {message.Fingerprint}. {moved}");
+            return ValueTask.CompletedTask;
+        }
+
+        string name;
+        try
+        {
+            name = parameters.Name?.Evaluate(message) is { Length: > 0 } given ? given : DefaultName(message);
+        }
+        catch (EvaluationException exception)
+        {
+            context.EmitError($"Authorise can't work out what to call the authority: {exception.Message}", exception);
+            return ValueTask.CompletedTask;
+        }
+        if (name == Permission.PipelineAuthority)
+        {
+            context.EmitError("pipeline is kept for pipelines' own credentials (Q316), so no authority can be called it. Give it another with name=.");
+            return ValueTask.CompletedTask;
+        }
+        if (!Permission.IsAuthorityName(name))
+        {
+            context.EmitError($"{name} can't be an authority's name: it has no spaces, quotes, = or # in it.");
+            return ValueTask.CompletedTask;
+        }
+
+        PublicKey key;
+        try
+        {
+            key = PublicKey.Parse(name, $"{message.KeyType} {Convert.ToBase64String(message.Key.Span)}");
+        }
+        catch (FormatException exception)
+        {
+            context.EmitError($"Authorise can't trust the key {message.Fingerprint}: {exception.Message}", exception);
+            return ValueTask.CompletedTask;
+        }
+        if (store.Authorities.FirstOrDefault(key.SameKeyAs) is not null)
+        {
+            context.Emit(message);
+            return ValueTask.CompletedTask;
+        }
+        if (store.Authority(name) is not null)
+        {
+            context.EmitError($"There's an authority called {name} already, with another key. Give this one another name with name=.");
+            return ValueTask.CompletedTask;
+        }
+        try
+        {
+            string[] namespaces = parameters.Grants ? [TrustStore.CredentialNamespace, TrustStore.GrantNamespace] : [TrustStore.CredentialNamespace];
+            store.Folder.AddAuthority(name, key, namespaces);
+        }
+        catch (Exception exception) when (exception is FormatException or IOException or UnauthorizedAccessException or TrustStoreException)
+        {
+            context.EmitError($"Authorise couldn't trust the key {message.Fingerprint}: {exception.Message}", exception);
+            return ValueTask.CompletedTask;
+        }
+        source.Reload();
+        context.Emit(message);
+        return ValueTask.CompletedTask;
+    }
+
+    // The key's comment, if it's a name an authority can have, or "authority-" and the start of its fingerprint.
+    private static string DefaultName(AuthorityKey key) =>
+        key.Comment is { } comment && Permission.IsTrustedAuthorityName(comment)
+            ? comment
+            : $"authority-{new string([.. key.Fingerprint["SHA256:".Length..].Where(char.IsLetterOrDigit).Take(8)]).ToLowerInvariant()}";
+}
+
+/// <summary>Parameters for <see cref="AuthoriseAuthority"/>.</summary>
+public sealed record AuthoriseAuthorityParameters
+{
+    /// <summary>
+    /// What to call it in <c>authorities</c>, the name permission definitions use in <c>authority=</c>: one word, with no
+    /// quotes, <c>=</c> or <c>#</c>. Without it, the key's comment if that's one word, or <c>authority-</c> and the start of
+    /// its fingerprint.
+    /// </summary>
+    public Computed<string>? Name { get; init; }
+
+    /// <summary>Whether it's trusted to sign grants as well as issue credentials. False unless set.</summary>
+    public bool Grants { get; init; }
 }

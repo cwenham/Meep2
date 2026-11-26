@@ -18,6 +18,15 @@ Started 25 November 2026, for a session that updates Synesthesia (`~/Projects/Sy
 - **OpenTelemetry:** `meep.module.messages` has `meep.event = denied`, and a refusal adds a `meep.permission.denied` event to a span (phase 5 makes it a span of its own, Q298).
 - **The daemon's unhandled-error log** has a `PermissionDenied` for each refusal nothing handled. Refusals never stop a pipeline.
 
+## Phase 6: Meep's own permissions and a pipeline's own credential
+
+- **Every message from a source now has a parent**: a `VerifiedMessage` with `Kind` `Pipeline` and `Proof` `Pipeline`, whose `Subject` is a `PipelineCredential` (`Vouch`: `Owner`, `Signer` or `Nobody`, `Holder`, `KeyFingerprint`, `Why`, `Permissions`). A tap's ancestors (`MessageJson`'s fam) show it at the top of every message's family, and a message sent in through the daemon's inject gets it as its parent too. It's emitted by a module info of its own, `Pipeline` number 0, which isn't in the graph. A drawing of a message's family may want to show it as the pipeline, not as a module.
+- **New refusals** from Read, Save, Fetch, Send, Listen, Learn, Classify and Forget, as `PermissionDenied`, when a pipeline doesn't hold Meep's own permissions (`meep.files.read`, `meep.files.write`, `meep.network.listen`, `meep.network.send`). A pipeline you run holds them, so they only appear for one nobody vouches for (an unsigned URL in developer mode) or one that starts with less (`#holds`). A refused source logs a notice, "… stopped, as it needs …", and stops.
+- **New message type, `AuthorityKey`**, from `Parse`, and a new inflection, `Authorise.Authority`, in the verb catalogue.
+- **New Meeplang:** `#holds` lines at the top of a pipeline, `@proof=pipeline`, and the network scopes `public` and `private`.
+- **The verb catalogue** has `checks` on each inflection: what it checks in its own code, as "meep.files.write, on each file it writes". Good for a verb's description in a palette.
+- **A running source can stop** when the trust store changes under it, with a `PermissionDenied` from it and a notice in the log, "… stopped, as the pipeline no longer holds …".
+
 ## Still to come
 
 - Phase 5: `Parse`, `Authorise` and `Revoke` verbs, refusal spans, and gates that need a kind of proof.

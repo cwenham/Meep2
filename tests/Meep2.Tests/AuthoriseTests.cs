@@ -38,14 +38,15 @@ public class AuthoriseTests
         await Assert.That(SecurityText.KindOf("WriteNotes:~/notes/**")).IsEqualTo(SecurityTextKind.Permission);
         await Assert.That(SecurityText.KindOf("#permission WriteNotes requires=ReadNotes")).IsEqualTo(SecurityTextKind.Permission);
         await Assert.That(SecurityText.KindOf(grant.ToText())).IsEqualTo(SecurityTextKind.Grant);
-        await Assert.That(SecurityText.KindOf(lab.BobKey.Public.Text)).IsEqualTo(SecurityTextKind.None);
+        await Assert.That(SecurityText.KindOf(lab.BobKey.Public.Text)).IsEqualTo(SecurityTextKind.AuthorityKey);
         await Assert.That(SecurityText.KindOf("{\"credential\": 1}")).IsEqualTo(SecurityTextKind.None);
         await Assert.That(SecurityText.KindOf("   ")).IsEqualTo(SecurityTextKind.None);
 
         await Assert.That(SecurityText.Read(lab.Bob.ToText())).IsTypeOf<Credential>();
         await Assert.That(SecurityText.Read(grant.ToText()) is Grant read && read.Terms.Id == grant.Terms.Id).IsTrue();
         await Assert.That(((Permission)SecurityText.Read("WriteNotes:~/notes/**")).Name).IsEqualTo(Name("WriteNotes:~/notes/**"));
-        await Assert.That(() => SecurityText.Read(lab.BobKey.Public.Text)).Throws<FormatException>().WithMessageContaining("SSH public key");
+        await Assert.That(SecurityText.Read(lab.BobKey.Public.Text)).IsTypeOf<AuthorityKey>();
+        await Assert.That(() => SecurityText.Read<Credential>(lab.BobKey.Public.Text)).Throws<FormatException>().WithMessageContaining("SSH public key");
         await Assert.That(() => SecurityText.Read("{\"a\": 1}")).Throws<FormatException>().WithMessageContaining("JSON");
         await Assert.That(() => SecurityText.Read("not a thing at all")).Throws<FormatException>().WithMessageContaining("starts \"not\"");
         // Read as a kind, whatever its form, it says why it isn't one.
@@ -92,8 +93,10 @@ public class AuthoriseTests
                 Parse
                     Sink as Certificates
             Read "{key}"
-                Parse
+                Parse kind=credential
                     Sink as KeyErrors @errors
+                Parse
+                    Sink as Keys
             Numbers to=1
                 Parse from="WriteNotes:~/notes/**"
                     Sink as Permissions
@@ -109,6 +112,9 @@ public class AuthoriseTests
         await Assert.That(Errors(run).Single().Error).Contains("certificate is written as PEM");
         await Assert.That(run.At("Unexpected")).IsEmpty();
         await Assert.That(((ErrorMessage)run.At("KeyErrors").Single()).Error).Contains("SSH public key");
+        var parsedKey = (AuthorityKey)run.At("Keys").Single();
+        await Assert.That(parsedKey.Comment).IsEqualTo("bob@laptop");
+        await Assert.That(parsedKey.Fingerprint).IsEqualTo(lab.Bob.KeyFingerprint);
     }
 
     // ---- Signing grants ----
@@ -236,7 +242,7 @@ public class AuthoriseTests
 
         var registry = new ModuleRegistry().AddAssembly(RuntimeModules.Assembly);
         await Assert.That(registry.TryGetVerb("Authorize", out var inflections)).IsTrue();
-        await Assert.That(inflections!.Select(r => r.Inflection).Order()).IsEquivalentTo(["Certificate", "Permission"]);
+        await Assert.That(inflections!.Select(r => r.Inflection).Order()).IsEquivalentTo(["Authority", "Certificate", "Permission"]);
         await Assert.That(inflections!.All(r => r.AliasOf == "Authorise")).IsTrue();
         await Assert.That(registry.TryGetVerb("Authorise", out var own) && own!.All(r => r.AliasOf is null)).IsTrue();
     }
@@ -391,6 +397,55 @@ public class AuthoriseTests
         using var other = await AuthoriseLab.CreateAsync("AuthorisePermission");
         var refused = await TestRun.Start(other.Granting("Authorise", pem, "certificate"), trust: other.Trust());
         await Assert.That(((PermissionDenied)Errors(refused).Single()).Needed.Single()).IsEqualTo(Name("AuthoriseCertificate"));
+    }
+
+    [Test]
+    public async Task Authorise_trusts_an_SSH_authority_so_credentials_it_issues_verify()
+    {
+        Skip.Unless(SshKeygen.Available, "This needs OpenSSH's ssh-keygen.");
+        using var lab = await AuthoriseLab.CreateAsync("AuthoriseAuthority");
+        using var department = await CredentialLab.CreateAsync();
+        var dave = await department.IssueAsync("-I", "dave", "-n", "dave", "-z", "3", "-O", "extension:permit-bearer@meep", "-O", "extension:ReadNotes@meep");
+        var key = department.AuthorityPublicKeyFile;
+
+        var before = await VerifyLab.VerifyAsync(lab.Lab.Store(), new VerifyParameters { Bearer = true }, dave);
+        await Assert.That(before.Failures.Single().Code).IsEqualTo(VerificationFailureCode.UnknownAuthority);
+
+        var trust = lab.Trust();
+        var run = await TestRun.Start(lab.Granting("Authorise name=\"department\"", key, "authority"), trust: trust);
+        await Assert.That(run.Diagnostics).IsEmpty();
+        await Assert.That(Errors(run)).IsEmpty();
+        await Assert.That(((AuthorityKey)run.At("Granted").Single()).Fingerprint).IsEqualTo(dave.AuthorityFingerprint);
+        var trusted = trust.Current!.Authority("department");
+        await Assert.That(trusted).IsNotNull();
+        await Assert.That(File.ReadAllText(lab.Lab.Folder.Authorities)).Contains("department namespaces=\"meep-credential\" ");
+
+        var after = await VerifyLab.VerifyAsync(lab.Lab.Store(), new VerifyParameters { Bearer = true }, dave);
+        await Assert.That(after.Success).IsTrue();
+        await Assert.That(after.Permissions).Contains(Name("ReadNotes"));
+
+        // Trusted already: passed on without writing it again, whatever it would be called.
+        var lines = File.ReadAllLines(lab.Lab.Folder.Authorities).Length;
+        var again = await TestRun.Start(lab.Granting("Authorise name=\"another\"", key, "authority"), trust: lab.Trust());
+        await Assert.That(again.At("Granted").Single()).IsTypeOf<AuthorityKey>();
+        await Assert.That(File.ReadAllLines(lab.Lab.Folder.Authorities).Length).IsEqualTo(lines);
+
+        // Another key can't take a name in use, and with no name=, a one-word comment names it.
+        using var other = await CredentialLab.CreateAsync();
+        var clash = await TestRun.Start(lab.Granting("Authorise name=\"department\"", other.AuthorityPublicKeyFile, "authority"), trust: lab.Trust());
+        await Assert.That(Errors(clash).Single().Error).Contains("There's an authority called department already, with another key");
+        var named = Path.Combine(lab.Lab.Home, "named.pub");
+        var words = File.ReadAllText(other.AuthorityPublicKeyFile).Trim().Split(' ');
+        File.WriteAllText(named, $"{words[0]} {words[1]} school-ca\n");
+        var byComment = await TestRun.Start(lab.Granting("Authorise grants=true", named, "authority"), trust: lab.Trust());
+        await Assert.That(Errors(byComment)).IsEmpty();
+        await Assert.That(File.ReadAllText(lab.Lab.Folder.Authorities)).Contains("school-ca namespaces=\"meep-credential,meep-grant\" ");
+
+        // AuthoriseAuthority is needed: trusting X.509 roots isn't enough.
+        using var roots = await AuthoriseLab.CreateAsync("AuthoriseCertificate");
+        var refused = await TestRun.Start(roots.Granting("Authorise", key, "authority"), trust: roots.Trust());
+        await Assert.That(((PermissionDenied)Errors(refused).Single()).Needed.Single()).IsEqualTo(Name("AuthoriseAuthority"));
+        await Assert.That(SecurityPermissions.OverTrust).Contains("AuthoriseAuthority");
     }
 
     // ---- Revoke ----

@@ -5,6 +5,7 @@ using Meep2.Meeplang.Hosting;
 using Meep2.Meeplang.Parsing;
 using Meep2.Meeplang.Syntax;
 using Meep2.Plugins;
+using Meep2.SDK.Security;
 using Meep2.Security;
 using Meep2.Shared;
 
@@ -42,29 +43,32 @@ public static class PipelineSources
         {
             case PipelineOrigin.File:
                 return File.Exists(address.Location)
-                    ? new PipelineText(address.Location, await File.ReadAllTextAsync(address.Location, cancellationToken).ConfigureAwait(false))
+                    ? new PipelineText(address.Location, await File.ReadAllTextAsync(address.Location, cancellationToken).ConfigureAwait(false)) { Credential = CredentialForFile(address.Location) }
                     : throw new PipelineSourceException($"There's no file {address.Location}.");
             case PipelineOrigin.Stdin:
-                return new PipelineText("stdin", stdin is null ? "" : await stdin.ReadToEndAsync(cancellationToken).ConfigureAwait(false));
+                return new PipelineText("stdin", stdin is null ? "" : await stdin.ReadToEndAsync(cancellationToken).ConfigureAwait(false))
+                {
+                    Credential = PipelineCredential.Owner("it came from standard input, which you gave it"),
+                };
             case PipelineOrigin.Url:
             {
                 Fetchable(address.Location);
                 var bytes = await GetAsync(address.Location, downloadLimit, cancellationToken).ConfigureAwait(false)
                     ?? throw new PipelineSourceException($"There's no pipeline at {address.Location}.");
-                string because;
+                PipelineCredential trusted;
                 if (address.Sha256 is { } pin)
                 {
                     var sha = Convert.ToHexStringLower(SHA256.HashData(bytes));
-                    because = sha == pin ? $"its SHA-256 matches the pin {pin[..12]}…"
+                    trusted = sha == pin ? PipelineCredential.Owner($"its SHA-256 matches the pin {pin[..12]}…")
                         : throw new PipelineSourceException($"{address.Location} has the SHA-256 {sha}, not the {pin} its address pins, so it has changed.");
                 }
                 else
                 {
-                    because = UrlTrust(bytes, address.Location, await GetTextAsync(PipelineSignature.FileFor(address.Location), downloadLimit, cancellationToken).ConfigureAwait(false), plugins);
+                    trusted = UrlTrust(bytes, address.Location, await GetTextAsync(PipelineSignature.FileFor(address.Location), downloadLimit, cancellationToken).ConfigureAwait(false), plugins);
                 }
                 var text = Encoding.UTF8.GetString(bytes);
                 var includes = await FetchedIncludes.FetchAsync(new SourceFile(address.Location, text), new UrlIncludes(plugins, downloadLimit), cancellationToken).ConfigureAwait(false);
-                return new PipelineText(address.Location, text) { Includes = includes, TrustedBecause = because };
+                return new PipelineText(address.Location, text) { Includes = includes, TrustedBecause = trusted.Why, Credential = trusted };
             }
             case PipelineOrigin.Git:
             {
@@ -88,20 +92,32 @@ public static class PipelineSources
                 {
                     throw new PipelineSourceException(exception.Message, exception);
                 }
-                return new PipelineText(path, Encoding.UTF8.GetString(bytes)) { Includes = includes, TrustedBecause = includes.LastTrust };
+                return new PipelineText(path, Encoding.UTF8.GetString(bytes)) { Includes = includes, TrustedBecause = includes.LastTrust?.Why, Credential = includes.LastTrust };
             }
             default:
                 throw new PipelineSourceException($"A pipeline can't be read from {address.Origin}.");
         }
     }
 
-    // Who signed it, or why it can't be trusted.
-    private static string Verified(byte[] text, string? signature, PluginOptions plugins, string what, string? more = null)
+    /// <summary>
+    /// The credential an unsigned pipeline file on this machine earns (Q252): the owner's if it and its folder are the
+    /// owner's alone, so nobody else can have written it, and otherwise none, saying why.
+    /// </summary>
+    public static PipelineCredential CredentialForFile(string path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        return PrivateFolders.WhyNotUsersAlone(path) is { } why
+            ? PipelineCredential.None($"its file is on this machine, but {why}")
+            : PipelineCredential.Owner("it's your own file on this machine");
+    }
+
+    // The credential of whoever signed it, or why it can't be trusted.
+    private static PipelineCredential Verified(byte[] text, string? signature, PluginOptions plugins, string what, string? more = null)
     {
         try
         {
             var signer = PipelineSignature.Verify(text, signature, plugins.TrustedKeys(), what);
-            return $"it's signed by {signer.Name}";
+            return PipelineCredential.SignedBy(signer.Name, signer.Fingerprint);
         }
         catch (PluginException exception)
         {
@@ -111,12 +127,13 @@ public static class PipelineSources
         }
     }
 
-    // Why a file from a URL can be trusted: its signature, or for one on this machine in developer mode, nothing (Q133).
-    private static string UrlTrust(byte[] text, string url, string? signature, PluginOptions plugins)
+    // Why a file from a URL can be trusted, as the credential that earns it: its signature's, or for one on this machine
+    // in developer mode, the owner's, who turned developer mode on (Q133, Q309).
+    private static PipelineCredential UrlTrust(byte[] text, string url, string? signature, PluginOptions plugins)
     {
         var local = new Uri(url).IsLoopback;
         if (signature is null && local && plugins.DeveloperMode)
-            return "it's on this machine, and developer mode is on";
+            return PipelineCredential.Owner("it's on this machine, and developer mode is on");
         return Verified(text, signature, plugins, url, local && !plugins.DeveloperMode ? "As it's on this machine, --dev would run it unsigned." : null);
     }
 
@@ -222,7 +239,8 @@ public static class PipelineSources
     {
         private readonly string _prefix = $"git+{snapshot.Url}#";
 
-        public string? LastTrust { get; private set; }
+        // Why the last file read is trusted, as the credential that earns it.
+        public PipelineCredential? LastTrust { get; private set; }
 
         public string Address(string path) => $"{_prefix}{path}@{snapshot.Commit[..12]}";
 
@@ -242,11 +260,11 @@ public static class PipelineSources
             if (bytes is null)
                 return null;
             if (snapshot.Pinned)
-                LastTrust = $"its commit {snapshot.Commit[..12]} is pinned";
+                LastTrust = PipelineCredential.Owner($"its commit {snapshot.Commit[..12]} is pinned");
             else if (commitSigner is not null)
-                LastTrust = $"its commit {snapshot.Commit[..12]} is signed by {commitSigner.Name}";
+                LastTrust = PipelineCredential.SignedBy(commitSigner.Name, commitSigner.Fingerprint);
             else if (pinned)
-                LastTrust = "the file that includes it pins it";
+                LastTrust = PipelineCredential.Owner("the file that includes it pins it");
             else
             {
                 try

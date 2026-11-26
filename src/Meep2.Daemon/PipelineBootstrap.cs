@@ -3,6 +3,7 @@ using Meep2.Meeplang.Hosting;
 using Meep2.Modules;
 using Meep2.Plugins;
 using Meep2.Runtime;
+using Meep2.SDK.Security;
 using Meep2.Security;
 
 namespace Meep2.Daemon;
@@ -68,6 +69,9 @@ internal sealed class PipelineBootstrap(HostedPipeline hosted, Action<string> lo
         {
             HostId = hostId,
             Trust = trust,
+            MeepFolder = hosted.Plugins.Home,
+            // A file read here earns its credential now; one from elsewhere gets what Build finds on its PipelineText.
+            Credential = hosted.Address.IsFile ? PipelineSources.CredentialForFile(hosted.Address.Location) : PipelineCredential.None("it came from somewhere that didn't say who vouches for it"),
             UnhandledError = e => log(e.AnsweredBy is { } answerer
                 ? $"[{name}] error from {e.EmittedBy?.ToString() ?? "the pipeline"}, answered by {answerer}: {e.Error}"
                 : $"[{name}] error from {e.EmittedBy?.ToString() ?? "the pipeline"}: {e.Error}"),
@@ -78,6 +82,8 @@ internal sealed class PipelineBootstrap(HostedPipeline hosted, Action<string> lo
     // The bootstrap's: while loading, its errors are why it didn't load; after, why the pipeline failed.
     private PipelineOptions BootstrapOptions() => new()
     {
+        Credential = PipelineCredential.Owner("it's Meep's own, loading a pipeline"),
+        MeepFolder = null,
         UnhandledError = e =>
         {
             if (!_ready.Task.IsCompleted)

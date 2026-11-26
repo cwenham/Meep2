@@ -2,6 +2,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 
 namespace Meep2.Modules;
 
@@ -275,6 +276,7 @@ public sealed record SendBroadcastParameters
 /// <para>Errors are left alone, so they carry on to whatever handles them.</para>
 /// </remarks>
 [Verb("Send", Inflection = "WebSocket")]
+[ChecksPermission(MeepPermissions.NetworkSend, "the host and port it sends to")]
 [Role(VerbRole.Outlet)]
 [Emits(typeof(WebSocketText))]
 [Emits(typeof(WebSocketBinary))]
@@ -293,13 +295,14 @@ public sealed class SendWebSocket(SendWebSocketParameters parameters) : Connecti
     private static bool IsWebSocket(string address, out Uri? uri) =>
         Uri.TryCreate(address, UriKind.Absolute, out uri) && (uri.Scheme == Uri.UriSchemeWs || uri.Scheme == Uri.UriSchemeWss);
 
-    private protected override SharedClient? ClientFor(string url, ModuleContext context)
+    private protected override SharedClient? ClientFor(string url, Message message, ModuleContext context)
     {
         if (!IsWebSocket(url, out var uri))
         {
             context.EmitError($"Send.WebSocket needs a ws:// or wss:// address, not {url}");
             return null;
         }
+        var reach = context.DemandEndpoint(MeepPermissions.NetworkSend, message, uri!.IdnHost, uri.Port);
 
         // A Meep host gets a connection from this Send alone, so its origin is exact (Q216); anywhere else, one connection
         // to the address is shared (Q156). A Send that learns the host is Meep, or that it no longer is, moves.
@@ -309,8 +312,8 @@ public sealed class SendWebSocket(SendWebSocketParameters parameters) : Connecti
         var origin = hostId is not null ? context.Origin : null;
         var own = origin is not null && MeepHosts.IsMeep(endpoint, uri!.Host, uri.Port);
         if (origin is not null)
-            Joined.Leave(WebSocketClient.Key(uri!, own ? null : origin));
-        return Joined.Join(WebSocketClient.Key(uri!, own ? origin : null), context, Parameters.Connections, () => new WebSocketClient(uri!, Parameters, hostId, own ? origin : null));
+            Joined.Leave(WebSocketClient.Key(uri!, own ? null : origin, reach));
+        return Joined.Join(WebSocketClient.Key(uri!, own ? origin : null, reach), context, Parameters.Connections, () => new WebSocketClient(uri!, Parameters, hostId, own ? origin : null, reach));
     }
 }
 
@@ -347,6 +350,7 @@ public sealed record SendWebSocketParameters : SendConnectionParameters
 /// <para>Errors are left alone, so they carry on to whatever handles them.</para>
 /// </remarks>
 [Verb("Send", Inflection = "TCP")]
+[ChecksPermission(MeepPermissions.NetworkSend, "the host and port it sends to")]
 [Role(VerbRole.Outlet)]
 [Emits(typeof(TcpMessage))]
 [Emits(typeof(TcpConnected), When = nameof(SendTcpParameters.Connections))]
@@ -367,14 +371,15 @@ public sealed class SendTcp(SendTcpParameters parameters) : ConnectionSend<SendT
 
     private protected override string? End => Parameters.End;
 
-    private protected override SharedClient? ClientFor(string url, ModuleContext context)
+    private protected override SharedClient? ClientFor(string url, Message message, ModuleContext context)
     {
         if (!Endpoints.TryTcp(url, out var host, out var port))
         {
             context.EmitError($"Send.TCP needs a tcp:// address with a port, not {url}");
             return null;
         }
-        return Joined.Join(TcpServerClient.Key(host, port), context, Parameters.Connections, () => new TcpServerClient(url, host, port, Parameters));
+        var reach = context.DemandEndpoint(MeepPermissions.NetworkSend, message, host, port);
+        return Joined.Join(TcpServerClient.Key(host, port, reach), context, Parameters.Connections, () => new TcpServerClient(url, host, port, Parameters, reach));
     }
 }
 
@@ -415,6 +420,7 @@ public sealed record SendTcpParameters : SendConnectionParameters
 /// </para>
 /// </remarks>
 [Verb("Send", Inflection = "HTTP")]
+[ChecksPermission(MeepPermissions.NetworkSend, "the host and port it sends to, and each redirect's")]
 [Role(VerbRole.Outlet)]
 [Emits(typeof(HttpResponse))]
 public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Message>, IChosenByParameters<SendHttpParameters>, ISendsTo
@@ -441,6 +447,7 @@ public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Messa
         if (Outgoing(message, context) is not { } request)
             return;
         var (url, uri, text, contentType) = request;
+        var reach = context.DemandEndpoint(MeepPermissions.NetworkSend, message, uri.IdnHost, uri.Port);
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(parameters.Timeout);
@@ -451,7 +458,7 @@ public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Messa
         {
             using var content = await ContentAsync(message, text, contentType, context, tally, timeout.Token).ConfigureAwait(false);
             // A body is counted as it's sent, each time a redirect sends it again; a stream as it's read.
-            var reached = await HttpFetch.SendAsync(HttpMethod.Post, uri, content, HttpCompletionOption.ResponseContentRead, context, timeout.Token, sending: sent => context.CountBytes(0, sent)).ConfigureAwait(false);
+            var reached = await HttpFetch.SendAsync(HttpMethod.Post, uri, content, HttpCompletionOption.ResponseContentRead, context, message, reach, timeout.Token, sending: sent => context.CountBytes(0, sent)).ConfigureAwait(false);
             using var response = answer = reached.Response;
             tally = reached.Counted(endpoint, tally, context);
             tally.Count(sent: 1, received: 1, bytesSent: content is StreamContent ? 0 : content.Headers.ContentLength ?? 0);
@@ -465,6 +472,11 @@ public sealed class SendHttp(SendHttpParameters parameters) : APassthrough<Messa
         {
             HttpFetch.Failed(answer, tally);
             context.EmitError($"{url} didn't answer within {HttpFetch.Describe(parameters.Timeout)}");
+        }
+        catch (HttpRequestException exception) when (Reaching.Refusal(exception) is { } denied)
+        {
+            HttpFetch.Failed(answer, tally);
+            throw denied;
         }
         catch (HttpRequestException exception)
         {

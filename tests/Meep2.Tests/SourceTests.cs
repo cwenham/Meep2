@@ -100,6 +100,62 @@ public class SourceTests
     }
 
     [Test]
+    public async Task Where_a_pipeline_comes_from_decides_its_own_credential()
+    {
+        using var key = SshKeyPair.CreateEd25519("publisher");
+        using var home = new TemporaryFolder();
+        using var output = new TemporaryFolder(); // outside Meep's own folder, which no pipeline may write to (Q321)
+        var saving = $"Interval 10ms count=1\n    Save \"{output.Path}/saved.txt\"\n";
+        await using var server = Serve(new()
+        {
+            ["/p/signed.meep"] = Ticker,
+            ["/p/signed.meep.sig"] = Sign(key, Ticker),
+            ["/p/unsigned.meep"] = Ticker,
+            ["/p/saving.meep"] = saving,
+        });
+        var options = new PluginOptions { Home = home.Path, Trusted = new TrustedKeys([key.Public]), DeveloperMode = true };
+
+        var signed = await PipelineSources.ReadAsync(PipelineAddress.Parse($"{server.Url}/p/signed.meep"), options, null, CancellationToken.None);
+        var pinned = await PipelineSources.ReadAsync(PipelineAddress.Parse($"{server.Url}/p/unsigned.meep#sha256={Sha(Ticker)}"), options, null, CancellationToken.None);
+        var developing = await PipelineSources.ReadAsync(PipelineAddress.Parse($"{server.Url}/p/unsigned.meep"), options, null, CancellationToken.None);
+
+        await Assert.That(signed.Credential!.Vouch).IsEqualTo(Meep2.SDK.Security.PipelineVouch.Signer);
+        await Assert.That(signed.Credential.Holder).IsEqualTo("publisher");
+        await Assert.That(signed.Credential.KeyFingerprint).IsEqualTo(key.Public.Fingerprint);
+        await Assert.That(signed.TrustedBecause).IsEqualTo("it's signed by publisher");
+        await Assert.That(pinned.Credential!.Vouch).IsEqualTo(Meep2.SDK.Security.PipelineVouch.Owner);
+        await Assert.That(pinned.TrustedBecause).StartsWith("its SHA-256 matches the pin");
+        await Assert.That(developing.Credential!.Vouch).IsEqualTo(Meep2.SDK.Security.PipelineVouch.Owner).Because("you turned developer mode on (Q309)");
+
+        // Run, an unsigned pipeline from a URL in developer mode can write files.
+        var run = await Run(options, "run", $"{server.Url}/p/saving.meep");
+        await Assert.That(run.Error).IsEqualTo("");
+        await Assert.That(File.Exists(Path.Combine(output.Path, "saved.txt"))).IsTrue();
+
+        // One in a folder others can change can't.
+        if (!OperatingSystem.IsWindows())
+        {
+            using var shared = new TemporaryFolder();
+            var file = shared.Write("saving.meep", saving.Replace("saved.txt", "shared.txt", StringComparison.Ordinal));
+            File.SetUnixFileMode(shared.Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute);
+            var exposed = await Run(options, "run", file);
+            File.SetUnixFileMode(shared.Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            await Assert.That(exposed.Error).Contains($"has no credential of its own, as its file is on this machine, but the folder {shared.Path} can be changed by others");
+            await Assert.That(File.Exists(Path.Combine(output.Path, "shared.txt"))).IsFalse();
+
+            // Nor can one of your own that includes a file someone else could change (Q320).
+            using var mine = new TemporaryFolder();
+            var included = shared.Write("say.meep", "template Say\n    Save \"" + output.Path + "/included.txt\"\n");
+            var including = mine.Write("including.meep", $"#include \"{included}\"\nInterval 10ms count=1\n    Say\n");
+            File.SetUnixFileMode(shared.Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute);
+            var withInclude = await Run(options, "run", including);
+            File.SetUnixFileMode(shared.Path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            await Assert.That(withInclude.Error).Contains($"has no credential of its own, as it includes {included}, and the folder {shared.Path} can be changed by others");
+            await Assert.That(File.Exists(Path.Combine(output.Path, "included.txt"))).IsFalse();
+        }
+    }
+
+    [Test]
     public async Task A_pin_on_an_include_line_covers_the_file_it_includes()
     {
         var shared = "template Say\n    WriteLine \"tick {msg.Count}\"\n";

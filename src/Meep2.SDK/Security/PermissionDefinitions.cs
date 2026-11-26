@@ -8,6 +8,11 @@ namespace Meep2.SDK.Security;
 /// A permission is well defined when its name is defined here, it's no looser than its definition, and everything it
 /// refers to exists: every authority it names is in the trust store, every permission it requires is defined, and it
 /// doesn't require itself through a chain. Whether a message's credentials meet it is for <c>Verify.Permission</c>.
+/// <para>
+/// Meep's own permissions (<see cref="MeepPermissions"/>) are defined whether the file has them or not (Q279). A line
+/// for one of them narrows Meep's definition, which has no requirements, so the line stands as written. A line for a
+/// name starting <c>meep.</c> that isn't one of Meep's is a problem.
+/// </para>
 /// </remarks>
 public sealed class PermissionDefinitions
 {
@@ -30,7 +35,11 @@ public sealed class PermissionDefinitions
         }
         _authorities = new HashSet<string>(authorities, StringComparer.Ordinal);
         All = [.. _byName.Values];
-        Problems = [.. All.SelectMany(definition => References(definition).Select(failure => $"{definition.Name.Name}: {failure.Reason}"))];
+        Problems =
+        [
+            .. All.Select(definition => MeepPermissions.WhyNotKnown(definition.Name.Name)).OfType<string>(),
+            .. All.SelectMany(definition => References(definition).Select(failure => $"{definition.Name.Name}: {failure.Reason}")),
+        ];
     }
 
     /// <summary>No definitions.</summary>
@@ -73,11 +82,14 @@ public sealed class PermissionDefinitions
         return new PermissionDefinitions(definitions, authorities);
     }
 
-    /// <summary>The definition of the permission called <paramref name="name"/>, leaving out any scope, or null.</summary>
+    /// <summary>
+    /// The definition of the permission called <paramref name="name"/>, leaving out any scope: the file's, or Meep's own
+    /// for one of Meep's permissions the file doesn't narrow; or null.
+    /// </summary>
     public Permission? Find(string name)
     {
         ArgumentNullException.ThrowIfNull(name);
-        return _byName.GetValueOrDefault(name);
+        return _byName.GetValueOrDefault(name) ?? MeepPermissions.Definition(name);
     }
 
     /// <summary>
@@ -112,7 +124,7 @@ public sealed class PermissionDefinitions
         var failures = new List<VerificationFailure>();
         void Undefined(string reason) => failures.Add(new VerificationFailure(VerificationFailureCode.UndefinedRequirement, reason));
 
-        foreach (var authority in permission.Authorities.Where(a => !_authorities.Contains(a)))
+        foreach (var authority in permission.Authorities.Where(a => a != Permission.PipelineAuthority && !_authorities.Contains(a)))
             Undefined($"the authority {authority} isn't in the trust store.");
         foreach (var required in permission.Requires.Where(r => Find(r.Name) is null))
             Undefined($"it requires {required.Name}, which isn't defined.");

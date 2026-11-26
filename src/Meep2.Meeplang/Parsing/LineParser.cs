@@ -15,6 +15,7 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
     private readonly List<ConstantSyntax> _constants = [];
     private readonly List<PluginDirective> _plugins = [];
     private readonly List<PermissionDirective> _permissions = [];
+    private List<HoldsDirective>? _holds;
     private readonly List<ModuleSyntax> _modules = [];
 
     // Open blocks, outermost first. Null owner means the left margin.
@@ -33,7 +34,7 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
         CheckFeeders(_modules);
         foreach (var template in _templates)
             CheckFeeders(template.Body);
-        return new PipelineSyntax(source, _defaults, _constants, _plugins, _modules, _diagnostics.Items, _templates, _includes) { Permissions = _permissions };
+        return new PipelineSyntax(source, _defaults, _constants, _plugins, _modules, _diagnostics.Items, _templates, _includes) { Permissions = _permissions, Holds = _holds };
     }
 
     private void ParseLine(string text, int lineNumber)
@@ -184,8 +185,10 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
             ParsePlugin(words, indent);
         else if (name.Text == Permission.Directive)
             ParsePermission(text, start, words, indent);
+        else if (name.Text == HoldsDirective.Directive)
+            ParseHolds(words, indent);
         else
-            _diagnostics.Error($"There's no {name.Text} directive. Meeplang has #plugin, #include and #permission.", name.Span);
+            _diagnostics.Error($"There's no {name.Text} directive. Meeplang has #plugin, #include, #permission and #holds.", name.Span);
     }
 
     // #permission Name[:scope] [authority=name] [requires=permission]: at the margin, in the pipeline's own file, before
@@ -217,6 +220,52 @@ internal sealed class LineParser(SourceFile source, bool isInclude = false)
             return;
         }
         _permissions.Add(new PermissionDirective(permission, span));
+    }
+
+    // #holds meep.files.read "meep.files.write:~/notes/**" …, or #holds none: what the pipeline's own credential keeps
+    // of Meep's permissions (Q252 C). At the margin, in the pipeline's own file, before its modules; lines add up.
+    private void ParseHolds(List<DirectiveWord> words, int indent)
+    {
+        var name = words[0];
+        if (isInclude)
+        {
+            _diagnostics.Error("An included file holds templates and constants; #holds goes in the pipeline's own file.", name.Span);
+            return;
+        }
+        if (!AtMarginBeforeModules(name, indent))
+            return;
+        const string Usage = "#holds lists which of Meep's own permissions the pipeline starts with, as in #holds meep.files.read \"meep.files.write:~/notes/**\", or #holds none for none of them.";
+        if (words.Count == 1)
+        {
+            _diagnostics.Error(Usage, name.Span);
+            return;
+        }
+        var listed = new List<PermissionName>();
+        if (words.Count == 2 && words[1] is { Quoted: false, Text: "none" })
+        {
+            (_holds ??= []).Add(new HoldsDirective(listed, SourceSpan.Between(name.Span, words[1].Span)));
+            return;
+        }
+        foreach (var word in words.Skip(1))
+        {
+            if (!PermissionName.TryParse(word.Text, out var permission))
+            {
+                _diagnostics.Error($"{word.Text} isn't a permission's name. {Usage}", word.Span);
+                return;
+            }
+            if (MeepPermissions.WhyNotKnown(permission.Name) is { } unknown)
+            {
+                _diagnostics.Error(unknown, word.Span);
+                return;
+            }
+            if (!MeepPermissions.IsMeeps(permission.Name))
+            {
+                _diagnostics.Error($"{permission.Name} isn't one of Meep's own permissions, and a pipeline's own credential holds only those, so #holds can't list it. Gate a module with @permission={permission.Name} instead.", word.Span);
+                return;
+            }
+            listed.Add(permission);
+        }
+        (_holds ??= []).Add(new HoldsDirective(listed, SourceSpan.Between(name.Span, words[^1].Span)));
     }
 
     // Whether a directive is at the margin and before the modules, reporting why not.

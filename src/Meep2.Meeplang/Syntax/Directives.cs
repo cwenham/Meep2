@@ -59,3 +59,16 @@ public sealed record IncludeDirective(string Path, SourceSpan Span, string? Sha2
 /// <param name="Permission">The permission as the line writes it.</param>
 /// <param name="Span">Where the line is.</param>
 public sealed record PermissionDirective(Permission Permission, SourceSpan Span);
+
+/// <summary>
+/// A <c>#holds</c> line, which says which of Meep's own permissions the pipeline starts with (Q252 C): only these of
+/// what its credential holds, perhaps with narrower scopes, as in <c>#holds meep.files.read "meep.files.write:~/notes/**"</c>.
+/// <c>#holds none</c> holds none of them. A pipeline's lines add up.
+/// </summary>
+/// <param name="Permissions">The permissions it lists, or none for <c>#holds none</c>.</param>
+/// <param name="Span">Where the line is.</param>
+public sealed record HoldsDirective(IReadOnlyList<PermissionName> Permissions, SourceSpan Span)
+{
+    /// <summary>The directive.</summary>
+    public const string Directive = "#holds";
+}

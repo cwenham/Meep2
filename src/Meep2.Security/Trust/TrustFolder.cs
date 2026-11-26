@@ -112,6 +112,8 @@ public sealed class TrustFolder
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(namespaces);
+        if (name == Permission.PipelineAuthority)
+            throw new FormatException("pipeline is kept for pipelines' own credentials (Q316), so no authority can be called it.");
         if (!Permission.IsAuthorityName(name))
             throw new FormatException($"{name} can't be an authority's name: it has no spaces, quotes, = or # in it.");
         AppendLine(Authorities, $"{name} namespaces=\"{string.Join(',', namespaces)}\" {key.Text}");

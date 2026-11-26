@@ -83,7 +83,21 @@ public sealed record Permission : Message
         return new Permission(PermissionName.Parse(words[1])) { Authorities = authorities, Requires = requires };
     }
 
-    /// <summary>Whether <paramref name="name"/> can name an authority in the trust store: no spaces, quotes or <c>#</c>.</summary>
+    /// <summary>Whether a trust store's authority may be called <paramref name="name"/>: an authority's name, but not <see cref="PipelineAuthority"/>.</summary>
+    public static bool IsTrustedAuthorityName(string? name) => IsAuthorityName(name) && name != PipelineAuthority;
+
+    /// <summary>
+    /// The authority a pipeline's own credential confers Meep's permissions as (Q316). It needs no trust store, and no
+    /// authority in one can be called it. A definition with no <c>authority=</c> allows pipelines; one that names
+    /// authorities allows them only if it names this too, as in <c>authority=home authority=pipeline</c>.
+    /// </summary>
+    public const string PipelineAuthority = "pipeline";
+
+    /// <summary>
+    /// Whether <paramref name="name"/> could be an authority's name in a definition: one word, with no quotes, <c>=</c>
+    /// or <c>#</c>. <see cref="PipelineAuthority"/> is one, though no authority in a trust store may be called it
+    /// (<see cref="IsTrustedAuthorityName"/>).
+    /// </summary>
     public static bool IsAuthorityName(string? name) =>
         !string.IsNullOrEmpty(name) && !name.Any(c => char.IsWhiteSpace(c) || char.IsControl(c) || c is '"' or '#' or '=');
 

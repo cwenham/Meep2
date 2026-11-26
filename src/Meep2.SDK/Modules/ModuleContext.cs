@@ -156,6 +156,70 @@ public abstract class ModuleContext
     public bool Holds(string permission, Message message, string? target = null) => WhyNotHeld(permission, message, target) is null;
 
     /// <summary>
+    /// Refuses unless <paramref name="message"/> may <paramref name="permission"/> the file at <paramref name="path"/>,
+    /// as <see cref="Demand"/> does, matching a scoped permission against the path's real form: whole, with symbolic
+    /// links and <c>..</c> followed, in the case it has on disk (Q269), and the scope's fixed start read the same way.
+    /// Meep's own file verbs call it with <see cref="MeepPermissions.FilesRead"/> or <see cref="MeepPermissions.FilesWrite"/>.
+    /// </summary>
+    /// <param name="permission">The permission's name, as in <c>meep.files.read</c>.</param>
+    /// <param name="message">The message whose credentials count, or null for the pipeline's own credential, as a source has.</param>
+    /// <param name="path">The file, as the module will open it.</param>
+    /// <exception cref="PermissionDeniedException">The message, or the pipeline, doesn't hold it for this file.</exception>
+    /// <exception cref="FormatException"><paramref name="permission"/> isn't a permission's name.</exception>
+    public void DemandFile(string permission, Message? message, string path)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        if (WhyNotHeld(permission, message, PermissionTarget.File(Path.GetFullPath(path))) is { } why)
+            throw new PermissionDeniedException(PermissionName.Parse(permission), why);
+    }
+
+    /// <summary>
+    /// Refuses unless <paramref name="message"/> may <paramref name="permission"/> the network endpoint
+    /// <paramref name="host"/> and <paramref name="port"/>, as <see cref="Demand"/> does, and says which addresses the
+    /// connection may then reach. A scoped permission is matched against <c>host:port</c>, the host in lower case and its
+    /// ASCII form, as in <c>meep.network.send:*.example.com:443</c>; a scope without a port, such as
+    /// <c>meep.network.send:*.example.com</c>, allows any. The host is matched as it's written. The scopes
+    /// <c>public</c> and <c>private</c> (Q313) are matched against the addresses connected to instead: then this returns
+    /// <see cref="NetworkReach.Public"/> or <see cref="NetworkReach.Private"/>, and the module must connect only to an
+    /// address in that reach, checked at connect time. Meep's own network verbs call it with
+    /// <see cref="MeepPermissions.NetworkSend"/> or <see cref="MeepPermissions.NetworkListen"/>.
+    /// </summary>
+    /// <param name="permission">The permission's name, as in <c>meep.network.send</c>.</param>
+    /// <param name="message">The message whose credentials count, or null for the pipeline's own credential, as a source has.</param>
+    /// <param name="host">The host, as the address names it.</param>
+    /// <param name="port">The port.</param>
+    /// <returns>The addresses the connection may reach: <see cref="NetworkReach.Any"/>, unless only a keyword scope allowed it.</returns>
+    /// <exception cref="PermissionDeniedException">The message, or the pipeline, doesn't hold it for this endpoint.</exception>
+    /// <exception cref="FormatException"><paramref name="permission"/> isn't a permission's name.</exception>
+    public NetworkReach DemandEndpoint(string permission, Message? message, string host, int port)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        var endpoint = PermissionTarget.Endpoint(host, port);
+        var why = WhyNotHeld(permission, message, endpoint);
+        if (why is null)
+            return NetworkReach.Any;
+
+        // Not by name: perhaps by the kind of address it's at, which an address written as one shows now, and a name
+        // only when connecting.
+        var reach = NetworkReach.None;
+        if (System.Net.IPAddress.TryParse(host.Trim('[', ']'), out var literal))
+        {
+            var of = NetworkAddresses.ReachOf(literal);
+            if (of != NetworkReach.None && WhyNotHeld(permission, message, PermissionTarget.Addresses(of, port)) is null)
+                return NetworkReach.Any;
+        }
+        else
+        {
+            foreach (var each in new[] { NetworkReach.Public, NetworkReach.Private })
+            {
+                if (WhyNotHeld(permission, message, PermissionTarget.Addresses(each, port)) is null)
+                    reach |= each;
+            }
+        }
+        return reach != NetworkReach.None ? reach : throw new PermissionDeniedException(PermissionName.Parse(permission), why);
+    }
+
+    /// <summary>
     /// Counts something the module refused for lack of a permission or a proof, without a message to refuse, as a
     /// Listen does when it answers a request with 401 before it reaches the pipeline (Q296). It's added to the module's
     /// <c>denied</c> count, beside the messages its gate refused.
@@ -165,7 +229,14 @@ public abstract class ModuleContext
     }
 
     /// <summary>Why <paramref name="message"/> doesn't hold a permission, or null if it does. The runtime provides it.</summary>
-    internal virtual string? WhyNotHeld(string permission, Message message, string? target) =>
+    internal string? WhyNotHeld(string permission, Message message, string? target) =>
+        WhyNotHeld(permission, message, target is null ? null : PermissionTarget.Of(target));
+
+    /// <summary>
+    /// Why <paramref name="message"/>, or the pipeline's own credential if it's null, doesn't hold a permission on a
+    /// target, or null if it does. The runtime provides it.
+    /// </summary>
+    internal virtual string? WhyNotHeld(string permission, Message? message, PermissionTarget? target) =>
         throw new NotSupportedException("This context isn't part of a pipeline, so there are no credentials to check.");
 
     /// <summary>

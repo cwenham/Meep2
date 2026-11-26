@@ -2,6 +2,7 @@ using System.Net.Sockets;
 using System.Text;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 
 namespace Meep2.Modules;
 
@@ -25,6 +26,7 @@ namespace Meep2.Modules;
 /// </para>
 /// </remarks>
 [Verb("Listen", Inflection = "TCP")]
+[ChecksPermission(MeepPermissions.NetworkListen, "its host and port")]
 [Role(VerbRole.Inlet)]
 [Emits(typeof(TcpMessage))]
 [Emits(typeof(TcpConnected), When = nameof(TcpListenParameters.Connections))]
@@ -64,7 +66,8 @@ public sealed class TcpListen(TcpListenParameters parameters) : ASource, IChosen
         var start = _parameters;
         if (!Endpoints.TryTcp(start.Url, out var host, out var port))
             throw new InvalidOperationException($"Listen.TCP needs a tcp:// address with a port, not {start.Url}");
-        var listener = new TcpListener(await Endpoints.ResolveAsync(host, cancellationToken).ConfigureAwait(false), port);
+        var reach = context.DemandEndpoint(MeepPermissions.NetworkListen, null, host, port);
+        var listener = new TcpListener(Listens.Within(await Endpoints.ResolveAsync(host, cancellationToken).ConfigureAwait(false), host, reach), port);
         listener.Start();
         context.Listening($"tcp://{listener.LocalEndpoint}");
         var bound = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;

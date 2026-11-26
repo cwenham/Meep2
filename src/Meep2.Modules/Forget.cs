@@ -1,5 +1,6 @@
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 
 namespace Meep2.Modules;
 
@@ -12,6 +13,7 @@ namespace Meep2.Modules;
 /// deleted. Errors are passed on untouched.
 /// </remarks>
 [Verb("Forget")]
+[ChecksPermission(MeepPermissions.FilesWrite, "the tree's file, when file= names one")]
 [EmitsInput]
 public sealed class Forget(ForgetParameters parameters) : AInflection<Message>, IAsyncDisposable
 {
@@ -40,6 +42,7 @@ public sealed class Forget(ForgetParameters parameters) : AInflection<Message>, 
             return;
         }
 
+        Trees.Demand(parameters.Tree, parameters.File, saves: true, message, context);
         if (Trees.Open(ref _tree, parameters.Tree, parameters.File, saves: true, context) is not { } tree)
             return;
 

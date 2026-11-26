@@ -19,12 +19,17 @@ namespace Meep2.Runtime.Verifying;
 /// looked up in the store as it is now (Q259).
 /// </para>
 /// <para>
+/// The pipeline's own verification (<see cref="VerificationKind.Pipeline"/>, Q252), at the top of every line from a
+/// source, counts for Meep's own permissions only; for any other, it's passed by as a message that isn't a verified
+/// credential.
+/// </para>
+/// <para>
 /// For a requirement that can be kept (<see cref="Requirement.Kept"/>), answers are kept on the messages the walk
 /// starts from, joins at and verifies at (<see cref="GateAnswers"/>), so another gate needing the same requirement,
 /// for the same message or one made from it, stops there rather than walking on.
 /// </para>
 /// </remarks>
-internal sealed class PermissionLines(TrustStore store, DateTime? now = null)
+internal sealed class PermissionLines(TrustStore? store, DateTime? now = null)
 {
     // The moment grants are judged at: the one given, or now, read only if a verification's grants are looked at.
     private DateTime? _now = now;
@@ -110,7 +115,7 @@ internal sealed class PermissionLines(TrustStore store, DateTime? now = null)
                 break;
             }
             string? here = null;
-            if (current is VerifiedMessage { IsGenuine: true, Kind: VerificationKind.Credential } verified && verified.IsStamped)
+            if (current is VerifiedMessage { IsGenuine: true } verified && verified.IsStamped && Counts(verified, requirement))
             {
                 here = WhyNotHeld(verified, requirement.Permission.Name, requirement.Target, requirement.Permission.Authorities, requirement.Permission.Requires, [])
                     ?? WhyNotProven(verified, requirement.Proofs);
@@ -154,6 +159,14 @@ internal sealed class PermissionLines(TrustStore store, DateTime? now = null)
         return answer.WhyNot is not null && nearest is not null ? new LineAnswer(nearest, 0) : answer;
     }
 
+    // Whether a verification can hold the requirement: one of a credential, or the pipeline's own for Meep's permissions.
+    private static bool Counts(VerifiedMessage verified, Requirement requirement) => verified.Kind switch
+    {
+        VerificationKind.Credential => true,
+        VerificationKind.Pipeline => MeepPermissions.IsReserved(requirement.Permission.Name.Name),
+        _ => false,
+    };
+
     // A message's answer, kept on it, or for a requirement that isn't kept, from this walk.
     private LineAnswer? Known(Message message, Requirement requirement)
     {
@@ -178,38 +191,59 @@ internal sealed class PermissionLines(TrustStore store, DateTime? now = null)
 
     // Why a verification doesn't hold a permission (on target, if there is one), conferred by one of these authorities
     // (any, if none), with these requirements, or null if it does.
-    private string? WhyNotHeld(VerifiedMessage verified, PermissionName name, string? target, IReadOnlyList<string> authorities, IReadOnlyList<PermissionName> requires, HashSet<string> visiting)
+    private string? WhyNotHeld(VerifiedMessage verified, PermissionName name, PermissionTarget? target, IReadOnlyList<string> authorities, IReadOnlyList<PermissionName> requires, HashSet<string> visiting)
     {
-        if (verified.Subject is not Credential credential)
+        string who;
+        List<Conferred> held;
+        var pipeline = verified.Subject as PipelineCredential;
+        if (pipeline is not null)
+        {
+            // The pipeline's own: Meep's permissions, conferred as the reserved authority "pipeline" (Q316), unless its
+            // signer's key has been revoked since (Q318).
+            who = PipelineCredentials.Who(pipeline);
+            if (pipeline.KeyFingerprint is { } signer && store?.Revocations.WhyKeyRevoked(signer) is { } revoked)
+                return $"{who} no longer counts: {revoked}";
+            held = [.. verified.Permissions.Select(permission => new Conferred(permission, Permission.PipelineAuthority))];
+        }
+        else if (verified.Subject is Credential credential)
+        {
+            who = $"{credential.KeyId}'s credential";
+            if (!verified.Success)
+                return $"{who} didn't verify: {string.Join(" ", verified.Failures.Select(f => f.Reason))}";
+            if (verified.Expires is { HasPassed: true })
+                return $"The verification of {who} has expired.";
+            if (store is null)
+                return Trust.NoStore;
+            var recheck = verified.RevocationVersion != store.RevocationVersion;
+            if (recheck && store.Revocations.WhyRevoked(credential) is { } revoked)
+                return revoked;
+            held = Held(verified, credential, recheck);
+        }
+        else
+        {
             return "A verification that says it's of a credential isn't of one.";
-        var who = $"{credential.KeyId}'s credential";
-        if (!verified.Success)
-            return $"{who} didn't verify: {string.Join(" ", verified.Failures.Select(f => f.Reason))}";
-        if (verified.Expires is { HasPassed: true })
-            return $"The verification of {who} has expired.";
-        var recheck = verified.RevocationVersion != store.RevocationVersion;
-        if (recheck && store.Revocations.WhyRevoked(credential) is { } revoked)
-            return revoked;
+        }
 
-        var held = Held(verified, credential, recheck);
         var matching = target is null
             ? held.Where(h => h.Permission.Covers(name)).ToList()
-            : held.Where(h => h.Permission.Allows(name.Name, target)).ToList();
+            : held.Where(h => Targets.Allows(h.Permission, name.Name, target)).ToList();
         if (matching.Count == 0)
             return target is null ? $"{who} doesn't hold {name}." : $"{who} doesn't hold {name.Name} for {target}.";
         if (authorities.Count > 0 && !matching.Any(h => h.Authority is { } by && authorities.Contains(by, StringComparer.Ordinal)))
         {
-            var by = string.Join(", ", matching.Select(h => h.Authority ?? "an authority no longer trusted").Distinct());
-            return $"{who} holds {name}, conferred by {by}, but only {string.Join(", ", authorities)} may confer it.";
+            if (pipeline is not null)
+                return $"{who} holds {name}, but only {string.Join(", ", authorities)} may confer it, and not pipelines: add authority={Permission.PipelineAuthority} to the definition to let them.";
+            var conferrers = string.Join(", ", matching.Select(h => h.Authority ?? "an authority no longer trusted").Distinct());
+            return $"{who} holds {name}, conferred by {conferrers}, but only {string.Join(", ", authorities)} may confer it.";
         }
-        if (authorities.Count == 0 && matching.All(h => h.Authority is null))
+        if (pipeline is null && authorities.Count == 0 && matching.All(h => h.Authority is null))
             return $"{who} holds {name}, but the authority that conferred it is no longer trusted.";
 
         if (!visiting.Add(name.Name))
             return $"{name.Name} requires itself.";
         foreach (var required in requires)
         {
-            var definition = store.Permissions.Find(required.Name);
+            var definition = store?.Permissions.Find(required.Name) ?? MeepPermissions.Definition(required.Name);
             var why = WhyNotHeld(verified, required, null, definition?.Authorities ?? [], definition?.Requires ?? [], visiting);
             if (why is not null)
                 return $"{name} requires {required}: {why}";
@@ -231,15 +265,15 @@ internal sealed class PermissionLines(TrustStore store, DateTime? now = null)
     // the credential's own, from its issuer, and its grants', from their signers. A grant revoked since is left out.
     private List<Conferred> Held(VerifiedMessage verified, Credential credential, bool recheck)
     {
-        var issuer = store.AuthorityOf(credential)?.Name;
+        var issuer = store!.AuthorityOf(credential)?.Name;
         var held = credential.Permissions.Select(permission => new Conferred(permission, issuer)).ToList();
         foreach (var grant in verified.Grants)
         {
-            if (recheck && store.Revocations.WhyRevoked(grant) is not null)
+            if (recheck && store!.Revocations.WhyRevoked(grant) is not null)
                 continue;
             if (grant.Terms.ValidBefore is { } before && (_now ??= DateTime.UtcNow) >= before)
                 continue;
-            held.Add(new Conferred(grant.Terms.Permission, store.AuthorityOf(grant)?.Name));
+            held.Add(new Conferred(grant.Terms.Permission, store!.AuthorityOf(grant)?.Name));
         }
         return held;
     }
@@ -254,7 +288,7 @@ internal sealed class PermissionLines(TrustStore store, DateTime? now = null)
 internal sealed class Requirement
 {
     /// <summary>A permission to check as it stands, as <c>Verify.Permission</c> does; answers aren't kept on messages.</summary>
-    public Requirement(Permission permission, string? target = null)
+    public Requirement(Permission permission, PermissionTarget? target = null)
     {
         Permission = permission;
         Target = target;
@@ -275,8 +309,8 @@ internal sealed class Requirement
     /// <summary>The permission, as defined and narrowed, that the message's credentials must hold.</summary>
     public Permission Permission { get; }
 
-    /// <summary>What a scoped permission must match, such as a file's full path, or null.</summary>
-    public string? Target { get; }
+    /// <summary>What a scoped permission must match, such as a file's real path, or null.</summary>
+    public PermissionTarget? Target { get; }
 
     /// <summary>Why no message can hold it, or null.</summary>
     public string? Problem { get; }

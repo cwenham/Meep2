@@ -110,6 +110,8 @@ Turning these on everywhere would break every existing pipeline, since a source'
 
 Also in this phase (Q303, answered in phase 5's doc): trusting an SSH CA key as an authority from a pipeline. That needs an `AuthorityKey` message type, which `Parse` reads from a `.pub` line, an `Authorise.Authority` inflection that adds it to `authorities`, and a new `AuthoriseAuthority` permission, so that trusting X.509 roots and trusting credential issuers can be given apart.
 
+Built 26 November 2026 on `permissions-phase-6`: see `permissions-phase-6.md`, where the directive is `#holds` and the credentials pipelines get are set out, with questions Q308–Q320.
+
 ### Phase 7. The daemon and Synesthesia
 
 - Tokens become credentials (or carry one), and capabilities become `meep.daemon.*` permissions. A client's requests are verified as messages are.
