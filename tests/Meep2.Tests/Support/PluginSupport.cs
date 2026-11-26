@@ -100,9 +100,12 @@ public sealed class PluginLab : IDisposable
             .AddAssembly(CoreModules.Assembly)
             .AddAssembly(RuntimeModules.Assembly)
             .Add<WriteLine, WriteLineParameters>("WriteLine", p => new WriteLine(p, shared));
-        var hosted = new PipelineOptions { UnhandledError = e => errors.Enqueue(e.Error) };
+        // As meep run does: the bootstrap is Meep's own, and the pipeline is the owner's file.
+        var owner = Meep2.SDK.Security.PipelineCredential.Owner("a test built it");
+        var hosted = new PipelineOptions { UnhandledError = e => errors.Enqueue(e.Error), Credential = owner };
         var bootstrap = new PipelineOptions
         {
+            Credential = owner,
             UnhandledError = e => errors.Enqueue(e is MeeplangErrorMessage meeplang ? string.Join("\n", meeplang.Diagnostics) : e.Error),
         };
 

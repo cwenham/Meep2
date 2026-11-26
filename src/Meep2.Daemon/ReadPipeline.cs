@@ -1,3 +1,4 @@
+using Meep2.SDK.Security;
 using Meep2.Meeplang.Hosting;
 using Meep2.Plugins;
 using Meep2.SDK.Modules;
@@ -16,7 +17,8 @@ public sealed class ReadPipeline(PipelineAddress address, PluginOptions plugins,
     {
         if (text is not null)
         {
-            context.Emit(new PipelineText(address.Location, text)); // sent over the socket: it's yours, as a file is
+            // Sent over the daemon's socket by a client allowed to control it: it's yours, as a file is.
+            context.Emit(new PipelineText(address.Location, text) { Credential = PipelineCredential.Owner("it was sent to the daemon by a client allowed to control it") });
             return;
         }
         try

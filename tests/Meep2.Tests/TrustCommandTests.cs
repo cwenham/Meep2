@@ -71,7 +71,8 @@ public class TrustCommandTests
         File.AppendAllText(TrustFolder.In(home.Path).Permissions, "#permission ReadNotes\n");
 
         var issued = await Cli(home.Path, "trust", "issue", key, "--id", "alice", "--principals", "alice,al",
-            "--permission", "ReadNotes", "--permission", "meep.files.write:~/notes/**", "--out", Path.Combine(lab.Folder, "alice.credential"));
+            "--permission", "ReadNotes", "--permission", "meep.files.write:~/notes/**", "--permission", "WriteNotes", "--permission", "meep.file.read",
+            "--out", Path.Combine(lab.Folder, "alice.credential"));
         var second = await Cli(home.Path, "trust", "issue", key, "--valid", "always", "--bearer");
         var clash = await Cli(home.Path, "trust", "issue", key);
 
@@ -79,16 +80,18 @@ public class TrustCommandTests
         await Assert.That(before.Error).Contains("meep trust init");
         await Assert.That(issued.Code).IsEqualTo(0).Because(issued.Error);
         await Assert.That(issued.Output).Contains("Issued alice a credential, serial 1, until ");
-        await Assert.That(issued.Output).Contains("meep.files.write isn't defined");
+        await Assert.That(issued.Output).Contains("WriteNotes isn't defined");
+        await Assert.That(issued.Output).Contains("Meep has no permission called meep.file.read");
         await Assert.That(issued.Output).DoesNotContain("ReadNotes isn't defined");
+        await Assert.That(issued.Output).DoesNotContain("meep.files.write isn't defined").Because("Meep defines its own (Q279)");
 
         var store = TrustStore.Load(TrustFolder.In(home.Path));
         var alice = Credential.Parse(File.ReadAllText(Path.Combine(lab.Folder, "alice.credential")));
         await Assert.That(alice.KeyId).IsEqualTo("alice");
         await Assert.That(alice.Serial).IsEqualTo(1UL);
         await Assert.That(alice.Principals).IsEquivalentTo(["alice", "al"]);
-        await Assert.That(alice.Permissions.Select(p => p.ToString())).IsEquivalentTo(["ReadNotes", "meep.files.write:~/notes/**"]);
-        await Assert.That(alice.Extensions.Keys).IsEquivalentTo(["ReadNotes@meep", "meep.files.write@meep"]).Because("-O clear leaves out SSH's own");
+        await Assert.That(alice.Permissions.Select(p => p.ToString())).IsEquivalentTo(["ReadNotes", "meep.files.write:~/notes/**", "WriteNotes", "meep.file.read"]);
+        await Assert.That(alice.Extensions.Keys).IsEquivalentTo(["ReadNotes@meep", "meep.files.write@meep", "WriteNotes@meep", "meep.file.read@meep"]).Because("-O clear leaves out SSH's own");
         await Assert.That(alice.ValidBefore).IsNotNull();
         await Assert.That(alice.PermitsBearer).IsFalse();
         await Assert.That(alice.KeyFingerprint).IsEqualTo(PublicKey.Parse("subject", lab.SubjectPublicKey).Fingerprint);

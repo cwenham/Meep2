@@ -32,6 +32,8 @@ internal static class TrustCommands
     {
         var folder = TrustFolder.In(options.Home);
         name ??= MachineName();
+        if (name == Permission.PipelineAuthority)
+            return await FailAsync(error, "pipeline is kept for pipelines' own credentials (Q316), so no authority can be called it.", 2).ConfigureAwait(false);
         if (!Permission.IsAuthorityName(name))
             return await FailAsync(error, $"{name} can't be an authority's name: it has no spaces, quotes, = or # in it.", 2).ConfigureAwait(false);
         // Meep's folder may have been made by something else, or under a umask of 002, so others could reach in and
@@ -91,6 +93,8 @@ internal static class TrustCommands
         {
             return await FailAsync(error, exception.Message, 2).ConfigureAwait(false);
         }
+        if (key.Name == Permission.PipelineAuthority)
+            return await FailAsync(error, "pipeline is kept for pipelines' own credentials (Q316), so no authority can be called it.", 2).ConfigureAwait(false);
         if (!Permission.IsAuthorityName(key.Name))
             return await FailAsync(error, $"{key.Name} can't be an authority's name: it has no spaces, quotes, = or # in it.", 2).ConfigureAwait(false);
 
@@ -388,7 +392,11 @@ internal static class TrustCommands
         var permissions = credential.Permissions.Count == 0 ? "no permissions" : string.Join(", ", credential.Permissions);
         await output.WriteLineAsync($"Issued {credential.KeyId} a credential, serial {credential.Serial}, {until}, with {permissions}, in {file}.").ConfigureAwait(false);
         foreach (var undefined in credential.Permissions.Where(p => store.Permissions.Find(p.Name) is null).Select(p => p.Name).Distinct())
-            await output.WriteLineAsync($"{undefined} isn't defined in {store.Folder.Permissions} yet, so it can't be met until it is.").ConfigureAwait(false);
+        {
+            await output.WriteLineAsync(MeepPermissions.WhyNotKnown(undefined) is { } unknown
+                ? $"{unknown} So it won't be met."
+                : $"{undefined} isn't defined in {store.Folder.Permissions} yet, so any trusted authority confers it and it requires nothing until it is.").ConfigureAwait(false);
+        }
         await output.WriteLineAsync($"See what's in it with: ssh-keygen -L -f {file}").ConfigureAwait(false);
     }
 

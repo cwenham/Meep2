@@ -2,12 +2,17 @@ using System.Net.Sockets;
 using System.Text;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 
 namespace Meep2.Modules;
 
 /// <summary>A TCP connection Send opened to a server. Writes from several branches queue up rather than interleave.</summary>
-internal sealed class TcpServerClient(string address, string host, int port, SendTcpParameters parameters)
-    : SharedClient(Key(host, port), address, parameters.Tries, parameters.RetryDelay)
+/// <remarks>
+/// A connection that may reach only public or private addresses (Q313) connects only to such an address, and isn't
+/// shared with Sends whose messages may reach anywhere.
+/// </remarks>
+internal sealed class TcpServerClient(string address, string host, int port, SendTcpParameters parameters, NetworkReach reach = NetworkReach.Any)
+    : SharedClient(Key(host, port, reach), address, parameters.Tries, parameters.RetryDelay)
 {
     public override string Endpoint { get; } = Peers.Endpoint(host, port);
 
@@ -15,14 +20,23 @@ internal sealed class TcpServerClient(string address, string host, int port, Sen
     private readonly SemaphoreSlim _writing = new(1, 1);
     private volatile TcpClient? _client;
 
-    public static string Key(string host, int port) => $"TCP {host}:{port}";
+    public static string Key(string host, int port, NetworkReach reach = NetworkReach.Any) =>
+        reach == NetworkReach.Any ? $"TCP {host}:{port}" : $"TCP {host}:{port} ({reach.Describe()} addresses only)";
 
     protected override async Task OpenAsync(CancellationToken cancellationToken)
     {
         var client = new TcpClient();
         try
         {
-            await client.ConnectAsync(host, port, cancellationToken).ConfigureAwait(false);
+            if (reach == NetworkReach.Any)
+            {
+                await client.ConnectAsync(host, port, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                client.Client.Dispose();
+                client.Client = await Reaching.ConnectAsync(host, port, reach, cancellationToken).ConfigureAwait(false);
+            }
         }
         catch
         {

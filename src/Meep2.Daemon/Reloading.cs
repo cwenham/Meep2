@@ -5,6 +5,7 @@ using Meep2.Meeplang.Syntax;
 using Meep2.Modules;
 using Meep2.Plugins;
 using Meep2.Runtime;
+using Meep2.SDK.Security;
 using Meep2.SDK.Modules;
 
 namespace Meep2.Daemon;
@@ -73,6 +74,8 @@ public static class Reloading
         var problems = new List<Diagnostic>();
         var builder = new PipelineBuilder($"{live.Pipeline.Name} (reload)", new PipelineOptions
         {
+            Credential = PipelineCredential.Owner("it's Meep's own, reloading a pipeline"),
+            MeepFolder = null,
             UnhandledError = error =>
             {
                 lock (problems)

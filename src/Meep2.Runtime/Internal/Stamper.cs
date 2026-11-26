@@ -12,7 +12,10 @@ internal static class Stamper
     /// <param name="message">The message being emitted.</param>
     /// <param name="emitter">The module, or the inflection of it, that emitted the message.</param>
     /// <param name="from">The module's place in the pipeline, for its <c>@expires</c>.</param>
-    /// <param name="defaultParent">The parent for a new message that doesn't name its own: the message being handled.</param>
+    /// <param name="defaultParent">
+    /// The parent for a new message that doesn't name its own: the message being handled, or null for the pipeline's
+    /// own credential.
+    /// </param>
     /// <param name="pipeline">The pipeline, for its default expiry and for tracking errors.</param>
     /// <param name="created">Collects tracking scopes made for new errors. The caller releases them after delivery.</param>
     public static void Stamp(
@@ -27,8 +30,10 @@ internal static class Stamper
         if (message.IsStamped)
             return;
 
-        if (message.Parents.Count == 0 && defaultParent is not null)
-            message.SetParents(new Parents(defaultParent));
+        // A new message with no parent of its own descends from the one being handled, or, from a source or from
+        // outside the pipeline, such as a connection's reply, from the pipeline's own credential (Q252).
+        if (message.Parents.Count == 0)
+            message.SetParents(new Parents(defaultParent ?? pipeline.Credential));
 
         var expires = message.ExpiresTimestamp;
         var tracking = TrackingScopes.None;

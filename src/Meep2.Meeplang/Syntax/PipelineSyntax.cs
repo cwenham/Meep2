@@ -50,6 +50,12 @@ public sealed class PipelineSyntax
     /// <summary>The <c>#permission</c> lines, in order, which narrow the trust store's definitions for this pipeline.</summary>
     public IReadOnlyList<PermissionDirective> Permissions { get; init; } = [];
 
+    /// <summary>
+    /// The <c>#holds</c> lines, in order, which say which of Meep's own permissions the pipeline starts with, or null if
+    /// it has none, and so starts with everything its credential holds.
+    /// </summary>
+    public IReadOnlyList<HoldsDirective>? Holds { get; init; }
+
     /// <summary>The files <c>#include</c> brought in, and those they brought in, parsed, in the order they were met.</summary>
     public IReadOnlyList<PipelineSyntax> Included => _included;
 
@@ -73,7 +79,7 @@ public sealed class PipelineSyntax
     /// </summary>
     internal PipelineSyntax WithModules(IReadOnlyList<ModuleSyntax> modules)
     {
-        var copy = new PipelineSyntax(Source, Defaults, Constants, Plugins, modules, [], Templates, Includes) { Permissions = Permissions };
+        var copy = new PipelineSyntax(Source, Defaults, Constants, Plugins, modules, [], Templates, Includes) { Permissions = Permissions, Holds = Holds };
         copy._diagnostics.AddRange(_diagnostics);
         copy._included.AddRange(_included);
         return copy;

@@ -53,6 +53,26 @@ internal static class UserPrivateGroups
         }
     }
 
+    /// <summary>Whether <paramref name="path"/> belongs to the user Meep runs as. True on Windows, which has no such owner here.</summary>
+    public static bool IsUsers(string path) => OperatingSystem.IsWindows() || (OwnerOf(path) is { } owner && owner == GetUid());
+
+    /// <summary>Whether <paramref name="path"/> belongs to the user Meep runs as, or to root.</summary>
+    public static bool IsUsersOrRoots(string path) => OperatingSystem.IsWindows() || (OwnerOf(path) is { } owner && (owner == 0 || owner == GetUid()));
+
+    // Who owns a file or folder, or null if that can't be found out.
+    private static uint? OwnerOf(string path)
+    {
+        try
+        {
+            var status = new byte[StatusSize];
+            return Stat(path, status) == 0 ? BitConverter.ToUInt32(status, 8) : null;
+        }
+        catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return null;
+        }
+    }
+
     private static bool IsAlone(uint group, uint user)
     {
         lock (s_lock)

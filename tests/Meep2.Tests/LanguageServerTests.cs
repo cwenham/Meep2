@@ -180,6 +180,24 @@ public class LanguageServerTests
     }
 
     [Test]
+    public async Task It_warns_about_a_meep_name_that_isnt_one_of_meeps_own_with_or_without_a_store()
+    {
+        const string Uri = "file:///tmp/meeps.meep";
+        var replies = await Converse(
+            Open(Uri, "#holds meep.files.read\nInterval 1s\n    WriteLine \"x\" @permission=meep.files.read @permission=meep.file.read\n    Save \"x.txt\"\n"),
+            At(1, "textDocument/hover", Uri, 0, 3),
+            At(2, "textDocument/hover", Uri, 3, 6));
+
+        var diagnostics = replies.Single(r => r["method"]?.GetValue<string>() == "textDocument/publishDiagnostics")["params"]!["diagnostics"]!.AsArray();
+        await Assert.That(diagnostics.Count).IsEqualTo(1);
+        await Assert.That(diagnostics[0]!["message"]!.GetValue<string>()).StartsWith("Meep has no permission called meep.file.read");
+        var hover = replies.Single(r => r["id"]?.GetValue<int>() == 1)["result"]!["contents"]!["value"]!.GetValue<string>();
+        await Assert.That(hover).StartsWith("**#holds** (directive):");
+        var save = replies.Single(r => r["id"]?.GetValue<int>() == 2)["result"]!["contents"]!["value"]!.GetValue<string>();
+        await Assert.That(save).Contains("Checks meep.files.write, on each file it writes.").Because("[ChecksPermission] is shown for tools (Q315)");
+    }
+
+    [Test]
     public async Task It_completes_verbs_modifiers_and_message_types_and_describes_verbs()
     {
         const string Uri = "file:///tmp/edit.meep";

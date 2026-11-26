@@ -196,6 +196,23 @@ public sealed class Revocations
     }
 
     /// <summary>
+    /// Why the key with the SHA-256 <paramref name="fingerprint"/> is revoked, as a clause ("its key, SHA256:…, is
+    /// revoked."), or null if it isn't: listed in the <c>revoked</c> file, or in a KRL by its hash.
+    /// </summary>
+    public string? WhyKeyRevoked(string fingerprint)
+    {
+        ArgumentNullException.ThrowIfNull(fingerprint);
+        if (_entries.Contains(new Revocation(RevocationKind.Key, fingerprint)))
+            return $"its key, {fingerprint}, is revoked.";
+        foreach (var krl in _krls)
+        {
+            if (krl.List.WhyRevoked(new CredentialName(fingerprint, 0, "")) is { } why && why.Contains("key", StringComparison.Ordinal))
+                return $"its key is revoked by {krl.Name}: {why}.";
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Why the credential <paramref name="name"/> names is revoked, as a sentence, or null if it isn't: by its serial,
     /// its key, its authority's key, or a KRL, as far as its fingerprints and serial tell.
     /// </summary>

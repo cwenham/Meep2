@@ -1,5 +1,6 @@
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 
 namespace Meep2.Modules;
 
@@ -10,9 +11,12 @@ namespace Meep2.Modules;
 /// <remarks>
 /// Folders are created as needed. A leading <c>~</c> means your home folder. What a <c>{msg…}</c> hole gives can't
 /// make the path absolute, start it with <c>~</c> or climb out with <c>..</c>, unless <c>any-path=true</c>; and
-/// <c>root=</c> keeps every path inside a folder.
+/// <c>root=</c> keeps every path inside a folder. Each message must hold <c>meep.files.write</c> for the file, as a
+/// pipeline's messages do unless it starts with less; one that doesn't is refused with a <c>PermissionDenied</c>, and
+/// still carries on downstream, as every message through a passthrough does.
 /// </remarks>
 [Verb("Save")]
+[ChecksPermission(MeepPermissions.FilesWrite, "each file it writes")]
 [Role(VerbRole.Outlet)]
 public sealed class Save(SaveParameters parameters) : APassthrough<Message>
 {
@@ -35,6 +39,7 @@ public sealed class Save(SaveParameters parameters) : APassthrough<Message>
             return;
         }
 
+        context.DemandFile(MeepPermissions.FilesWrite, message, path);
         try
         {
             if (Path.GetDirectoryName(path) is { Length: > 0 } folder)

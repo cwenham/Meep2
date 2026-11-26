@@ -40,13 +40,20 @@ internal abstract class NodeContext<TNode>(TNode node) : ModuleContext, IPipelin
 
     public override void CountDenied() => node.Counters.Denied();
 
-    internal override string? WhyNotHeld(string permission, Message message, string? target)
+    internal override string? WhyNotHeld(string permission, Message? message, PermissionTarget? target) =>
+        node.Pipeline.Gates.WhyNot(message ?? node.Pipeline.Credential, Named(permission), target, Proofs);
+
+    // Permissions as verbs name them, read once each: a verb checks the same few for every message.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, PermissionName> s_named = new(StringComparer.Ordinal);
+
+    private static PermissionName Named(string permission)
     {
-        ArgumentNullException.ThrowIfNull(message);
-        var name = PermissionName.Parse(permission);
-        var gates = node.Pipeline.Gates;
-        var store = gates.Store;
-        return Gatekeeper.WhyNot(message, gates.Resolve(name, target, store, Proofs), store);
+        if (s_named.TryGetValue(permission, out var named))
+            return named;
+        named = PermissionName.Parse(permission);
+        if (s_named.Count < 1024)
+            s_named.TryAdd(permission, named);
+        return named;
     }
 
     internal override IReadOnlyList<Credential> HeldBy(string permission, Message message)

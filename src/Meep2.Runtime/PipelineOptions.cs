@@ -73,4 +73,28 @@ public sealed record PipelineOptions
     /// that would widen a definition makes the gates that need it refuse every message, saying why.
     /// </summary>
     public IReadOnlyList<Permission> Permissions { get; init; } = [];
+
+    /// <summary>
+    /// The pipeline's own credential (Q252): who vouches for it, and so which of Meep's own permissions its messages
+    /// hold. The runtime verifies it when the pipeline starts, and every message a source emits descends from that
+    /// verification. None unless the host that builds the pipeline says who vouches for it: the owner, for a file of
+    /// their own, or a signer, so a host that forgets gives a pipeline nothing rather than everything.
+    /// </summary>
+    public PipelineCredential Credential { get; init; } = PipelineCredential.None("whatever built it didn't say who vouches for it");
+
+    /// <summary>
+    /// What the pipeline starts with, from its <c>#holds</c> lines: only these of what its credential holds, perhaps
+    /// with narrower scopes. Null holds everything its credential does; empty holds nothing.
+    /// </summary>
+    public IReadOnlyList<PermissionName>? Holds { get; init; }
+
+    /// <summary>
+    /// Meep's own folder, which no <c>meep.files.*</c> permission reaches, except its <c>trees</c> folder (Q321): what's
+    /// in it changes only through <c>meep trust</c>, <c>Authorise</c>, <c>Revoke</c> and Meep itself. <c>MEEP_HOME</c>,
+    /// or <c>~/.meep</c>, unless set. Null for none, as for Meep's own pipelines that load and reload others, which read
+    /// pipeline files wherever they are.
+    /// </summary>
+    public string? MeepFolder { get; init; } = Environment.GetEnvironmentVariable("MEEP_HOME") is { Length: > 0 } home
+        ? home
+        : Path.Combine(Meep2.Shared.HomeFolder.Path, ".meep");
 }

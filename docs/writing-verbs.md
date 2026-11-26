@@ -351,7 +351,23 @@ A verb that acts on credentials, certificates, permissions or grants should take
 
 **Where its input came from:** a verb that acts on what a request named, such as which credential to grant to, should make sure the request's signature covers it. `Authorise` and `Revoke` refuse what was read from a header the signature doesn't list, since it could have been changed on the way.
 
-A `PermissionDenied` is an `ErrorMessage` with `Gate` (the module), `Needed` and `Reasons`. Only the runtime makes one. In a passthrough module, `Demand` can't stop the message going on, since it already has; use `[RequiresPermission]` or `@permission` there.
+**Files and the network:** a verb that touches the machine checks Meep's own permissions (`MeepPermissions.FilesRead`, `FilesWrite`, `NetworkListen`, `NetworkSend`; see [Meep's own permissions](verbs.md#meeps-own-permissions)) with the target's kind, so a scope is matched the way people expect:
+
+- `context.DemandFile(MeepPermissions.FilesWrite, message, path)` matches a scoped permission against the path's real form, with links and `..` followed and the case on disk (Q269), and reads the scope's fixed start the same way. Pass the path you're about to open.
+- `context.DemandEndpoint(MeepPermissions.NetworkSend, message, uri.IdnHost, uri.Port)` matches `host:port`, the host in lower case as written. Check again before following a redirect, or connecting anywhere the far end chose. It returns a `NetworkReach`: `Any` when the host was allowed by name, or `Public` or `Private` when only `meep.network.send:public` or `:private` allowed it (Q313). Then connect only to an address of that kind, resolving the name as you connect: Meep's own verbs do it with a connection callback (`Reaching` in `Meep2.Modules`), and keep such connections apart from others.
+- A source passes `null` for the message: the pipeline's own credential counts, which every message a source emits descends from. Call it before binding or opening, as `Listen` and `Read` do. The runtime turns a refusal there into a `PermissionDenied` from the source, counts it as denied, and stops the source rather than restarting it.
+- Without a scope to match, these cost what a kept gate answer costs: the real path is only worked out when a scope needs it.
+- A pipeline you build in code, in a test or a host of your own, holds nothing unless you say who vouches for it: `new PipelineOptions { Credential = PipelineCredential.Owner("a test built it") }`. The test helpers do this for you.
+
+A verb in Meep's own modules that reads, writes, listens or sends must make these checks; a plugin's should too, though nothing makes it. A plugin is trusted code (below), so its checks are a courtesy to whoever runs it, saying what it touches; leaving them out isn't a way round anything the process couldn't already do.
+
+**Saying what you check:** put `[ChecksPermission(MeepPermissions.FilesWrite, "each file it writes")]` on the inflection's class for each permission it checks in code. It changes nothing when the pipeline runs; `meep lsp`'s hover and the verb catalogue (`checks`) show it, so people can see what a verb needs (Q315).
+
+**Meep's own folder:** no file check passes for a path in `~/.meep` (or the pipeline's `PipelineOptions.MeepFolder`) outside its `trees` folder, whatever the message holds (Q321). A verb that keeps its own data there should do it as Meep's own code, not through `DemandFile`.
+
+**Scripts:** `meep.scripts.run` is defined for running a script embedded in a pipeline, which Meep can't do yet. A verb that runs scripts should put `[RequiresPermission(MeepPermissions.ScriptsRun)]` on its class, so a pipeline must hold it, and should give a script the message it runs for, so the script's own messages descend from it and hold no more than it did. A script may read `Credential`, `Certificate`, `Permission`, `Grant`, `AuthorityKey`, `PipelineCredential` and `VerifiedMessage`, but never construct a `VerifiedMessage` or mark a certificate as proven by TLS: those constructors are internal to the SDK, and a scripting host mustn't expose them, by reflection or otherwise. A script whose language could reach .NET's reflection runs as trusted code, as a plugin does.
+
+A `PermissionDenied` is an `ErrorMessage` with `Gate` (the module), `Needed` and `Reasons`. Only the runtime makes one. In a passthrough module, `Demand` can't stop the message going on, since it already has; use `[RequiresPermission]` or `@permission` there. `Save` still uses `DemandFile`, since what it refuses is the write, not the message.
 
 ## Several inflections
 
@@ -415,6 +431,7 @@ An inflection whose choice depends on the message itself, not only on its parame
 | `PipelineName` | The pipeline's file name without its extension, for modules that keep things per pipeline. |
 | `Module` | The module's `ModuleInfo`: its number, verb, inflection and name. |
 | `Demand(permission, message, target)` / `Holds(…)` | Refuses a message that doesn't hold a permission, or asks whether it does, for a check finer than `@permission`. See [Permissions](#permissions). |
+| `DemandFile(permission, message, path)` / `DemandEndpoint(permission, message, host, port)` | The same for a file or a network endpoint, matching scopes by a path's real form or by `host:port`. A source passes `null` for the pipeline's own credential. See [Permissions](#permissions). |
 | `CountDenied()` | Counts something refused before it became a message, as a Listen counts the requests it answers with 401 for lack of proof, in the module's `denied` count. |
 
 ### Keeping messages and flushing
@@ -526,7 +543,7 @@ meep sign publish --key ~/.ssh/id_ed25519
 
 This writes `meep-files.txt` and its signature into the folder. Share it as a GitHub release (users pin it with `#plugin github.com/owner/repo 1.2.0 sha256:…`), a NuGet package (`#plugin nuget:Package.Id 1.2.0`), or a folder. See `docs/Design/Chat/step-6.md` for how trust works.
 
-A plugin runs in Meep's own process, so it's trusted code: that's why it has to be signed or pinned by its SHA. The types in `Meep2.SDK.Security` keep pipelines and the outside world from forging a verification (only the runtime can make a `VerifiedMessage` or mark a `Certificate` as proven by TLS), but a plugin could get round that with reflection. Don't; a plugin may read credentials, certificates and verifications, and make `Credential`s, `Certificate`s, `Grant`s and `Permission`s for `Verify` to check, but its own verbs can't vouch for anything. See `docs/Design/Chat/permissions.md`.
+A plugin runs in Meep's own process, so it's trusted code: that's why it has to be signed or pinned by its SHA. The types in `Meep2.SDK.Security` keep pipelines and the outside world from forging a verification (only the runtime can make a `VerifiedMessage` or mark a `Certificate` as proven by TLS), but a plugin could get round that with reflection. Don't; a plugin may read credentials, certificates and verifications, and make `Credential`s, `Certificate`s, `Grant`s, `Permission`s and `AuthorityKey`s for `Verify` and `Authorise` to check, but its own verbs can't vouch for anything. A `PipelineCredential` it makes describes a credential and gives nothing: only the host that builds a pipeline, through its options, decides what the pipeline holds. See `docs/Design/Chat/permissions.md`.
 
 ## Testing
 

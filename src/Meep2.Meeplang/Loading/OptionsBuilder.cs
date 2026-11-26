@@ -53,6 +53,8 @@ internal sealed class OptionsBuilder(PipelineSyntax syntax, Diagnostics diagnost
             options = WithDefault(options, setting);
         if (syntax.Permissions.Count > 0)
             options = options with { Permissions = [.. syntax.Permissions.Select(p => p.Permission)] };
+        if (syntax.Holds is { } holds)
+            options = options with { Holds = [.. holds.SelectMany(h => h.Permissions)] };
         return options;
     }
 
@@ -208,7 +210,7 @@ internal sealed class OptionsBuilder(PipelineSyntax syntax, Diagnostics diagnost
     // or null, having reported why.
     private Proof[]? Proofs(ModifierSyntax modifier)
     {
-        const string Needs = "@proof needs the kind of proof a gate's credentials must have been verified with: signed (any proof that whoever presented them holds their key), request, connection or tls, as in @proof=signed; or any, to accept a bearer credential where the verb would need proof.";
+        const string Needs = "@proof needs the kind of proof a gate's credentials must have been verified with: signed (any proof that whoever presented them holds their key), request, connection, tls or pipeline (the pipeline's own credential), as in @proof=signed; or any, to accept a bearer credential where the verb would need proof.";
         if (modifier.Value is null)
         {
             diagnostics.Error(Needs, modifier.Span);
@@ -220,6 +222,7 @@ internal sealed class OptionsBuilder(PipelineSyntax syntax, Diagnostics diagnost
             "request" => [Proof.RequestSignature],
             "connection" => [Proof.Connection],
             "tls" => [Proof.Tls],
+            "pipeline" => [Proof.Pipeline],
             "any" => Enum.GetValues<Proof>(),
             _ => null,
         };

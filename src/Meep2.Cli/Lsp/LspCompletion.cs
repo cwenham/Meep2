@@ -10,7 +10,7 @@ internal sealed class LspCompletion(LspWorkspace workspace)
 {
     private static readonly string[] s_modifiers = ["buffer", "bypass", "errors", "no-errors", "expires", "accept-expired", "on-error", "permission", "proof"];
     private static readonly string[] s_defaults = ["buffer", "expires", "on-error", "keep-finished"];
-    private static readonly string[] s_keywords = ["defaults", "const", "template", "#include", "#plugin", "#permission"];
+    private static readonly string[] s_keywords = ["defaults", "const", "template", "#include", "#plugin", "#permission", "#holds"];
 
     // What fits where the cursor is: a book in a module's quoted value that takes one, a modifier after @, a message
     // type after is, a setting under defaults, or a verb.

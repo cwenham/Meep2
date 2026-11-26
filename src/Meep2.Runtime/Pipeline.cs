@@ -64,6 +64,7 @@ public sealed class Pipeline : IAsyncDisposable
         Name = name;
         Options = options;
         Gates = new Gatekeeper(() => Options);
+        Credential = PipelineCredentials.Verify(options, Gates.Store);
         AbortToken = _abort.Token;
         StoppingToken = _stopSources.Token;
 
@@ -166,6 +167,12 @@ public sealed class Pipeline : IAsyncDisposable
 
     /// <summary>What the pipeline's gates need, against its trust store and its own <c>#permission</c> directives.</summary>
     internal Gatekeeper Gates { get; }
+
+    /// <summary>
+    /// The pipeline's own credential, as the runtime verified it when the pipeline started or its options last changed
+    /// it (Q252). Every message a source emits descends from it; one sent in from outside doesn't.
+    /// </summary>
+    internal VerifiedMessage Credential { get; private set; }
 
     /// <summary>Cancelled when the pipeline gives up waiting for messages to finish. Modules receive it.</summary>
     internal CancellationToken AbortToken { get; }
@@ -375,6 +382,8 @@ public sealed class Pipeline : IAsyncDisposable
         if (RuntimeOnly.IsIn(message))
             throw new ArgumentException("A message carrying a verification, or a certificate proven by TLS, can't be injected: only a pipeline's own Verify and Listens make them.", nameof(message));
 
+        // A message sent in comes from outside the pipeline, so it doesn't descend from the pipeline's own credential:
+        // it holds nothing until injecting clients present credentials of their own (phase 7).
         List<TrackingScope>? created = null;
         Stamper.StampInjected(message, this, ref created);
         if (Tracing.IsOn)
@@ -445,6 +454,7 @@ public sealed class Pipeline : IAsyncDisposable
         Wire(plan.Nodes, specs, connections);
         foreach (var (node, links) in removedLinks)
             node.Links = Remaining(links, plan);
+        Credential = PipelineCredentials.Verify(options, Gates.Store);
         Options = options;
         Gates.OptionsChanged();
         Install(plan.Nodes, specs, options, plan.Updates.Select(u => (u.Old, u.Node)));
@@ -470,6 +480,9 @@ public sealed class Pipeline : IAsyncDisposable
             source.Start(StoppingToken);
         }
         await RemoveAsync(removed).ConfigureAwait(false);
+
+        // The pipeline's credential, its #holds and its #permission lines may have changed under running sources (Q319).
+        CheckSourcesAgain();
         return new PipelineChangeReport(plan.Added, [.. removed.Where(node => !plan.ReplacedOld.Contains(node)).Select(node => node.Spec.Info)], reconfigured, plan.Replaced, unchanged);
     }
 
@@ -590,6 +603,7 @@ public sealed class Pipeline : IAsyncDisposable
 
     private async Task RunCoreAsync(CancellationToken cancellationToken)
     {
+        Meep2.Security.TrustStoreSource? trust = null;
         try
         {
             foreach (var node in _nodes)
@@ -600,6 +614,12 @@ public sealed class Pipeline : IAsyncDisposable
             // The pipeline's traces start with its own sources, not inside the span of whatever started it, such as
             // the Host module. The modules' tasks, started below, inherit this.
             System.Diagnostics.Activity.Current = null;
+
+            // A store that changes, as by a revocation or a narrower definition, may take away what a running source
+            // started with (Q319).
+            trust = Options.Trust;
+            if (trust is not null)
+                trust.Changed += CheckSourcesAgain;
 
             // Held while starting up, so the pipeline can't halt before every source is running.
             _inFlight.Add();
@@ -625,6 +645,8 @@ public sealed class Pipeline : IAsyncDisposable
         }
         finally
         {
+            if (trust is not null)
+                trust.Changed -= CheckSourcesAgain;
             Volatile.Write(ref _state, Finished);
             s_running.TryRemove(this, out _);
             foreach (var node in _nodes)
@@ -635,6 +657,15 @@ public sealed class Pipeline : IAsyncDisposable
             _stopSources.Dispose(); // its token, kept as StoppingToken, still reads as it was (M7)
             _finished.TrySetResult();
         }
+    }
+
+    // Checks each running source again against the pipeline's own credential, as it is now (Q319).
+    private void CheckSourcesAgain()
+    {
+        if (Volatile.Read(ref _state) != Running)
+            return;
+        foreach (var source in _sources)
+            source.CheckAgain();
     }
 
     // Gives up waiting: cancels modules, and abandons sources and messages that haven't finished.

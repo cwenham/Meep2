@@ -1,5 +1,6 @@
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 
 namespace Meep2.Runtime.Internal;
 
@@ -74,6 +75,45 @@ internal sealed class SourceContext(SourceNode node) : NodeContext<SourceNode>(n
             Node.Pipeline.Emit(Node, Node.Info, error, defaultParent: null);
         }
     }
+
+    // What the running instance checked the pipeline's own credential for, to check again when that might change (Q319).
+    private readonly Lock _checking = new();
+    private List<(string Permission, PermissionTarget? Target)> _checked = [];
+
+    internal override string? WhyNotHeld(string permission, Message? message, PermissionTarget? target)
+    {
+        var why = base.WhyNotHeld(permission, message, target);
+        if (message is null && why is null)
+        {
+            lock (_checking)
+                _checked.Add((permission, target));
+        }
+        return why;
+    }
+
+    /// <summary>Forgets what the last instance checked, as a new one starts.</summary>
+    public void ForgetChecks()
+    {
+        lock (_checking)
+            _checked = [];
+    }
+
+    /// <summary>The first thing the running instance checked that the pipeline's own credential no longer holds, or null.</summary>
+    public PermissionDeniedException? FirstNoLongerHeld()
+    {
+        List<(string Permission, PermissionTarget? Target)> checks;
+        lock (_checking)
+            checks = [.. _checked];
+        foreach (var (permission, target) in checks)
+        {
+            if (base.WhyNotHeld(permission, null, target) is { } why)
+                return new PermissionDeniedException(PermissionName.Parse(permission), why);
+        }
+        return null;
+    }
+
+    /// <summary>Emits the refusal of something the source was about to do, before it finishes.</summary>
+    public void EmitDenial(PermissionDenied denial) => Node.Pipeline.Emit(Node, Node.Info, denial, defaultParent: null);
 
     private void ThrowIfClosed()
     {

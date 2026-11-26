@@ -1,5 +1,6 @@
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 
 namespace Meep2.Modules;
 
@@ -21,6 +22,8 @@ namespace Meep2.Modules;
 /// </para>
 /// </remarks>
 [Verb("Learn")]
+[ChecksPermission(MeepPermissions.FilesRead, "the tree's file, when file= names one")]
+[ChecksPermission(MeepPermissions.FilesWrite, "the tree's file, when file= names one and it saves")]
 [EmitsInput]
 public sealed class Learn(LearnParameters parameters) : AInflection<Message>, IAsyncDisposable
 {
@@ -54,6 +57,7 @@ public sealed class Learn(LearnParameters parameters) : AInflection<Message>, IA
             return;
         }
 
+        Trees.Demand(parameters.Tree, parameters.File, saves: parameters.SaveEvery > 0, message, context);
         if (Trees.Open(ref _tree, parameters.Tree, parameters.File, saves: parameters.SaveEvery > 0, context) is not { } tree)
             return;
         tree.Learn(@class.Trim(), text ?? "");

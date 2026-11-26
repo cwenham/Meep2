@@ -221,7 +221,7 @@ public sealed class TrustStore
             var names = new HashSet<string>(StringComparer.Ordinal);
             foreach (var key in keys.Keys)
             {
-                if (!Permission.IsAuthorityName(key.Name))
+                if (!Permission.IsTrustedAuthorityName(key.Name))
                     throw new TrustStoreException($"{file}: {key.Name} can't be an authority's name: it has no quotes, = or # in it.");
                 if (!names.Add(key.Name))
                     throw new TrustStoreException($"{file} has two authorities called {key.Name}. Permissions name authorities, so each needs a name of its own.");

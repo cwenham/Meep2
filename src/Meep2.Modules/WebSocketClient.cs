@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using Meep2.SDK.Security;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
 
@@ -15,14 +16,16 @@ namespace Meep2.Modules;
 /// <param name="parameters">The parameters of the Send that opened it.</param>
 /// <param name="hostId">The host ID of the Send that opened it, or null for none, which asks nothing.</param>
 /// <param name="origin">For a Send's own connection to a Meep host, its origin; null for a shared connection.</param>
-internal sealed class WebSocketClient(Uri uri, SendWebSocketParameters parameters, string? hostId = null, string? origin = null)
-    : SharedClient(Key(uri, origin), uri.OriginalString, parameters.Tries, parameters.RetryDelay)
+/// <param name="reach">The addresses it may connect to (Q313); a connection limited to some isn't shared with others.</param>
+internal sealed class WebSocketClient(Uri uri, SendWebSocketParameters parameters, string? hostId = null, string? origin = null, NetworkReach reach = NetworkReach.Any)
+    : SharedClient(Key(uri, origin, reach), uri.OriginalString, parameters.Tries, parameters.RetryDelay)
 {
     private volatile WebSocketLink? _link;
 
     /// <summary>The key of the connection to an address: shared, or for one Send's origin alone.</summary>
-    public static string Key(Uri uri, string? origin = null) =>
-        origin is null ? $"WebSocket {uri.AbsoluteUri}" : $"WebSocket {uri.AbsoluteUri} from {origin}";
+    public static string Key(Uri uri, string? origin = null, NetworkReach reach = NetworkReach.Any) =>
+        (origin is null ? $"WebSocket {uri.AbsoluteUri}" : $"WebSocket {uri.AbsoluteUri} from {origin}")
+        + (reach == NetworkReach.Any ? "" : $" ({reach.Describe()} addresses only)");
 
     public override string Endpoint { get; } = Peers.EndpointOf(uri) ?? uri.Authority;
 
@@ -49,7 +52,19 @@ internal sealed class WebSocketClient(Uri uri, SendWebSocketParameters parameter
         }
         try
         {
-            await socket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
+            if (reach == NetworkReach.Any)
+            {
+                await socket.ConnectAsync(uri, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await socket.ConnectAsync(uri, Reaching.Invoker(reach), cancellationToken).ConfigureAwait(false);
+            }
+        }
+        catch (Exception exception) when (Reaching.Refusal(exception) is { } denied)
+        {
+            socket.Dispose();
+            throw denied;
         }
         catch
         {

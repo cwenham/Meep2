@@ -4,6 +4,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 using Meep2.Shared;
 
 namespace Meep2.Modules;
@@ -17,6 +18,7 @@ namespace Meep2.Modules;
 /// over the size limit becomes an <see cref="ErrorMessage"/>. The body is read into memory.
 /// </remarks>
 [Verb("Fetch", Inflection = "HTTP")]
+[ChecksPermission(MeepPermissions.NetworkSend, "the host and port it fetches from, and each redirect's")]
 [Emits(typeof(HttpResponse))]
 public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>, IChosenByParameters<FetchParameters>, ISendsTo
 {
@@ -34,13 +36,26 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
     }
 
     // One client for every Fetch, so connections are shared and pooled. Each request sets its own timeout.
-    internal static readonly HttpClient Client = CreateClient();
+    internal static readonly HttpClient Client = CreateClient(NetworkReach.Any);
+
+    // Clients for requests that may reach only public, or only private, addresses (Q313), each with a pool of its own.
+    private static readonly HttpClient s_publicClient = CreateClient(NetworkReach.Public);
+    private static readonly HttpClient s_privateClient = CreateClient(NetworkReach.Private);
+
+    /// <summary>The client for requests that may reach <paramref name="reach"/>.</summary>
+    internal static HttpClient ClientFor(NetworkReach reach) => reach switch
+    {
+        NetworkReach.Public => s_publicClient,
+        NetworkReach.Private => s_privateClient,
+        _ => Client,
+    };
 
     /// <inheritdoc/>
     protected override async ValueTask HandleAsync(Message message, ModuleContext context, CancellationToken cancellationToken)
     {
         if (!TryAddress(message, context, out var url, out var uri))
             return;
+        var reach = context.DemandEndpoint(MeepPermissions.NetworkSend, message, uri!.IdnHost, uri.Port);
 
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(parameters.Timeout);
@@ -50,7 +65,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         var tally = endpoint is null ? Tally.None : context.Destination(endpoint);
         try
         {
-            var reached = await SendAsync(HttpMethod.Get, uri!, null, HttpCompletionOption.ResponseHeadersRead, context, timeout.Token).ConfigureAwait(false);
+            var reached = await SendAsync(HttpMethod.Get, uri!, null, HttpCompletionOption.ResponseHeadersRead, context, message, reach, timeout.Token).ConfigureAwait(false);
             response = answer = reached.Response;
             tally = reached.Counted(endpoint, tally, context);
             tally.Count(sent: 1, received: 1);
@@ -72,6 +87,11 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
         {
             Failed(answer, tally);
             context.EmitError($"{url} didn't answer within {Describe(parameters.Timeout)}");
+        }
+        catch (HttpRequestException exception) when (Reaching.Refusal(exception) is { } denied)
+        {
+            Failed(answer, tally);
+            throw denied;
         }
         catch (HttpRequestException exception)
         {
@@ -116,16 +136,20 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
     /// Sends a request, saying where it comes from (<see cref="MeepHosts.Mark"/>), and follows redirects itself, as
     /// <see cref="HttpClient"/> would (Q217): to http or https, never from https to http, a POST becoming a GET after
     /// 301, 302 or 300, and anything but a HEAD after 303, and the body sent again after 307 or 308, unless it was
-    /// streamed. A redirect to another host or port asks it whether it's Meep, and never gives it the origin.
+    /// streamed. A redirect to another host or port asks it whether it's Meep, and never gives it the origin. Each
+    /// redirect must lead somewhere <paramref name="message"/> may send to (<c>meep.network.send</c>), as the first
+    /// address must, which the caller checks before preparing a body.
     /// </summary>
     /// <param name="method">GET or POST.</param>
     /// <param name="uri">Where to.</param>
     /// <param name="content">The body, or null; the caller disposes it.</param>
     /// <param name="completion">Whether to wait for the whole response, or only its headers.</param>
     /// <param name="context">The module sending it, for where it comes from.</param>
+    /// <param name="message">The message it's sent for, whose credentials each redirect is checked against.</param>
+    /// <param name="reach">The addresses the first address may be at, as checking it said.</param>
     /// <param name="cancellationToken">Gives up.</param>
     /// <param name="sending">Told the bytes of a body each time one is sent, for counting.</param>
-    internal static async Task<Reached> SendAsync(HttpMethod method, Uri uri, HttpContent? content, HttpCompletionOption completion, ModuleContext context, CancellationToken cancellationToken, Action<long>? sending = null)
+    internal static async Task<Reached> SendAsync(HttpMethod method, Uri uri, HttpContent? content, HttpCompletionOption completion, ModuleContext context, Message message, NetworkReach reach, CancellationToken cancellationToken, Action<long>? sending = null)
     {
         var first = Peers.EndpointOf(uri);
         var endpoint = first;
@@ -134,7 +158,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
             // Not disposed: that would dispose the body, which a 307 or 308 sends again. The caller disposes it.
             var request = new HttpRequestMessage(method, uri) { Content = content };
             var marked = MeepHosts.Mark(request.Headers, endpoint, uri, context, ask: endpoint != first);
-            var response = await Client.SendAsync(request, completion, cancellationToken).ConfigureAwait(false);
+            var response = await ClientFor(reach).SendAsync(request, completion, cancellationToken).ConfigureAwait(false);
             if (content is not null && content is not StreamContent)
                 sending?.Invoke(content.Headers.ContentLength ?? 0);
             var id = MeepHosts.Answered(endpoint, response.Headers, marked);
@@ -147,6 +171,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
                 content = null;
             }
             response.Dispose();
+            reach = context.DemandEndpoint(MeepPermissions.NetworkSend, message, next.IdnHost, next.Port);
             uri = next;
             endpoint = Peers.EndpointOf(next);
         }
@@ -305,18 +330,17 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
 
     internal static string Describe(TimeSpan time) => DurationText.Write(time);
 
-    private static HttpClient CreateClient()
+    private static HttpClient CreateClient(NetworkReach reach)
     {
-        var client = new HttpClient(new SocketsHttpHandler
-        {
-            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-            AutomaticDecompression = DecompressionMethods.All,
-            // Followed in SendAsync instead, so origins don't go on to wherever a redirect leads (Q217).
-            AllowAutoRedirect = false,
-            // Fetch and Send add traceparent themselves, naming their own span (MeepHosts.Mark). .NET's own would name
-            // a span of its own that no collector receives, so the other host's spans would hang from nothing.
-            ActivityHeadersPropagator = System.Diagnostics.DistributedContextPropagator.CreateNoOutputPropagator(),
-        })
+        var handler = Reaching.Handler(reach);
+        handler.PooledConnectionLifetime = TimeSpan.FromMinutes(5);
+        handler.AutomaticDecompression = DecompressionMethods.All;
+        // Followed in SendAsync instead, so origins don't go on to wherever a redirect leads (Q217).
+        handler.AllowAutoRedirect = false;
+        // Fetch and Send add traceparent themselves, naming their own span (MeepHosts.Mark). .NET's own would name
+        // a span of its own that no collector receives, so the other host's spans would hang from nothing.
+        handler.ActivityHeadersPropagator = System.Diagnostics.DistributedContextPropagator.CreateNoOutputPropagator();
+        var client = new HttpClient(handler)
         {
             Timeout = Timeout.InfiniteTimeSpan,
         };
@@ -338,6 +362,7 @@ public sealed class HttpFetch(FetchParameters parameters) : AInflection<Message>
 /// or climb out with <c>..</c>, unless <c>any-path=true</c>.
 /// </remarks>
 [Verb("Fetch", Inflection = "File")]
+[ChecksPermission(MeepPermissions.FilesRead, "each file it reads")]
 [Emits(typeof(FileText))]
 public sealed class FileFetch(FetchParameters parameters) : AInflection<Message>, IChosenByParameters<FetchParameters>
 {
@@ -381,6 +406,7 @@ public sealed class FileFetch(FetchParameters parameters) : AInflection<Message>
             context.EmitError($"Fetch refused a path: {exception.Message}", exception);
             return;
         }
+        context.DemandFile(MeepPermissions.FilesRead, message, path);
         try
         {
             // Checked before opening, since opening a named pipe waits for a writer, and again once it's open, in case

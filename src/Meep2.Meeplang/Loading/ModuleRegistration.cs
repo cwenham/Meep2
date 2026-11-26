@@ -35,6 +35,7 @@ public sealed class ModuleRegistration
         try
         {
             RequiredPermissions = RequiresPermissionAttribute.Of(moduleType);
+            CheckedPermissions = ChecksPermissionAttribute.Of(moduleType);
         }
         catch (FormatException exception)
         {
@@ -47,6 +48,12 @@ public sealed class ModuleRegistration
     /// remove; <c>@permission</c> adds to them (Q263).
     /// </summary>
     public IReadOnlyList<PermissionName> RequiredPermissions { get; }
+
+    /// <summary>
+    /// What the inflection checks in its own code, for tools (<see cref="ChecksPermissionAttribute"/>, Q315), as
+    /// "meep.files.write, on each file it writes".
+    /// </summary>
+    public IReadOnlyList<string> CheckedPermissions { get; } = [];
 
     /// <summary>
     /// What the verb does with messages: declared with <see cref="RoleAttribute"/>, or else worked out from the class.

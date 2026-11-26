@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Extensions;
 using MediaType = Microsoft.Net.Http.Headers.MediaTypeHeaderValue;
@@ -32,6 +33,8 @@ namespace Meep2.Modules;
 /// </para>
 /// </remarks>
 [Verb("Listen", Inflection = "HTTP")]
+[ChecksPermission(MeepPermissions.NetworkListen, "its host and port")]
+[ChecksPermission(MeepPermissions.FilesRead, "its certificate and key")]
 [Role(VerbRole.Inlet)]
 [Emits(typeof(HttpRequest))]
 public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChosenByParameters<HttpListenParameters>, IReconfigurable<HttpListenParameters>
@@ -56,8 +59,9 @@ public sealed class HttpListen(HttpListenParameters parameters) : ASource, IChos
         var start = _parameters;
         if (!HttpAddress.TryParse(start.Url, out var address))
             throw new InvalidOperationException($"Listen.HTTP needs an http:// or https:// address, not {start.Url}");
-        var endpoint = new IPEndPoint(await Endpoints.ResolveAsync(address.Host, cancellationToken).ConfigureAwait(false), address.Port);
-        var certificate = address.Secure ? Certificates.Load(start.Certificate!, start.Key) : null;
+        var reach = context.DemandEndpoint(MeepPermissions.NetworkListen, null, address.Host, address.Port);
+        var endpoint = new IPEndPoint(Listens.Within(await Endpoints.ResolveAsync(address.Host, cancellationToken).ConfigureAwait(false), address.Host, reach), address.Port);
+        var certificate = address.Secure ? Certificates.Load(start.Certificate!, start.Key, context) : null;
         var route = await HttpServer.AddAsync(endpoint, certificate, address.Path, http => AcceptAsync(http, context, cancellationToken), cancellationToken)
             .ConfigureAwait(false);
         lock (_changing)

@@ -5,13 +5,13 @@ using Meep2.SDK.Security;
 namespace Meep2.Runtime;
 
 /// <summary>
-/// Reads text as a credential, certificate, permission or grant, and emits it as that message, for verbs that take
+/// Reads text as a credential, certificate, permission, grant or authority's key, and emits it as that message, for verbs that take
 /// only typed messages, such as <c>Authorise</c> and <c>Revoke</c> (Q293). Text that's none of them becomes an error
 /// saying what it found. In Meeplang: <c>Parse from=fam.Listen.Json.credential</c>.
 /// </summary>
 /// <remarks>
 /// It reads with the same reader as <c>Verify</c> (<see cref="SecurityText"/>), so the two never disagree about what
-/// text is. A message that's already one of the four is passed on as it is. A <c>Credential</c> it emits is only read,
+/// text is. A message that's already one of the five is passed on as it is. A <c>Credential</c> it emits is only read,
 /// not checked: <c>Verify</c> checks one. With <c>kind=</c> it emits only that kind, so the modules below it need take
 /// only that type: <c>Parse kind=credential</c> above <c>Authorise permission="…"</c>.
 /// </remarks>
@@ -20,6 +20,7 @@ namespace Meep2.Runtime;
 [Emits(typeof(Certificate), When = nameof(ParseParameters.MayBeCertificate))]
 [Emits(typeof(Permission), When = nameof(ParseParameters.MayBePermission))]
 [Emits(typeof(Grant), When = nameof(ParseParameters.MayBeGrant))]
+[Emits(typeof(AuthorityKey), When = nameof(ParseParameters.MayBeAuthority))]
 public sealed class ParseText(ParseParameters parameters) : AInflection<Message>
 {
     /// <inheritdoc/>
@@ -30,7 +31,7 @@ public sealed class ParseText(ParseParameters parameters) : AInflection<Message>
             context.Emit(message);
             return ValueTask.CompletedTask;
         }
-        if (parameters.From is null && message is Credential or Certificate or Permission or Grant)
+        if (parameters.From is null && message is Credential or Certificate or Permission or Grant or AuthorityKey)
         {
             if (WrongKind(message) is { } wrong)
                 context.EmitError(wrong);
@@ -66,6 +67,7 @@ public sealed class ParseText(ParseParameters parameters) : AInflection<Message>
                 ParseKind.Certificate => SecurityText.Read<Certificate>(text),
                 ParseKind.Permission => SecurityText.Read<Permission>(text),
                 ParseKind.Grant => SecurityText.Read<Grant>(text),
+                ParseKind.Authority => SecurityText.Read<AuthorityKey>(text),
                 _ => SecurityText.Read(text),
             };
         }
@@ -86,6 +88,7 @@ public sealed class ParseText(ParseParameters parameters) : AInflection<Message>
         ParseKind.Certificate when message is Certificate => null,
         ParseKind.Permission when message is Permission => null,
         ParseKind.Grant when message is Grant => null,
+        ParseKind.Authority when message is AuthorityKey => null,
         _ => $"This is a {message.GetType().Name}, not a {parameters.Kind.ToString().ToLowerInvariant()}.",
     };
 }
@@ -99,8 +102,8 @@ public sealed record ParseParameters
     public Computed<string>? From { get; init; }
 
     /// <summary>
-    /// What the text must be: <c>any</c> (the default), <c>credential</c>, <c>certificate</c>, <c>permission</c> or
-    /// <c>grant</c>. Anything else becomes an error.
+    /// What the text must be: <c>any</c> (the default), <c>credential</c>, <c>certificate</c>, <c>permission</c>,
+    /// <c>grant</c> or <c>authority</c>. Anything else becomes an error.
     /// </summary>
     public ParseKind Kind { get; init; }
 
@@ -115,6 +118,9 @@ public sealed record ParseParameters
 
     /// <summary>Whether it may emit a grant.</summary>
     public bool MayBeGrant => Kind is ParseKind.Any or ParseKind.Grant;
+
+    /// <summary>Whether it may emit an authority's key.</summary>
+    public bool MayBeAuthority => Kind is ParseKind.Any or ParseKind.Authority;
 }
 
 /// <summary>What <c>Parse</c> reads text as.</summary>
@@ -134,4 +140,7 @@ public enum ParseKind
 
     /// <summary>A grant, as <c>meep-grant-v02 base64</c> (or v01).</summary>
     Grant,
+
+    /// <summary>An SSH certificate authority's public key, as a <c>.pub</c> file has it (Q303).</summary>
+    Authority,
 }

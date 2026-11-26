@@ -147,10 +147,13 @@ public sealed class TestRun
 
     public IReadOnlyList<Message> At(string module) => [.. Received.Where(r => r.Module == module).Select(r => r.Message)];
 
-    /// <summary>Loads the text and, if it loads, runs it until it halts, with this trust store for Verify if one's given.</summary>
-    public static async Task<TestRun> Start(string text, bool run = true, Meep2.Security.TrustStoreSource? trust = null)
+    /// <summary>
+    /// Loads the text and, if it loads, runs it until it halts, with this trust store for Verify if one's given, and this
+    /// credential of its own if one's given (the owner's otherwise).
+    /// </summary>
+    public static async Task<TestRun> Start(string text, bool run = true, Meep2.Security.TrustStoreSource? trust = null, Meep2.SDK.Security.PipelineCredential? credential = null, string? meepFolder = null)
     {
-        var testRun = Load(text, trust);
+        var testRun = Load(text, trust, credential, meepFolder);
         if (run && testRun.Result.Pipeline is { } pipeline)
         {
             await using (pipeline)
@@ -163,17 +166,22 @@ public sealed class TestRun
     /// Loads the text and starts running it, for pipelines that don't halt on their own, such as ones that listen.
     /// Dispose the result to stop the pipeline and wait for it to finish.
     /// </summary>
-    public static Running Begin(string text, Meep2.Security.TrustStoreSource? trust = null)
+    public static Running Begin(string text, Meep2.Security.TrustStoreSource? trust = null, Meep2.SDK.Security.PipelineCredential? credential = null, string? meepFolder = null)
     {
-        var testRun = Load(text, trust);
+        var testRun = Load(text, trust, credential, meepFolder);
         var pipeline = testRun.Result.Pipeline ?? throw new InvalidOperationException($"The pipeline didn't load:\n{testRun.Diagnostics}");
         return new Running(testRun, pipeline, pipeline.RunAsync());
     }
 
-    private static TestRun Load(string text, Meep2.Security.TrustStoreSource? trust = null)
+    private static TestRun Load(string text, Meep2.Security.TrustStoreSource? trust = null, Meep2.SDK.Security.PipelineCredential? credential = null, string? meepFolder = null)
     {
         var testRun = new TestRun(new LoadResult(null, []), new(), new(), new(), new SharedText());
-        var result = new PipelineLoader(testRun.Registry()).Load(Script.Parse(text), testRun.Options with { Trust = trust });
+        var options = testRun.Options with { Trust = trust };
+        if (credential is not null)
+            options = options with { Credential = credential };
+        if (meepFolder is not null)
+            options = options with { MeepFolder = meepFolder };
+        var result = new PipelineLoader(testRun.Registry()).Load(Script.Parse(text), options);
         return new TestRun(result, testRun.Received, testRun.Unhandled, testRun.Notices, testRun.Output);
     }
 
@@ -189,7 +197,8 @@ public sealed class TestRun
         return new Live(testRun, live, live.Pipeline.RunAsync());
     }
 
-    private PipelineOptions Options => new() { UnhandledError = Unhandled.Enqueue, Notice = Notices.Enqueue };
+    // The tests are the host that builds the pipeline, so they vouch for it as its owner, as meep run does for your own file.
+    private PipelineOptions Options => new() { UnhandledError = Unhandled.Enqueue, Notice = Notices.Enqueue, Credential = Meep2.SDK.Security.PipelineCredential.Owner("a test built it") };
 
     // The core modules, plus test modules that record what they receive in this run.
     private ModuleRegistry Registry()

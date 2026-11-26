@@ -46,16 +46,17 @@ public abstract class ConnectionSend<TParameters> : APassthrough<Message>, IAsyn
             context.EmitError(exception.Message, exception);
             return;
         }
-        if (ClientFor(url, context) is not { } client)
+        if (ClientFor(url, message, context) is not { } client)
             return;
         await Connections.SendAsync(client, message, text, End, Parameters, context, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
     /// The connection to send through, joined if this module hasn't used it before; or null, having emitted an error
-    /// saying why, if the address isn't one this inflection takes.
+    /// saying why, if the address isn't one this inflection takes. It checks that <paramref name="message"/> may send
+    /// there (<c>meep.network.send</c>), throwing <see cref="SDK.Security.PermissionDeniedException"/> if not.
     /// </summary>
-    private protected abstract SharedClient? ClientFor(string url, ModuleContext context);
+    private protected abstract SharedClient? ClientFor(string url, Message message, ModuleContext context);
 
     /// <summary>What ends each message written, or null for the connection's own way.</summary>
     private protected virtual string? End => null;

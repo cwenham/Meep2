@@ -1,5 +1,6 @@
 using Meep2.SDK.Messages;
 using Meep2.SDK.Modules;
+using Meep2.SDK.Security;
 
 namespace Meep2.Modules;
 
@@ -14,6 +15,7 @@ namespace Meep2.Modules;
 /// <c>Class</c> is null and <c>Score</c> 0 (Q144). Errors are passed on untouched.
 /// </remarks>
 [Verb("Classify")]
+[ChecksPermission(MeepPermissions.FilesRead, "the tree's file, when file= names one")]
 [Emits(typeof(ClassifiedMessage))]
 public sealed class Classify(ClassifyParameters parameters) : AInflection<Message>, IAsyncDisposable
 {
@@ -46,6 +48,7 @@ public sealed class Classify(ClassifyParameters parameters) : AInflection<Messag
             return ValueTask.CompletedTask;
         }
 
+        Trees.Demand(parameters.Tree, parameters.File, saves: false, message, context);
         if (Trees.Open(ref _tree, parameters.Tree, parameters.File, saves: false, context) is not { } tree)
             return ValueTask.CompletedTask;
 

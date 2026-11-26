@@ -46,7 +46,10 @@ public sealed record VerifiedMessage : Message
         Proof = original.Proof;
     }
 
-    /// <summary>What was verified: a <see cref="Credential"/>, <see cref="Certificate"/> or <see cref="Permission"/>.</summary>
+    /// <summary>
+    /// What was verified: a <see cref="Credential"/>, <see cref="Certificate"/> or <see cref="Permission"/>, or the
+    /// pipeline's own <see cref="PipelineCredential"/>, which the runtime verifies when the pipeline starts.
+    /// </summary>
     public Message Subject { get; }
 
     /// <summary>What kind of thing was verified.</summary>
@@ -115,6 +118,12 @@ public enum VerificationKind
 
     /// <summary>A <see cref="Security.Permission"/>: that it's well defined, and perhaps met.</summary>
     Permission,
+
+    /// <summary>
+    /// The pipeline's own <see cref="PipelineCredential"/>, verified by the runtime when the pipeline starts (Q252).
+    /// Every message its sources emit descends from it.
+    /// </summary>
+    Pipeline,
 }
 
 /// <summary>How whoever presented a credential or certificate proved they hold its key (Q253).</summary>
@@ -134,6 +143,12 @@ public enum Proof
 
     /// <summary>The TLS handshake, for a client certificate.</summary>
     Tls,
+
+    /// <summary>
+    /// The pipeline's own credential, proven when the pipeline loaded: by its signature, or by being the owner's own,
+    /// read by Meep running as the owner. Only the runtime's verification of a pipeline has it.
+    /// </summary>
+    Pipeline,
 }
 
 /// <summary>Messages only the runtime may make, which must never come into a pipeline from outside.</summary>

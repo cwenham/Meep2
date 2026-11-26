@@ -3,6 +3,7 @@ using Meep2.Meeplang.Parsing;
 using Meep2.Meeplang.Syntax;
 using Meep2.Runtime;
 using Meep2.SDK.Messages;
+using Meep2.SDK.Security;
 
 namespace Meep2.Meeplang.Hosting;
 
@@ -79,6 +80,12 @@ public sealed record PipelineText(string Path, string Text) : Message, IHasText,
 
     /// <summary>Who's trusted it: the key that signed it, or the pin it matched. Null for a file of your own.</summary>
     public string? TrustedBecause { get; init; }
+
+    /// <summary>
+    /// The pipeline's own credential, as where it came from earns it (Q252): its signer's, the owner's for one whose
+    /// address pins it, or none. Null for the host's own default, the owner's.
+    /// </summary>
+    public PipelineCredential? Credential { get; init; }
 }
 
 /// <summary>Problems that stopped a pipeline file loading.</summary>
